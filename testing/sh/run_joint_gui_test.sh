@@ -24,7 +24,7 @@ export SOFA_PLUGIN_PATH="$SOFA_BUILD/lib:$SOFA_BUILD_PLUGINS/lib:$BEAMADAPTER_LI
 
 cd /home/chen/SOFAA/projects/mCR_simulator-master/python || exit 1
 
-SCENE_FILE="/home/chen/SOFAA/projects/mCR_simulator-master/python/test_ros_gui.py"
+SCENE_FILE="/home/chen/SOFAA/projects/mCR_simulator-master/python/testing/py/test_ros_gui.py"
 
 if [ ! -f "$SCENE_FILE" ]; then
     echo "[ERROR] Cannot find scene file: $SCENE_FILE"

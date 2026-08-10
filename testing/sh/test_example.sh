@@ -20,7 +20,7 @@ export SOFA_PLUGIN_PATH="$SOFA_BUILD/lib:$SOFA_BUILD/external_directories/STLIB/
 SOFAPYTHON3_LIB="$SOFA_BUILD/lib/libSofaPython3.so"
 SOFTROBOTS_LIB="$SOFA_BUILD/external_directories/SoftRobots/lib/libSoftRobots.so"
 BEAMADAPTER_LIB="$SOFA_BUILD/external_directories/BeamAdapter/lib/libBeamAdapter.so"
-SCENE_FILE="$PROJECT_PY/example_aortic_arch.py"
+SCENE_FILE="$PROJECT_PY/scene/example_aortic_arch.py"
 
 if [[ -x "$SOFA_BUILD/bin/runSofa-21.12.00" ]]; then
     RUNSOFA="$SOFA_BUILD/bin/runSofa-21.12.00"

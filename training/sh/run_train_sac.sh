@@ -38,5 +38,5 @@ cd "$PROJECT_PY"
 # Unified training entrypoint; pass through all CLI args.
 # This version does NOT save raw terminal logs.
 # It only filters repetitive LocalMinDistance determinant warnings from console output.
-python train_sac.py "$@" \
+python training/py/train_sac.py "$@" \
     2>&1 | awk '!/\[WARNING\] \[LocalMinDistance\(localmindistance\)\] Determinant is null/'

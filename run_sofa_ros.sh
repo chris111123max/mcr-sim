@@ -10,4 +10,4 @@ cd /home/chen/SOFAA/sofa_ws/sofa/build_plugins/bin
 -l /home/chen/SOFAA/sofa_ws/sofa/build_plugins/lib/libSofaPython3.so \
 -l /home/chen/SOFAA/sofa_ws/sofa/build_plugins/lib/libSoftRobots.so.1.0 \
 -l /home/chen/SOFAA/sofa_ws/sofa/build_plugins/external_directories/BeamAdapter/lib/libBeamAdapter.so.21.12 \
-/home/chen/SOFAA/projects/mCR_simulator-master/python/example_aortic_arch_ros.py 2>&1 | grep --line-buffered -v "Determinant is null"
+/home/chen/SOFAA/projects/mCR_simulator-master/python/scene/example_aortic_arch_ros.py 2>&1 | grep --line-buffered -v "Determinant is null"

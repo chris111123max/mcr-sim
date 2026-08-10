@@ -12,7 +12,7 @@ cd /home/chen/SOFAA/projects/mCR_simulator-master/python
 # 例如：
 # ./run_inference_closed_loop.sh --force-model V1
 # ./run_inference_closed_loop.sh --force-model 0207 --max-episodes 3
-PYTHONUNBUFFERED=1 python3 run_trained_mcr_ros.py \
+PYTHONUNBUFFERED=1 python3 testing/py/run_trained_mcr_ros.py \
   --model /home/chen/SOFAA/projects/mCR_simulator-master/python/runs_tri/centerline_light_2mm_from_3mm_aortic_2mm_20260517_184506/models/sac_mcr_2mm_V1_y_noS_ckpt_3800000_steps.zip \
   "$@" \
   2>&1 | grep --line-buffered -v "Determinant is null"

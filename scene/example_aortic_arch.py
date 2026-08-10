@@ -18,7 +18,7 @@ from mcr_sim import (
 # ============================================================
 # Paths
 # ============================================================
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TRAIN_MESH_DIR = PROJECT_ROOT / "mesh" / "train"
 TEST_MESH_DIR = PROJECT_ROOT / "mesh" / "test"
 

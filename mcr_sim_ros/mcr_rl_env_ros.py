@@ -14,7 +14,7 @@ import time
 
 HERE = Path(__file__).resolve().parent
 FLAT_SCENE_DESCRIPTION_FILE_PATH = HERE / "scene_description_2d.py"
-AORTIC_SCENE_DESCRIPTION_FILE_PATH = HERE.parent / "example_aortic_arch_ros.py"
+AORTIC_SCENE_DESCRIPTION_FILE_PATH = HERE.parent / "scene" / "example_aortic_arch_ros.py"
 FLAT_CATHETER_DESTINATION_EXIT_POINT = np.array([0.101129, 0.0238015, 0.002])
 AORTIC_CATHETER_DESTINATION_EXIT_POINT = np.array([-0.0101583, -0.180636, 0.0345185])
 

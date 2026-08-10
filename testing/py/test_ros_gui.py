@@ -90,7 +90,7 @@ STOP_ON_SUCCESS = False
 if str(PYTHON_DIR) not in sys.path:
     sys.path.insert(0, str(PYTHON_DIR))
 
-import example_aortic_arch_ros as base_scene
+from scene import example_aortic_arch_ros as base_scene
 
 
 class GuiPolicyClosedLoopController(Sofa.Core.Controller):

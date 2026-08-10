@@ -89,7 +89,7 @@ echo "Target threshold: $TARGET_THRESHOLD m"
 echo "Randomization: start/target radius=${START_TARGET_RANDOM_RADIUS}m, initial angle=${INITIAL_ORIENTATION_MAX_ANGLE_DEG}deg, entry_tangent_points=${ENTRY_TANGENT_POINTS}"
 echo "No-progress gate termination: disabled by default. Add --enable-no-progress-termination to restore it."
 
-python run_trained_mcr_sofa_gui.py \
+python testing/py/run_trained_mcr_sofa_gui.py \
     --model "$MODEL_PATH" \
     --target-threshold "$TARGET_THRESHOLD" \
     --vessel-alpha 0.35 \
