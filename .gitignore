@@ -1,0 +1,36 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Backup / temporary files
+*.bak
+*~
+*.tmp
+
+# SOFA / GUI runtime state
+*.qglviewer.view
+lastUsedGUI.ini
+
+# Training outputs
+run_mul/
+runs/
+models/
+checkpoints/
+logs/
+wandb/
+outputs/
+
+# Model checkpoints
+*.zip
+*.pth
+*.pt
+*.ckpt
+
+# TensorBoard
+events.out.tfevents.*
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
