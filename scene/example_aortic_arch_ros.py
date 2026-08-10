@@ -19,8 +19,18 @@ What is NOT changed:
 """
 
 import random
+import sys
 import time
 from pathlib import Path
+
+# This file lives in python/scene/.  mesh/ and calib/ are siblings of the
+# python/ Git root in the complete server project.
+SCENE_DIR = Path(__file__).resolve().parent
+PYTHON_ROOT = SCENE_DIR.parent
+PROJECT_ROOT = PYTHON_ROOT.parent
+
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 import Sofa
 import rospy
@@ -42,7 +52,6 @@ from mcr_sim_ros import (
 # ============================================================
 # Paths
 # ============================================================
-PROJECT_ROOT = Path("/home/chen/SOFAA/projects/mCR_simulator-master")
 TRAIN_MESH_DIR = PROJECT_ROOT / "mesh" / "train"
 TEST_MESH_DIR = PROJECT_ROOT / "mesh" / "test"
 

@@ -12,6 +12,10 @@ from typing import Dict, Optional, Union, Any, Tuple
 
 from mcr_sim.rl_core.io import SuppressOutput
 
+RL_CORE_DIR = Path(__file__).resolve().parent
+MCR_SIM_DIR = RL_CORE_DIR.parent
+PYTHON_ROOT = MCR_SIM_DIR.parent
+
 # Global shared pyglet window and refcount so multiple SofaEnv instances
 # in the same process reuse a single window instead of creating many.
 _GLOBAL_PYGLET_WINDOW = None
@@ -95,7 +99,10 @@ class SofaEnv(gym.Env, metaclass=abc.ABCMeta):
         self.render_framework = render_framework
         self._initialized = False
         self._modules_imported = False
-        self._scene_path = Path(scene_path)
+        configured_scene_path = Path(scene_path).expanduser()
+        if not configured_scene_path.is_absolute():
+            configured_scene_path = PYTHON_ROOT / configured_scene_path
+        self._scene_path = configured_scene_path.resolve()
         self._window = None
         self.suppress_sofa_init_messages = suppress_sofa_init_messages
 
@@ -281,8 +288,6 @@ class SofaEnv(gym.Env, metaclass=abc.ABCMeta):
                 self.opengl_glu = importlib.import_module("OpenGL.GLU")
 
             # Check if the file with the createScene function exists
-            if not self._scene_path.is_absolute():
-                self._scene_path = self._scene_path.absolute()
             if not self._scene_path.is_file():
                 raise FileNotFoundError(f"Could not find file {self._scene_path}.")
 

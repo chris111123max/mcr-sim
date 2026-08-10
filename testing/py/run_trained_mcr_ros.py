@@ -14,8 +14,17 @@ run_trained_mcr_ros.py
 """
 
 import argparse
+import sys
 import time
 from pathlib import Path
+
+# This executable lives in python/testing/py/.  Resolve local packages from
+# the script location rather than relying on cwd or a fixed PYTHONPATH.
+TEST_PY_DIR = Path(__file__).resolve().parent
+TESTING_DIR = TEST_PY_DIR.parent
+PYTHON_ROOT = TESTING_DIR.parent
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 import numpy as np
 import rospy
@@ -153,7 +162,10 @@ def safe_float(value, default=np.nan):
 def main():
     args = parse_args()
 
-    model_path = Path(args.model).expanduser().resolve()
+    model_path = Path(args.model).expanduser()
+    if not model_path.is_absolute():
+        model_path = PYTHON_ROOT / model_path
+    model_path = model_path.resolve()
     if not model_path.is_file():
         raise FileNotFoundError(f"SAC model not found: {model_path}")
 

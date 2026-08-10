@@ -1,32 +1,47 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# 激活mcr_sofa虚拟环境并设置SOFA运行路径
-source /data/home/3220251075/mcr_sim/setup_mcr_sofa.sh
-source /data/home/3220251075/mcr_sim/ensure_mcr_gui.sh
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_ROOT="$(cd -- "$PYTHON_ROOT/.." && pwd)"
+WORKSPACE_ROOT="$(cd -- "$PROJECT_ROOT/../.." && pwd)"
 
-SOFA_BUILD=/data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins
-SOFA_BUILD_PLUGINS=/data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins
+SETUP_MCR_SOFA="${SETUP_MCR_SOFA:-$WORKSPACE_ROOT/setup_mcr_sofa.sh}"
+ENSURE_MCR_GUI="${ENSURE_MCR_GUI:-$WORKSPACE_ROOT/ensure_mcr_gui.sh}"
+for required_script in "$SETUP_MCR_SOFA" "$ENSURE_MCR_GUI"; do
+    if [[ ! -f "$required_script" ]]; then
+        echo "[ERROR] Cannot find required environment script: $required_script"
+        exit 1
+    fi
+done
+source "$SETUP_MCR_SOFA"
+source "$ENSURE_MCR_GUI"
 
-STLIB_ROOT=/data/home/3220251075/mcr_sim/mcr_env/sofa/src/STLIB
+SOFA_BUILD_DEFAULT="$WORKSPACE_ROOT/mcr_env/sofa/build_plugins"
+SOFA_BUILD="${SOFA_BUILD:-${SOFA_ROOT:-$SOFA_BUILD_DEFAULT}}"
+SOFA_BUILD_PLUGINS="${SOFA_BUILD_PLUGINS:-${SOFAPYTHON3_ROOT:-$SOFA_BUILD_DEFAULT}}"
+STLIB_ROOT="${STLIB_ROOT:-$WORKSPACE_ROOT/mcr_env/sofa/src/STLIB}"
 SOFTROBOTS_LIB="$SOFA_BUILD_PLUGINS/external_directories/SoftRobots/lib"
 BEAMADAPTER_LIB="$SOFA_BUILD_PLUGINS/external_directories/BeamAdapter/lib"
 STLIB_LIB="$SOFA_BUILD_PLUGINS/external_directories/STLIB/lib"
-
-PROJECT_PY=/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python
+PYTHON_BIN="${PYTHON_BIN:-python}"
 
 export SOFA_ROOT="$SOFA_BUILD"
 export SOFAPYTHON3_ROOT="$SOFA_BUILD_PLUGINS"
 
-export PYTHONPATH="$SOFA_BUILD/lib/python3/site-packages:$SOFA_BUILD_PLUGINS/lib/python3/site-packages:$STLIB_ROOT:$STLIB_ROOT/python:$STLIB_ROOT/python3/src:$PROJECT_PY:${PYTHONPATH:-}"
+export PYTHONPATH="$SOFA_BUILD/lib/python3/site-packages:$SOFA_BUILD_PLUGINS/lib/python3/site-packages:$STLIB_ROOT:$STLIB_ROOT/python:$STLIB_ROOT/python3/src:$PYTHON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-export LD_LIBRARY_PATH="$SOFA_BUILD/lib:$SOFA_BUILD_PLUGINS/lib:$STLIB_LIB:$SOFTROBOTS_LIB:$BEAMADAPTER_LIB:$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+CONDA_LIB_SUFFIX=""
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+    CONDA_LIB_SUFFIX=":$CONDA_PREFIX/lib"
+fi
+export LD_LIBRARY_PATH="$SOFA_BUILD/lib:$SOFA_BUILD_PLUGINS/lib:$STLIB_LIB:$SOFTROBOTS_LIB:$BEAMADAPTER_LIB$CONDA_LIB_SUFFIX${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 
-export SOFA_PLUGIN_PATH="$SOFA_BUILD/lib:$SOFA_BUILD_PLUGINS/lib:$STLIB_LIB:$SOFTROBOTS_LIB:$BEAMADAPTER_LIB:${SOFA_PLUGIN_PATH:-}"
+export SOFA_PLUGIN_PATH="$SOFA_BUILD/lib:$SOFA_BUILD_PLUGINS/lib:$STLIB_LIB:$SOFTROBOTS_LIB:$BEAMADAPTER_LIB${SOFA_PLUGIN_PATH:+:$SOFA_PLUGIN_PATH}"
 
-cd "$PROJECT_PY" || exit 1
+cd "$PYTHON_ROOT"
 
-MODEL_PATH="${MODEL_PATH:-/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/run_mul/sac_10mm_V1_gate_fsm_trainfreq2_buf200k_human_retrain_V1_only_aortic_10mm_20260606_111201/models/sac_mcr_10mm_all_vessels_privileged_V1_only_ckpt_800000_steps.zip}"
+MODEL_PATH="${MODEL_PATH:-$PYTHON_ROOT/run_mul/sac_10mm_V1_gate_fsm_trainfreq2_buf200k_human_retrain_V1_only_aortic_10mm_20260606_111201/models/sac_mcr_10mm_all_vessels_privileged_V1_only_ckpt_800000_steps.zip}"
 
 TIME_STEP="${TIME_STEP:-0.1}"
 FRAME_SKIP="${FRAME_SKIP:-1}"
@@ -89,7 +104,7 @@ echo "Target threshold: $TARGET_THRESHOLD m"
 echo "Randomization: start/target radius=${START_TARGET_RANDOM_RADIUS}m, initial angle=${INITIAL_ORIENTATION_MAX_ANGLE_DEG}deg, entry_tangent_points=${ENTRY_TANGENT_POINTS}"
 echo "No-progress gate termination: disabled by default. Add --enable-no-progress-termination to restore it."
 
-python testing/py/run_trained_mcr_sofa_gui.py \
+"$PYTHON_BIN" "$PYTHON_ROOT/testing/py/run_trained_mcr_sofa_gui.py" \
     --model "$MODEL_PATH" \
     --target-threshold "$TARGET_THRESHOLD" \
     --vessel-alpha 0.35 \

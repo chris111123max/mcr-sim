@@ -36,6 +36,14 @@ import argparse
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
+# This executable lives in python/testing/py/.  Add the Python/Git root based
+# on this file so direct invocation works from any current working directory.
+TEST_PY_DIR = Path(__file__).resolve().parent
+TESTING_DIR = TEST_PY_DIR.parent
+PYTHON_ROOT = TESTING_DIR.parent
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
 import numpy as np
 import Sofa
 import Sofa.Core
@@ -724,7 +732,10 @@ def main():
     parser.add_argument("--use-vessel-line-point-collision", action="store_true", help="Enable vessel LineCollisionModel/PointCollisionModel if the scene supports it.")
     args = parser.parse_args()
 
-    model_path = Path(args.model)
+    model_path = Path(args.model).expanduser()
+    if not model_path.is_absolute():
+        model_path = PYTHON_ROOT / model_path
+    model_path = model_path.resolve()
     if not model_path.exists():
         print(f"Error: Model not found at {model_path}")
         sys.exit(1)

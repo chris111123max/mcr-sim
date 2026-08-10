@@ -1,7 +1,18 @@
 import argparse
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Union
+
+# This executable lives in python/training/py/.  Resolve imports and the
+# complete project root from the file itself, independent of caller cwd.
+TRAINING_PY_DIR = Path(__file__).resolve().parent
+TRAINING_DIR = TRAINING_PY_DIR.parent
+PYTHON_ROOT = TRAINING_DIR.parent
+PROJECT_ROOT = PYTHON_ROOT.parent
+DEFAULT_LOG_ROOT = PROJECT_ROOT / "training_runs"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 from collections import deque, defaultdict
 
@@ -510,7 +521,12 @@ def parse_args():
     parser.set_defaults(soft_randomize_single_vessel=True)
 
     # All-vessel local-observation curriculum runs.
-    parser.add_argument("--log-root", type=str, default="./run_mul")
+    parser.add_argument(
+        "--log-root",
+        type=str,
+        default=str(DEFAULT_LOG_ROOT),
+        help="Training output root. Defaults to the project-level training_runs directory.",
+    )
     parser.add_argument("--exp-name", type=str, default="sac_waypoint_uniform")
     parser.add_argument("--save-freq", type=int, default=50_000)
     parser.add_argument("--render", choices=["headless", "human"], default="headless")
@@ -617,7 +633,10 @@ def main():
     forced_tag = f"_{args.force_model}_only" if args.force_model else ""
 
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = Path(args.log_root) / f"{args.exp_name}{forced_tag}_{args.env_type}_{threshold_tag}_{now}"
+    log_root = Path(args.log_root).expanduser()
+    if not log_root.is_absolute():
+        log_root = PROJECT_ROOT / log_root
+    run_dir = log_root.resolve() / f"{args.exp_name}{forced_tag}_{args.env_type}_{threshold_tag}_{now}"
     model_dir = run_dir / "models"
     tb_dir = run_dir / "tb"
     model_dir.mkdir(parents=True, exist_ok=True)
@@ -642,7 +661,10 @@ def main():
     callback_list = CallbackList([checkpoint_callback, extra_metrics_callback])
 
     if args.resume_from:
-        resume_path = Path(args.resume_from).expanduser().resolve()
+        resume_path = Path(args.resume_from).expanduser()
+        if not resume_path.is_absolute():
+            resume_path = PROJECT_ROOT / resume_path
+        resume_path = resume_path.resolve()
         if not resume_path.is_file():
             raise FileNotFoundError(f"Resume model not found: {resume_path}")
 

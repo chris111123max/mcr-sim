@@ -1,5 +1,16 @@
 from pathlib import Path
 import os
+import sys
+
+# This file lives in python/scene/.  Resolve the Git/Python root and the
+# server project root from the scene file itself so imports and assets do not
+# depend on the caller's working directory or the checkout's absolute path.
+SCENE_DIR = Path(__file__).resolve().parent
+PYTHON_ROOT = SCENE_DIR.parent
+PROJECT_ROOT = PYTHON_ROOT.parent
+
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
 
 import numpy as np
 from splib3.numerics import Quat, Vec3
@@ -18,7 +29,6 @@ from mcr_sim import (
 # ============================================================
 # Paths
 # ============================================================
-PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 TRAIN_MESH_DIR = PROJECT_ROOT / "mesh" / "train"
 TEST_MESH_DIR = PROJECT_ROOT / "mesh" / "test"
 

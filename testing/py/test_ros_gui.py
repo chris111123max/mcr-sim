@@ -4,7 +4,7 @@
 联合测试 GUI 版：SOFA 官方 GUI + 已训练 SAC 模型 + PyBullet/MoveIt 磁场执行器闭环测试。
 
 启动方式示例：
-    runSofa /home/chen/SOFAA/projects/mCR_simulator-master/python/联合测试_gui版.py
+    runSofa /path/to/mCR_simulator-master/python/testing/py/test_ros_gui.py
 
 启动前需要先运行：
     1) roscore
@@ -30,24 +30,34 @@ from scipy.interpolate import splprep, splev
 from stable_baselines3 import SAC
 from std_msgs.msg import Float64MultiArray
 
+# This file lives in python/testing/py/.  Derive the Python/Git root and the
+# complete project root without assuming a server username or checkout path.
+TEST_PY_DIR = Path(__file__).resolve().parent
+TESTING_DIR = TEST_PY_DIR.parent
+PYTHON_DIR = TESTING_DIR.parent
+PROJECT_ROOT = PYTHON_DIR.parent
+
+if str(PYTHON_DIR) not in sys.path:
+    sys.path.insert(0, str(PYTHON_DIR))
+
 # ============================================================
 # 用户配置区
 # ============================================================
-PROJECT_ROOT = Path("/home/chen/SOFAA/projects/mCR_simulator-master")
-PYTHON_DIR = PROJECT_ROOT / "python"
 
 # 默认测试血管。可改成："V1", "0207", "0207_left", "0207_right", "0210", "0021"
 FORCE_MODEL = "0021"
 
-# 你的 2mm 模型。需要时直接改这里。
-MODEL_PATH = (
-    PROJECT_ROOT
-    / "python"
+# 你的 2mm 模型。可通过 MCR_MODEL_PATH 覆盖默认项目相对路径。
+DEFAULT_MODEL_PATH = (
+    PYTHON_DIR
     / "runs_tri"
     / "centerline_light_2mm_from_3mm_aortic_2mm_20260517_184506"
     / "models"
     / "sac_mcr_2mm_V1_y_noS_ckpt_3800000_steps.zip"
 )
+MODEL_PATH = Path(os.environ.get("MCR_MODEL_PATH", str(DEFAULT_MODEL_PATH))).expanduser()
+if not MODEL_PATH.is_absolute():
+    MODEL_PATH = PYTHON_DIR / MODEL_PATH
 
 TARGET_DISTANCE_THRESHOLD = 0.002
 MAX_EPISODE_STEPS = 2048
@@ -87,9 +97,6 @@ CENTERLINE_MAX_FORWARD_JUMP = 0.010
 STOP_ON_SUCCESS = False
 
 
-if str(PYTHON_DIR) not in sys.path:
-    sys.path.insert(0, str(PYTHON_DIR))
-
 from scene import example_aortic_arch_ros as base_scene
 
 
@@ -115,7 +122,10 @@ class GuiPolicyClosedLoopController(Sofa.Core.Controller):
         self.chosen_model = scene_result.get("chosen_model", "unknown")
         self.centerline_vtk = scene_result.get("centerline_vtk", "unknown")
 
-        self.model_path = Path(model_path).expanduser().resolve()
+        self.model_path = Path(model_path).expanduser()
+        if not self.model_path.is_absolute():
+            self.model_path = PYTHON_DIR / self.model_path
+        self.model_path = self.model_path.resolve()
         if not self.model_path.is_file():
             raise FileNotFoundError(f"SAC model not found: {self.model_path}")
 

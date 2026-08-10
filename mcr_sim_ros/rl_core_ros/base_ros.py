@@ -12,6 +12,10 @@ from typing import Dict, Optional, Union, Any, Tuple
 
 from mcr_sim_ros.rl_core_ros.io_ros import SuppressOutput
 
+RL_CORE_ROS_DIR = Path(__file__).resolve().parent
+MCR_SIM_ROS_DIR = RL_CORE_ROS_DIR.parent
+PYTHON_ROOT = MCR_SIM_ROS_DIR.parent
+
 
 @unique
 class RenderMode(Enum):
@@ -90,7 +94,10 @@ class SofaEnv(gym.Env, metaclass=abc.ABCMeta):
         self.render_framework = render_framework
         self._initialized = False
         self._modules_imported = False
-        self._scene_path = Path(scene_path)
+        configured_scene_path = Path(scene_path).expanduser()
+        if not configured_scene_path.is_absolute():
+            configured_scene_path = PYTHON_ROOT / configured_scene_path
+        self._scene_path = configured_scene_path.resolve()
         self._window = None
         self.suppress_sofa_init_messages = suppress_sofa_init_messages
 
@@ -262,8 +269,6 @@ class SofaEnv(gym.Env, metaclass=abc.ABCMeta):
                 self.opengl_glu = importlib.import_module("OpenGL.GLU")
 
             # Check if the file with the createScene function exists
-            if not self._scene_path.is_absolute():
-                self._scene_path = self._scene_path.absolute()
             if not self._scene_path.is_file():
                 raise FileNotFoundError(f"Could not find file {self._scene_path}.")
 
@@ -284,14 +289,20 @@ class SofaEnv(gym.Env, metaclass=abc.ABCMeta):
 
         # Generate the scene using createScene function from imported module and pass the create_scene_kwargs to the function
 
-        # Load required plugins using SofaRuntime proper method
+        # Load required plugins by portable plugin name.  Deployments that need
+        # an explicit library file can override any entry with the corresponding
+        # MCR_*_PLUGIN environment variable.
         try:
-            self.sofa_runtime.importPlugin("/home/chen/SOFAA/sofa_ws/sofa/build_plugins/lib/libSofaPython3.so")
-            self.sofa_runtime.importPlugin("/home/chen/SOFAA/sofa_ws/sofa/build_plugins/lib/libSoftRobots.so.1.0")
-            self.sofa_runtime.importPlugin("/home/chen/SOFAA/sofa_ws/sofa/build_plugins/external_directories/BeamAdapter/lib/libBeamAdapter.so.21.12")
-            self.sofa_runtime.importPlugin("Sofa.GL.Component.Shader")
-            self.sofa_runtime.importPlugin("Sofa.Component.Visual")
-            self.sofa_runtime.importPlugin("Sofa.GL.Component.Rendering3D")
+            required_plugins = (
+                os.environ.get("MCR_SOFAPYTHON3_PLUGIN", "SofaPython3"),
+                os.environ.get("MCR_SOFTROBOTS_PLUGIN", "SoftRobots"),
+                os.environ.get("MCR_BEAMADAPTER_PLUGIN", "BeamAdapter"),
+                "Sofa.GL.Component.Shader",
+                "Sofa.Component.Visual",
+                "Sofa.GL.Component.Rendering3D",
+            )
+            for plugin in required_plugins:
+                self.sofa_runtime.importPlugin(plugin)
         except Exception as e:
             print("Warning: Plugin load failed:", e)
 
