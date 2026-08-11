@@ -52,6 +52,7 @@ from stable_baselines3 import SAC
 
 # Import environment definitions: 非 ROS GUI 版本
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, EnvType
+from mcr_sim.paths import PROJECT_ROOT
 from mcr_sim.rl_core.base import RenderMode
 
 
@@ -734,7 +735,7 @@ def main():
 
     model_path = Path(args.model).expanduser()
     if not model_path.is_absolute():
-        model_path = PYTHON_ROOT / model_path
+        model_path = PROJECT_ROOT / model_path
     model_path = model_path.resolve()
     if not model_path.exists():
         print(f"Error: Model not found at {model_path}")

@@ -2,7 +2,7 @@ import Sofa
 import Sofa.Core
 import numpy as np
 
-from mcr_sim import mcr_mag_controller
+from . import mcr_mag_controller
 from scipy.spatial.transform import Rotation as R
 
 # Increment field angle in rad

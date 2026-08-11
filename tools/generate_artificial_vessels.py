@@ -27,12 +27,20 @@ import json
 import math
 import shutil
 import struct
+import sys
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 import numpy as np
+
+# This repository is the server's mCR_simulator-master/python directory.
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from mcr_sim.paths import TRAIN_MESH_DIR
 
 
 MM_PER_M = 1000.0
@@ -964,13 +972,11 @@ def generate_branch_model(spec: BranchSpec, model_dir: Path, spacing_mm: float) 
 
 
 def parse_args() -> argparse.Namespace:
-    python_root = Path(__file__).resolve().parents[1]
-    project_root = python_root.parent
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output-root",
         type=Path,
-        default=project_root / "mesh" / "train",
+        default=TRAIN_MESH_DIR,
         help="Destination containing C01..C05 and B01..B05.",
     )
     parser.add_argument(

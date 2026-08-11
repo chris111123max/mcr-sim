@@ -10,11 +10,8 @@ from enum import Enum, unique
 from pathlib import Path
 from typing import Dict, Optional, Union, Any, Tuple
 
-from mcr_sim.rl_core.io import SuppressOutput
-
-RL_CORE_DIR = Path(__file__).resolve().parent
-MCR_SIM_DIR = RL_CORE_DIR.parent
-PYTHON_ROOT = MCR_SIM_DIR.parent
+from ..paths import PYTHON_ROOT
+from .io import SuppressOutput
 
 # Global shared pyglet window and refcount so multiple SofaEnv instances
 # in the same process reuse a single window instead of creating many.

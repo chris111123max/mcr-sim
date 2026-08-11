@@ -1,13 +1,7 @@
-from pathlib import Path
-
 import numpy as np
 from mag_manip import mag_manip
 
-
-MCR_SIM_DIR = Path(__file__).resolve().parent
-PYTHON_ROOT = MCR_SIM_DIR.parent
-PROJECT_ROOT = PYTHON_ROOT.parent
-DEFAULT_CALIBRATION_PATH = PROJECT_ROOT / "calib" / "Navion_2_Calibration_24-02-2020.yaml"
+from .paths import DEFAULT_CALIBRATION_PATH
 
 
 class EMNS():

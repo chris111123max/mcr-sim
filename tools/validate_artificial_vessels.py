@@ -8,10 +8,18 @@ import base64
 import json
 import re
 import struct
+import sys
 import zlib
 from pathlib import Path
 
 import numpy as np
+
+# This repository is the server's mCR_simulator-master/python directory.
+PYTHON_ROOT = Path(__file__).resolve().parents[1]
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from mcr_sim.paths import TRAIN_MESH_DIR
 
 
 MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [f"B{i:02d}" for i in range(1, 6)]
@@ -137,9 +145,8 @@ def validate_model(root: Path, model_id: str) -> dict:
 
 
 def main() -> int:
-    default_root = Path(__file__).resolve().parents[2] / "mesh" / "train"
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--root", type=Path, default=default_root)
+    parser.add_argument("--root", type=Path, default=TRAIN_MESH_DIR)
     args = parser.parse_args()
 
     rows = [validate_model(args.root.resolve(), model_id) for model_id in MODEL_IDS]

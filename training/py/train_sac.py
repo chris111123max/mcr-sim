@@ -12,8 +12,6 @@ from typing import Union
 TRAINING_PY_DIR = Path(__file__).resolve().parent
 TRAINING_DIR = TRAINING_PY_DIR.parent
 PYTHON_ROOT = TRAINING_DIR.parent
-PROJECT_ROOT = PYTHON_ROOT.parent
-DEFAULT_LOG_ROOT = PROJECT_ROOT / "training_runs"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
@@ -29,7 +27,10 @@ from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
 from mcr_sim.distributed import DistributedSAC, initialize_distributed
+from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
+
+DEFAULT_LOG_ROOT = TRAINING_RUNS_DIR
 
 ARTIFICIAL_MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [
     f"B{i:02d}" for i in range(1, 6)

@@ -8,12 +8,13 @@ import numpy as np
 from scipy.interpolate import splprep, splev
 from scipy.spatial.transform import Rotation as R
 
-from mcr_sim.rl_core.base import SofaEnv, RenderMode, RenderFramework
-from mcr_sim.mcr_controller_sofa import ControllerSofa
+from .mcr_controller_sofa import ControllerSofa
+from .paths import SCENE_DIR
+from .rl_core.base import SofaEnv, RenderMode, RenderFramework
 
-HERE = Path(__file__).resolve().parent
-FLAT_SCENE_DESCRIPTION_FILE_PATH = HERE / "scene_description_2d.py"
-AORTIC_SCENE_DESCRIPTION_FILE_PATH = HERE.parent / "scene" / "example_aortic_arch.py"
+MCR_SIM_DIR = Path(__file__).resolve().parent
+FLAT_SCENE_DESCRIPTION_FILE_PATH = MCR_SIM_DIR / "scene_description_2d.py"
+AORTIC_SCENE_DESCRIPTION_FILE_PATH = SCENE_DIR / "example_aortic_arch.py"
 FLAT_CATHETER_DESTINATION_EXIT_POINT = np.array([0.101129, 0.0238015, 0.002], dtype=np.float32)
 AORTIC_CATHETER_DESTINATION_EXIT_POINT = np.array([-0.0101583, -0.180636, 0.0345185], dtype=np.float32)
 

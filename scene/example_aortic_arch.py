@@ -2,12 +2,10 @@ from pathlib import Path
 import os
 import sys
 
-# This file lives in python/scene/.  Resolve the Git/Python root and the
-# server project root from the scene file itself so imports and assets do not
-# depend on the caller's working directory or the checkout's absolute path.
+# This file lives in python/scene/.  Resolve the Git/Python root from the scene
+# file itself so package imports do not depend on the caller's working directory.
 SCENE_DIR = Path(__file__).resolve().parent
 PYTHON_ROOT = SCENE_DIR.parent
-PROJECT_ROOT = PYTHON_ROOT.parent
 
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
@@ -25,15 +23,13 @@ from mcr_sim import (
     mcr_magnet,
     mcr_simulator,
 )
+from mcr_sim.paths import DEFAULT_CALIBRATION_PATH, TEST_MESH_DIR, TRAIN_MESH_DIR
 
 # ============================================================
 # Paths
 # ============================================================
-TRAIN_MESH_DIR = PROJECT_ROOT / "mesh" / "train"
-TEST_MESH_DIR = PROJECT_ROOT / "mesh" / "test"
-
 # Calibration file for eMNS
-cal_path = str(PROJECT_ROOT / "calib" / "Navion_2_Calibration_24-02-2020.yaml")
+cal_path = str(DEFAULT_CALIBRATION_PATH)
 
 # ============================================================
 # Parameters instrument, magnet, beams
