@@ -191,7 +191,10 @@ def resolve_training_task(kwargs):
     """
     import random
 
-    random_models = ["0237"]
+    artificial_models = [f"C{i:02d}" for i in range(1, 6)] + [
+        f"B{i:02d}" for i in range(1, 6)
+    ]
+    random_models = list(artificial_models)
 
     supported_models = [
         "0207",
@@ -217,7 +220,7 @@ def resolve_training_task(kwargs):
         "Y002_right",
         "Y003_left",
         "Y003_right",
-    ]
+    ] + artificial_models
 
     def _resolve_asset(model_name, stl_candidates, centerline_candidates):
         model_dirs = [TRAIN_MESH_DIR / model_name, TEST_MESH_DIR / model_name]
@@ -330,9 +333,36 @@ def resolve_training_task(kwargs):
                 out.append(item)
         return out
 
-    chosen_model = kwargs.get("force_model", os.environ.get("MCR_FORCE_MODEL", "0237"))
+    def _generic_centerline_candidates(model_name):
+        forced_file = str(
+            kwargs.get("centerline_file", os.environ.get("MCR_CENTERLINE_FILE", "")) or ""
+        ).strip()
+        candidates = []
+        if forced_file:
+            if forced_file.lower().endswith(".vtk"):
+                candidates.append(forced_file)
+            else:
+                print(f"[WARN] Ignoring non-VTK centerline file: {forced_file}")
+
+        # Branching vessels expose six root-to-outlet tasks. Shuffle once per
+        # scene creation so each reset can select a different anatomical goal.
+        if str(model_name).startswith("B"):
+            target_names = [f"target_{i:02d}_centerline.vtk" for i in range(1, 7)]
+            random.shuffle(target_names)
+            candidates.extend(target_names)
+        candidates.extend(
+            [
+                "Centerline model.vtk",
+                "centerline.vtk",
+                f"{model_name}_centerline.vtk",
+                f"{model_name}_Centerline model.vtk",
+            ]
+        )
+        return candidates
+
+    chosen_model = kwargs.get("force_model", os.environ.get("MCR_FORCE_MODEL", ""))
     if chosen_model in (None, ""):
-        chosen_model = "0237"
+        chosen_model = random.choice(random_models)
     chosen_model = str(chosen_model)
 
     y_base_model, y_branch = _y_base_and_branch(chosen_model)
@@ -465,12 +495,7 @@ def resolve_training_task(kwargs):
                 "Segmentation.stl",
                 f"{chosen_model}.stl",
             ],
-            centerline_candidates=[
-                "Centerline model.vtk",
-                "centerline.vtk",
-                f"{chosen_model}_centerline.vtk",
-                f"{chosen_model}_Centerline model.vtk",
-            ],
+            centerline_candidates=_generic_centerline_candidates(chosen_model),
         )
     else:  # V1
         environment_stl, centerline_vtk = _resolve_asset(
@@ -487,9 +512,13 @@ def resolve_training_task(kwargs):
     else:
         task_id = str(chosen_model)
 
+    visual_stl_path = Path(environment_stl).parent / "visual_wall.stl"
+    visual_stl = str(visual_stl_path) if visual_stl_path.is_file() else None
+
     return {
         "chosen_model": chosen_model,
         "environment_stl": str(environment_stl),
+        "visual_stl": visual_stl,
         "centerline_vtk": str(centerline_vtk),
         "task_id": task_id,
     }
@@ -866,12 +895,14 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     task_cfg = resolve_training_task(kwargs)
     chosen_model = task_cfg["chosen_model"]
     environment_stl = task_cfg["environment_stl"]
+    visual_stl = task_cfg.get("visual_stl")
     centerline_vtk = task_cfg["centerline_vtk"]
     task_id = task_cfg["task_id"]
 
     print("[example_aortic_arch_nonros] chosen_model    =", chosen_model)
     print("[example_aortic_arch_nonros] task_id         =", task_id)
     print("[example_aortic_arch_nonros] environment_stl =", environment_stl)
+    print("[example_aortic_arch_nonros] visual_stl      =", visual_stl)
     print("[example_aortic_arch_nonros] centerline_vtk  =", centerline_vtk)
 
     if not Path(environment_stl).is_file():
@@ -902,7 +933,15 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         is_test_mesh = str(environment_stl).startswith(str(TEST_MESH_DIR))
 
     task_name_lower = str(task_id).lower()
-    if task_name_lower == "s1":
+    is_artificial_model = (
+        len(task_name_lower) == 3
+        and task_name_lower[0] in ("b", "c")
+        and task_name_lower[1:].isdigit()
+    )
+    if is_artificial_model:
+        # Artificial generator source units are millimetres.
+        centerline_scale = 0.001
+    elif task_name_lower == "s1":
         centerline_scale = 0.002
     elif is_test_mesh and task_name_lower.startswith("y"):
         centerline_scale = 0.002
@@ -1049,6 +1088,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     environment = mcr_environment.Environment(
         root_node=root_node,
         environment_stl=environment_stl,
+        visual_stl=visual_stl,
         name="aortic_arch",
         T_env_sim=T_env_sim,
         flip_normals=flip_normals_value,
@@ -1076,6 +1116,22 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         )
 
         endpoints = mcr_centerline.get_start_target_by_y(centerline_data)
+        if is_artificial_model:
+            # Generated path VTKs are deliberately ordered inlet -> target.
+            # Do not infer direction from world Y: T_env_sim rotates source Y
+            # into another simulation axis, and some branch outlets have lower
+            # source Z than the inlet.
+            generated_points = np.asarray(centerline_data.points_sim, dtype=np.float64)
+            if len(generated_points) < 2:
+                raise ValueError(f"Artificial centerline has fewer than 2 points: {centerline_vtk}")
+            centerline_data.start_index = 0
+            centerline_data.target_index = len(generated_points) - 1
+            endpoints = {
+                "start_index": 0,
+                "target_index": len(generated_points) - 1,
+                "start_point_sim": generated_points[0],
+                "target_point_sim": generated_points[-1],
+            }
         start_point_sim = endpoints["start_point_sim"]
         target_point_sim = endpoints["target_point_sim"]
 
@@ -1174,6 +1230,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         }
         if start_point_sim is not None and (
             chosen_model in alignment_models
+            or is_artificial_model
             or str(chosen_model).startswith("Y")
             or str(chosen_model).lower().startswith("aorta")
         ):

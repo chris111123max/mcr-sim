@@ -34,6 +34,7 @@ class Environment(Sofa.Core.Controller):
         color=[1., 0., 0., 0.3],
         scale='0.0005',
         visual=True,
+        visual_stl=None,
         collision_proximity=0.0,
         triangle_collision_proximity=None,
         line_point_collision_proximity=None,
@@ -45,6 +46,7 @@ class Environment(Sofa.Core.Controller):
 
         self.root_node = root_node
         self.environment_stl = environment_stl
+        self.visual_stl = visual_stl
         self.name_env = name
         self.color = color
 
@@ -128,10 +130,22 @@ class Environment(Sofa.Core.Controller):
             #VisuModel.addObject("RequiredPlugin", name="Sofa.GL.Component.Rendering3D")
             #VisuModel.addObject("RequiredPlugin", name="Sofa.Component.Visual")
             #VisuModel.addObject("RequiredPlugin", name="Sofa.GL.Component.Shader")
+            visual_source = '@../meshLoader'
+            if self.visual_stl:
+                VisuModel.addObject(
+                    'MeshSTLLoader',
+                    filename=self.visual_stl,
+                    flipNormals=flip_normals,
+                    triangulate=True,
+                    name='visualMeshLoader',
+                    rotation=rot_env_sim,
+                    translation=self.T_env_sim[0:3],
+                    scale=str(scale))
+                visual_source = '@visualMeshLoader'
             VisuModel.addObject(
                 'OglModel',
                 name="VisualOgl_model",
-                src='@../meshLoader',
+                src=visual_source,
                 color=self.color)
 
     def get_vessel_tree_positions(self):

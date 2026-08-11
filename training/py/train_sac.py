@@ -27,6 +27,9 @@ from stable_baselines3.common.utils import get_schedule_fn
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
 
+ARTIFICIAL_MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [
+    f"B{i:02d}" for i in range(1, 6)
+]
 
 ALL_MODEL_CHOICES = [
     "",
@@ -43,7 +46,7 @@ ALL_MODEL_CHOICES = [
     "0237",
     "aorta6",
     "S1",
-]
+] + ARTIFICIAL_MODEL_IDS
 
 TASK_IDS_FOR_LOGGING = [
     "0207_left",
@@ -57,7 +60,7 @@ TASK_IDS_FOR_LOGGING = [
     "0231",
     "0237",
     "aorta6",
-]
+] + ARTIFICIAL_MODEL_IDS
 
 MODEL_IDS_FOR_LOGGING = [
     "0207",
@@ -73,7 +76,7 @@ MODEL_IDS_FOR_LOGGING = [
     "0237",
     "aorta6",
     "S1",
-]
+] + ARTIFICIAL_MODEL_IDS
 
 
 class ExtraRolloutMetricsCallback(BaseCallback):
@@ -735,7 +738,7 @@ def main():
     print(f"  max_steps={args.max_episode_steps}")
     print(f"  radius_obs_scale={float(args.radius_observation_scale)*1000.0:.2f}mm")
     print(
-        f"  active_train_models=0207_left,0207_right,0210,V1  randomize_start_target={bool(args.randomize_start_target)} "
+        f"  active_train_models={','.join(ARTIFICIAL_MODEL_IDS)}  randomize_start_target={bool(args.randomize_start_target)} "
         f"radius={float(args.start_target_random_radius)*1000.0:.2f}mm  "
         f"randomize_initial_orientation={bool(args.randomize_initial_orientation)} "
         f"max_angle={float(args.initial_orientation_max_angle_deg):.1f}deg  "

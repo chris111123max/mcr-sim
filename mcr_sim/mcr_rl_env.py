@@ -161,7 +161,9 @@ class MCREnv(SofaEnv):
         self._actor_dynamic_history = deque(maxlen=self.actor_history_steps)
 
         # Uniform multi-vessel sampling. No priority sampling.
-        self.training_models = ["0207_left", "0207_right", "V1"]
+        self.training_models = [f"C{i:02d}" for i in range(1, 6)] + [
+            f"B{i:02d}" for i in range(1, 6)
+        ]
 
         if self.observation_type == ObservationType.STATE:
             self.observation_space = spaces.Box(
