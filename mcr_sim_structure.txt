@@ -1,0 +1,2385 @@
+.
+├── mcr_env
+│   ├── condarc
+│   ├── miniforge3
+│   │   ├── aarch64-conda-linux-gnu
+│   │   │   └── bin
+│   │   │       └── ld -> ../../bin/aarch64-conda-linux-gnu-ld
+│   │   ├── bin
+│   │   │   ├── aarch64-conda-linux-gnu-ld
+│   │   │   ├── activate
+│   │   │   ├── adig
+│   │   │   ├── ahost
+│   │   │   ├── archspec
+│   │   │   ├── bsdcat
+│   │   │   ├── bsdcpio
+│   │   │   ├── bsdtar
+│   │   │   ├── bsdunzip
+│   │   │   ├── bunzip2
+│   │   │   ├── bzcat
+│   │   │   ├── bzcmp -> bzdiff
+│   │   │   ├── bzdiff
+│   │   │   ├── bzegrep -> bzgrep
+│   │   │   ├── bzfgrep -> bzgrep
+│   │   │   ├── bzgrep
+│   │   │   ├── bzip2
+│   │   │   ├── bzip2recover
+│   │   │   ├── bzless -> bzmore
+│   │   │   ├── bzmore
+│   │   │   ├── captoinfo -> tic
+│   │   │   ├── clear
+│   │   │   ├── compile_et
+│   │   │   ├── conda
+│   │   │   ├── conda2solv
+│   │   │   ├── cph
+│   │   │   ├── c_rehash
+│   │   │   ├── curl-config
+│   │   │   ├── deactivate
+│   │   │   ├── distro
+│   │   │   ├── dumpsolv
+│   │   │   ├── gss-client
+│   │   │   ├── idle3 -> idle3.13
+│   │   │   ├── idle3.13
+│   │   │   ├── idna
+│   │   │   ├── infocmp
+│   │   │   ├── infotocap -> tic
+│   │   │   ├── installcheck
+│   │   │   ├── jsondiff
+│   │   │   ├── jsonpatch
+│   │   │   ├── jsonpointer
+│   │   │   ├── k5srvutil
+│   │   │   ├── kadmin
+│   │   │   ├── kdestroy
+│   │   │   ├── keyctl
+│   │   │   ├── kinit
+│   │   │   ├── klist
+│   │   │   ├── kpasswd
+│   │   │   ├── krb5-config
+│   │   │   ├── ksu
+│   │   │   ├── kswitch
+│   │   │   ├── ktutil
+│   │   │   ├── kvno
+│   │   │   ├── lz4
+│   │   │   ├── lz4c -> lz4
+│   │   │   ├── lz4cat -> lz4
+│   │   │   ├── mamba
+│   │   │   ├── mamba-package
+│   │   │   ├── menuinst
+│   │   │   ├── mergesolv
+│   │   │   ├── ncurses6-config
+│   │   │   ├── ncursesw6-config
+│   │   │   ├── nghttp
+│   │   │   ├── nghttpd
+│   │   │   ├── nghttpx
+│   │   │   ├── normalizer
+│   │   │   ├── openssl
+│   │   │   ├── pip
+│   │   │   ├── pip3
+│   │   │   ├── pydoc -> pydoc3.13
+│   │   │   ├── pydoc3 -> pydoc3.13
+│   │   │   ├── pydoc3.13
+│   │   │   ├── python -> python3.13
+│   │   │   ├── python3 -> python3.13
+│   │   │   ├── python3.1 -> python3.13
+│   │   │   ├── python3.13
+│   │   │   ├── python3.13-config
+│   │   │   ├── python3-config -> python3.13-config
+│   │   │   ├── repo2solv
+│   │   │   ├── reset -> tset
+│   │   │   ├── sclient
+│   │   │   ├── sim_client
+│   │   │   ├── sqlite3_analyzer
+│   │   │   ├── tabs
+│   │   │   ├── tclsh -> tclsh8.6
+│   │   │   ├── tclsh8.6
+│   │   │   ├── testsolv
+│   │   │   ├── tic
+│   │   │   ├── toe
+│   │   │   ├── tput
+│   │   │   ├── tqdm
+│   │   │   ├── tset
+│   │   │   ├── unlz4 -> lz4
+│   │   │   ├── unzstd -> zstd
+│   │   │   ├── uuclient
+│   │   │   ├── wish -> wish8.6
+│   │   │   ├── wish8.6
+│   │   │   ├── xmlcatalog
+│   │   │   ├── xmllint
+│   │   │   ├── zstd
+│   │   │   ├── zstdcat -> zstd
+│   │   │   ├── zstdgrep
+│   │   │   ├── zstdless
+│   │   │   └── zstdmt -> zstd
+│   │   ├── _conda -> /data/home/3220251075/mcr_sim/mcr_env/miniforge3/micromamba
+│   │   ├── condabin
+│   │   │   ├── conda
+│   │   │   └── mamba -> ../bin/mamba
+│   │   ├── conda-meta
+│   │   │   ├── archspec-0.2.5-pyhd8ed1ab_0.json
+│   │   │   ├── backports.zstd-1.5.0-py313h5c42d0f_0.json
+│   │   │   ├── boltons-25.0.0-pyhd8ed1ab_0.json
+│   │   │   ├── brotli-python-1.2.0-py313hb260801_1.json
+│   │   │   ├── bzip2-1.0.8-h4777abc_9.json
+│   │   │   ├── ca-certificates-2026.5.20-hbd8a1cb_0.json
+│   │   │   ├── c-ares-1.34.6-he30d5cf_0.json
+│   │   │   ├── certifi-2026.5.20-pyhd8ed1ab_0.json
+│   │   │   ├── cffi-2.0.0-py313h897158f_1.json
+│   │   │   ├── charset-normalizer-3.4.7-pyhd8ed1ab_0.json
+│   │   │   ├── conda-26.3.2-py313hd81a959_1.json
+│   │   │   ├── conda-libmamba-solver-26.4.2-pyhd8ed1ab_0.json
+│   │   │   ├── conda-package-handling-2.4.0-pyh7900ff3_2.json
+│   │   │   ├── conda-package-streaming-0.12.0-pyhd8ed1ab_0.json
+│   │   │   ├── cpp-expected-1.3.1-hdc560ac_0.json
+│   │   │   ├── distro-1.9.0-pyhd8ed1ab_1.json
+│   │   │   ├── fmt-12.1.0-h20c602a_0.json
+│   │   │   ├── frozendict-2.4.7-py313h6194ac5_0.json
+│   │   │   ├── h2-4.3.0-pyhcf101f3_0.json
+│   │   │   ├── history
+│   │   │   ├── hpack-4.1.0-pyhd8ed1ab_0.json
+│   │   │   ├── hyperframe-6.1.0-pyhd8ed1ab_0.json
+│   │   │   ├── idna-3.17-pyhcf101f3_0.json
+│   │   │   ├── initial-state.explicit.txt
+│   │   │   ├── jsonpatch-1.33-pyhd8ed1ab_1.json
+│   │   │   ├── jsonpointer-3.1.1-pyhcf101f3_0.json
+│   │   │   ├── keyutils-1.6.3-h86ecc28_0.json
+│   │   │   ├── krb5-1.22.2-hfd895c2_0.json
+│   │   │   ├── ld_impl_linux-aarch64-2.45.1-default_h1979696_102.json
+│   │   │   ├── libarchive-3.8.7-gpl_hbe7d12b_101.json
+│   │   │   ├── libcurl-8.20.0-hc57f145_0.json
+│   │   │   ├── libedit-3.1.20250104-pl5321h976ea20_0.json
+│   │   │   ├── libev-4.33-h31becfc_2.json
+│   │   │   ├── libexpat-2.8.1-hfae3067_0.json
+│   │   │   ├── libffi-3.5.2-h376a255_0.json
+│   │   │   ├── libgcc-15.2.0-h8acb6b2_19.json
+│   │   │   ├── libgcc-ng-15.2.0-he9431aa_19.json
+│   │   │   ├── libgomp-15.2.0-h8acb6b2_19.json
+│   │   │   ├── libiconv-1.18-h90929bb_2.json
+│   │   │   ├── liblzma-5.8.3-he30d5cf_0.json
+│   │   │   ├── libmamba-2.5.0-hc712cdd_0.json
+│   │   │   ├── libmambapy-2.5.0-py313h44afa9f_0.json
+│   │   │   ├── libmamba-spdlog-2.5.0-h3ad78e7_0.json
+│   │   │   ├── libmpdec-4.0.0-he30d5cf_1.json
+│   │   │   ├── libnghttp2-1.68.1-hd3077d7_0.json
+│   │   │   ├── libsolv-0.7.39-hdda61c4_0.json
+│   │   │   ├── libsqlite-3.53.1-h022381a_0.json
+│   │   │   ├── libssh2-1.11.1-h18c354c_0.json
+│   │   │   ├── libstdcxx-15.2.0-hef695bb_19.json
+│   │   │   ├── libuuid-2.42.1-h1022ec0_0.json
+│   │   │   ├── libxml2-16-2.15.3-h064b767_0.json
+│   │   │   ├── libxml2-2.15.3-h9ba8346_0.json
+│   │   │   ├── libzlib-1.3.2-hdc9db2a_2.json
+│   │   │   ├── lz4-c-1.10.0-h5ad3122_1.json
+│   │   │   ├── lzo-2.10-h80f16a2_1002.json
+│   │   │   ├── mamba-2.5.0-hd347465_0.json
+│   │   │   ├── menuinst-2.4.2-py313hd81a959_0.json
+│   │   │   ├── msgpack-python-1.1.2-py313he6111f0_1.json
+│   │   │   ├── ncurses-6.6-hf8d1292_0.json
+│   │   │   ├── nlohmann_json-abi-3.12.0-h0f90c79_1.json
+│   │   │   ├── _openmp_mutex-4.5-20_gnu.json
+│   │   │   ├── openssl-3.6.2-h546c87b_0.json
+│   │   │   ├── packaging-26.2-pyhc364b38_0.json
+│   │   │   ├── pip-26.1.2-pyh145f28c_0.json
+│   │   │   ├── platformdirs-4.10.0-pyhcf101f3_0.json
+│   │   │   ├── pluggy-1.6.0-pyhf9edf01_1.json
+│   │   │   ├── pybind11-abi-11-hc364b38_1.json
+│   │   │   ├── pycosat-0.6.6-py313h6194ac5_3.json
+│   │   │   ├── pycparser-3.0-pyhcf101f3_0.json
+│   │   │   ├── pysocks-1.7.1-pyha55dd90_7.json
+│   │   │   ├── python-3.13.13-h11c0449_100_cp313.json
+│   │   │   ├── python_abi-3.13-8_cp313.json
+│   │   │   ├── readline-8.3-hb682ff5_0.json
+│   │   │   ├── reproc-14.2.7.post0-he30d5cf_1.json
+│   │   │   ├── reproc-cpp-14.2.7.post0-hfae3067_1.json
+│   │   │   ├── requests-2.34.2-pyhcf101f3_0.json
+│   │   │   ├── ruamel.yaml-0.18.17-py313h62ef0ea_2.json
+│   │   │   ├── ruamel.yaml.clib-0.2.15-py313h62ef0ea_1.json
+│   │   │   ├── setuptools-82.0.1-pyh332efcf_0.json
+│   │   │   ├── simdjson-4.2.4-hfefdfc9_0.json
+│   │   │   ├── spdlog-1.17.0-h9f97df7_1.json
+│   │   │   ├── tk-8.6.13-noxft_h0dc03b3_103.json
+│   │   │   ├── tqdm-4.67.3-pyh8f84b5b_0.json
+│   │   │   ├── truststore-0.10.4-pyhcf101f3_0.json
+│   │   │   ├── tzdata-2025c-hc9c84f9_1.json
+│   │   │   ├── urllib3-2.7.0-pyhd8ed1ab_0.json
+│   │   │   ├── yaml-cpp-0.8.0-h5ad3122_0.json
+│   │   │   ├── zstandard-0.25.0-py313h62ef0ea_1.json
+│   │   │   └── zstd-1.5.7-h85ac4a6_6.json
+│   │   ├── .condarc
+│   │   ├── envs
+│   │   │   ├── .conda_envs_dir_test
+│   │   │   └── mcr_sofa
+│   │   │       ├── aarch64-conda-linux-gnu
+│   │   │       ├── bin
+│   │   │       ├── compiler_compat
+│   │   │       ├── conda-meta
+│   │   │       ├── etc
+│   │   │       ├── include
+│   │   │       ├── lib
+│   │   │       ├── share
+│   │   │       └── ssl
+│   │   ├── etc
+│   │   │   ├── conda
+│   │   │   │   ├── activate.d
+│   │   │   │   └── test-files
+│   │   │   ├── fish
+│   │   │   │   └── conf.d
+│   │   │   ├── profile.d
+│   │   │   │   ├── conda.csh
+│   │   │   │   ├── conda.sh
+│   │   │   │   └── mamba.sh
+│   │   │   └── request-key.conf
+│   │   ├── include
+│   │   │   ├── archive_entry.h
+│   │   │   ├── archive.h
+│   │   │   ├── ares_build.h
+│   │   │   ├── ares_dns.h
+│   │   │   ├── ares_dns_record.h
+│   │   │   ├── ares.h
+│   │   │   ├── ares_nameser.h
+│   │   │   ├── ares_version.h
+│   │   │   ├── bzlib.h
+│   │   │   ├── com_err.h
+│   │   │   ├── curl
+│   │   │   │   ├── curl.h
+│   │   │   │   ├── curlver.h
+│   │   │   │   ├── easy.h
+│   │   │   │   ├── header.h
+│   │   │   │   ├── mprintf.h
+│   │   │   │   ├── multi.h
+│   │   │   │   ├── options.h
+│   │   │   │   ├── stdcheaders.h
+│   │   │   │   ├── system.h
+│   │   │   │   ├── typecheck-gcc.h
+│   │   │   │   ├── urlapi.h
+│   │   │   │   └── websockets.h
+│   │   │   ├── cursesapp.h
+│   │   │   ├── cursesf.h
+│   │   │   ├── curses.h
+│   │   │   ├── cursesm.h
+│   │   │   ├── cursesp.h
+│   │   │   ├── cursesw.h
+│   │   │   ├── cursslk.h
+│   │   │   ├── default.h
+│   │   │   ├── editline
+│   │   │   │   └── readline.h
+│   │   │   ├── eti.h
+│   │   │   ├── etip.h
+│   │   │   ├── ev++.h
+│   │   │   ├── ev.h
+│   │   │   ├── fakemysql.h
+│   │   │   ├── fakepq.h
+│   │   │   ├── fakesql.h
+│   │   │   ├── ffi.h
+│   │   │   ├── ffitarget.h
+│   │   │   ├── fmt
+│   │   │   │   ├── args.h
+│   │   │   │   ├── base.h
+│   │   │   │   ├── chrono.h
+│   │   │   │   ├── color.h
+│   │   │   │   ├── compile.h
+│   │   │   │   ├── core.h
+│   │   │   │   ├── format.h
+│   │   │   │   ├── format-inl.h
+│   │   │   │   ├── os.h
+│   │   │   │   ├── ostream.h
+│   │   │   │   ├── printf.h
+│   │   │   │   ├── ranges.h
+│   │   │   │   ├── std.h
+│   │   │   │   └── xchar.h
+│   │   │   ├── form.h
+│   │   │   ├── gssapi
+│   │   │   │   ├── gssapi_alloc.h
+│   │   │   │   ├── gssapi_ext.h
+│   │   │   │   ├── gssapi_generic.h
+│   │   │   │   ├── gssapi.h
+│   │   │   │   ├── gssapi_krb5.h
+│   │   │   │   └── mechglue.h
+│   │   │   ├── gssapi.h
+│   │   │   ├── gssrpc
+│   │   │   │   ├── auth_gssapi.h
+│   │   │   │   ├── auth_gss.h
+│   │   │   │   ├── auth.h
+│   │   │   │   ├── auth_unix.h
+│   │   │   │   ├── clnt.h
+│   │   │   │   ├── netdb.h
+│   │   │   │   ├── pmap_clnt.h
+│   │   │   │   ├── pmap_prot.h
+│   │   │   │   ├── pmap_rmt.h
+│   │   │   │   ├── rename.h
+│   │   │   │   ├── rpc.h
+│   │   │   │   ├── rpc_msg.h
+│   │   │   │   ├── svc_auth.h
+│   │   │   │   ├── svc.h
+│   │   │   │   ├── types.h
+│   │   │   │   └── xdr.h
+│   │   │   ├── histedit.h
+│   │   │   ├── iconv.h
+│   │   │   ├── itcl2TclOO.h
+│   │   │   ├── itclDecls.h
+│   │   │   ├── itcl.h
+│   │   │   ├── itclIntDecls.h
+│   │   │   ├── itclInt.h
+│   │   │   ├── itclMigrate2TclCore.h
+│   │   │   ├── itclTclIntStubsFcn.h
+│   │   │   ├── kadm5
+│   │   │   │   ├── admin.h
+│   │   │   │   ├── chpass_util_strings.h
+│   │   │   │   └── kadm_err.h
+│   │   │   ├── kdb.h
+│   │   │   ├── keyutils.h
+│   │   │   ├── krad.h
+│   │   │   ├── krb5
+│   │   │   │   ├── ccselect_plugin.h
+│   │   │   │   ├── certauth_plugin.h
+│   │   │   │   ├── clpreauth_plugin.h
+│   │   │   │   ├── hostrealm_plugin.h
+│   │   │   │   ├── kadm5_auth_plugin.h
+│   │   │   │   ├── kadm5_hook_plugin.h
+│   │   │   │   ├── kdcpolicy_plugin.h
+│   │   │   │   ├── kdcpreauth_plugin.h
+│   │   │   │   ├── krb5.h
+│   │   │   │   ├── localauth_plugin.h
+│   │   │   │   ├── locate_plugin.h
+│   │   │   │   ├── plugin.h
+│   │   │   │   ├── preauth_plugin.h
+│   │   │   │   └── pwqual_plugin.h
+│   │   │   ├── krb5.h
+│   │   │   ├── ks_names.h
+│   │   │   ├── libcharset.h
+│   │   │   ├── libssh2.h
+│   │   │   ├── libssh2_publickey.h
+│   │   │   ├── libssh2_sftp.h
+│   │   │   ├── localcharset.h
+│   │   │   ├── lz4file.h
+│   │   │   ├── lz4frame.h
+│   │   │   ├── lz4frame_static.h
+│   │   │   ├── lz4.h
+│   │   │   ├── lz4hc.h
+│   │   │   ├── lzo
+│   │   │   │   ├── lzo1a.h
+│   │   │   │   ├── lzo1b.h
+│   │   │   │   ├── lzo1c.h
+│   │   │   │   ├── lzo1f.h
+│   │   │   │   ├── lzo1.h
+│   │   │   │   ├── lzo1x.h
+│   │   │   │   ├── lzo1y.h
+│   │   │   │   ├── lzo1z.h
+│   │   │   │   ├── lzo2a.h
+│   │   │   │   ├── lzo_asm.h
+│   │   │   │   ├── lzoconf.h
+│   │   │   │   ├── lzodefs.h
+│   │   │   │   └── lzoutil.h
+│   │   │   ├── mamba
+│   │   │   │   ├── api
+│   │   │   │   ├── core
+│   │   │   │   ├── download
+│   │   │   │   ├── fs
+│   │   │   │   ├── solver
+│   │   │   │   ├── spdlog
+│   │   │   │   ├── specs
+│   │   │   │   ├── util
+│   │   │   │   ├── validation
+│   │   │   │   └── version.hpp
+│   │   │   ├── menu.h
+│   │   │   ├── mysqlStubs.h
+│   │   │   ├── ncurses
+│   │   │   │   ├── cursesapp.h -> ../cursesapp.h
+│   │   │   │   ├── cursesf.h -> ../cursesf.h
+│   │   │   │   ├── curses.h -> ../curses.h
+│   │   │   │   ├── cursesm.h -> ../cursesm.h
+│   │   │   │   ├── cursesp.h -> ../cursesp.h
+│   │   │   │   ├── cursesw.h -> ../cursesw.h
+│   │   │   │   ├── cursslk.h -> ../cursslk.h
+│   │   │   │   ├── eti.h -> ../eti.h
+│   │   │   │   ├── etip.h -> ../etip.h
+│   │   │   │   ├── form.h -> ../form.h
+│   │   │   │   ├── menu.h -> ../menu.h
+│   │   │   │   ├── ncurses_dll.h -> ../ncurses_dll.h
+│   │   │   │   ├── ncurses.h -> ../curses.h
+│   │   │   │   ├── panel.h -> ../panel.h
+│   │   │   │   ├── termcap.h -> ../termcap.h
+│   │   │   │   ├── term_entry.h -> ../term_entry.h
+│   │   │   │   ├── term.h -> ../term.h
+│   │   │   │   └── unctrl.h -> ../unctrl.h
+│   │   │   ├── ncurses_dll.h
+│   │   │   ├── ncurses.h -> curses.h
+│   │   │   ├── ncursesw
+│   │   │   │   ├── cursesapp.h -> ../cursesapp.h
+│   │   │   │   ├── cursesf.h -> ../cursesf.h
+│   │   │   │   ├── curses.h -> ../curses.h
+│   │   │   │   ├── cursesm.h -> ../cursesm.h
+│   │   │   │   ├── cursesp.h -> ../cursesp.h
+│   │   │   │   ├── cursesw.h -> ../cursesw.h
+│   │   │   │   ├── cursslk.h -> ../cursslk.h
+│   │   │   │   ├── eti.h -> ../eti.h
+│   │   │   │   ├── etip.h -> ../etip.h
+│   │   │   │   ├── form.h -> ../form.h
+│   │   │   │   ├── menu.h -> ../menu.h
+│   │   │   │   ├── ncurses_dll.h -> ../ncurses_dll.h
+│   │   │   │   ├── ncurses.h -> ../curses.h
+│   │   │   │   ├── panel.h -> ../panel.h
+│   │   │   │   ├── termcap.h -> ../termcap.h
+│   │   │   │   ├── term_entry.h -> ../term_entry.h
+│   │   │   │   ├── term.h -> ../term.h
+│   │   │   │   └── unctrl.h -> ../unctrl.h
+│   │   │   ├── nghttp2
+│   │   │   │   ├── nghttp2.h
+│   │   │   │   └── nghttp2ver.h
+│   │   │   ├── odbcStubs.h
+│   │   │   ├── openssl
+│   │   │   │   ├── aes.h
+│   │   │   │   ├── asn1err.h
+│   │   │   │   ├── asn1.h
+│   │   │   │   ├── asn1t.h
+│   │   │   │   ├── asyncerr.h
+│   │   │   │   ├── async.h
+│   │   │   │   ├── bioerr.h
+│   │   │   │   ├── bio.h
+│   │   │   │   ├── blowfish.h
+│   │   │   │   ├── bnerr.h
+│   │   │   │   ├── bn.h
+│   │   │   │   ├── buffererr.h
+│   │   │   │   ├── buffer.h
+│   │   │   │   ├── byteorder.h
+│   │   │   │   ├── camellia.h
+│   │   │   │   ├── cast.h
+│   │   │   │   ├── cmac.h
+│   │   │   │   ├── cmperr.h
+│   │   │   │   ├── cmp.h
+│   │   │   │   ├── cmp_util.h
+│   │   │   │   ├── cmserr.h
+│   │   │   │   ├── cms.h
+│   │   │   │   ├── comperr.h
+│   │   │   │   ├── comp.h
+│   │   │   │   ├── conf_api.h
+│   │   │   │   ├── conferr.h
+│   │   │   │   ├── conf.h
+│   │   │   │   ├── configuration.h
+│   │   │   │   ├── conftypes.h
+│   │   │   │   ├── core_dispatch.h
+│   │   │   │   ├── core.h
+│   │   │   │   ├── core_names.h
+│   │   │   │   ├── core_object.h
+│   │   │   │   ├── crmferr.h
+│   │   │   │   ├── crmf.h
+│   │   │   │   ├── cryptoerr.h
+│   │   │   │   ├── cryptoerr_legacy.h
+│   │   │   │   ├── crypto.h
+│   │   │   │   ├── cterr.h
+│   │   │   │   ├── ct.h
+│   │   │   │   ├── decodererr.h
+│   │   │   │   ├── decoder.h
+│   │   │   │   ├── des.h
+│   │   │   │   ├── dherr.h
+│   │   │   │   ├── dh.h
+│   │   │   │   ├── dsaerr.h
+│   │   │   │   ├── dsa.h
+│   │   │   │   ├── dtls1.h
+│   │   │   │   ├── ebcdic.h
+│   │   │   │   ├── ecdh.h
+│   │   │   │   ├── ecdsa.h
+│   │   │   │   ├── ecerr.h
+│   │   │   │   ├── ec.h
+│   │   │   │   ├── encodererr.h
+│   │   │   │   ├── encoder.h
+│   │   │   │   ├── engineerr.h
+│   │   │   │   ├── engine.h
+│   │   │   │   ├── e_os2.h
+│   │   │   │   ├── e_ostime.h
+│   │   │   │   ├── err.h
+│   │   │   │   ├── esserr.h
+│   │   │   │   ├── ess.h
+│   │   │   │   ├── evperr.h
+│   │   │   │   ├── evp.h
+│   │   │   │   ├── fipskey.h
+│   │   │   │   ├── fips_names.h
+│   │   │   │   ├── hmac.h
+│   │   │   │   ├── hpke.h
+│   │   │   │   ├── httperr.h
+│   │   │   │   ├── http.h
+│   │   │   │   ├── idea.h
+│   │   │   │   ├── indicator.h
+│   │   │   │   ├── kdferr.h
+│   │   │   │   ├── kdf.h
+│   │   │   │   ├── lhash.h
+│   │   │   │   ├── macros.h
+│   │   │   │   ├── md2.h
+│   │   │   │   ├── md4.h
+│   │   │   │   ├── md5.h
+│   │   │   │   ├── mdc2.h
+│   │   │   │   ├── ml_kem.h
+│   │   │   │   ├── modes.h
+│   │   │   │   ├── objectserr.h
+│   │   │   │   ├── objects.h
+│   │   │   │   ├── obj_mac.h
+│   │   │   │   ├── ocsperr.h
+│   │   │   │   ├── ocsp.h
+│   │   │   │   ├── opensslconf.h
+│   │   │   │   ├── opensslv.h
+│   │   │   │   ├── ossl_typ.h
+│   │   │   │   ├── param_build.h
+│   │   │   │   ├── params.h
+│   │   │   │   ├── pem2.h
+│   │   │   │   ├── pemerr.h
+│   │   │   │   ├── pem.h
+│   │   │   │   ├── pkcs12err.h
+│   │   │   │   ├── pkcs12.h
+│   │   │   │   ├── pkcs7err.h
+│   │   │   │   ├── pkcs7.h
+│   │   │   │   ├── proverr.h
+│   │   │   │   ├── provider.h
+│   │   │   │   ├── prov_ssl.h
+│   │   │   │   ├── quic.h
+│   │   │   │   ├── randerr.h
+│   │   │   │   ├── rand.h
+│   │   │   │   ├── rc2.h
+│   │   │   │   ├── rc4.h
+│   │   │   │   ├── rc5.h
+│   │   │   │   ├── ripemd.h
+│   │   │   │   ├── rsaerr.h
+│   │   │   │   ├── rsa.h
+│   │   │   │   ├── safestack.h
+│   │   │   │   ├── seed.h
+│   │   │   │   ├── self_test.h
+│   │   │   │   ├── sha.h
+│   │   │   │   ├── srp.h
+│   │   │   │   ├── srtp.h
+│   │   │   │   ├── ssl2.h
+│   │   │   │   ├── ssl3.h
+│   │   │   │   ├── sslerr.h
+│   │   │   │   ├── sslerr_legacy.h
+│   │   │   │   ├── ssl.h
+│   │   │   │   ├── stack.h
+│   │   │   │   ├── storeerr.h
+│   │   │   │   ├── store.h
+│   │   │   │   ├── symhacks.h
+│   │   │   │   ├── thread.h
+│   │   │   │   ├── tls1.h
+│   │   │   │   ├── trace.h
+│   │   │   │   ├── tserr.h
+│   │   │   │   ├── ts.h
+│   │   │   │   ├── txt_db.h
+│   │   │   │   ├── types.h
+│   │   │   │   ├── uierr.h
+│   │   │   │   ├── ui.h
+│   │   │   │   ├── whrlpool.h
+│   │   │   │   ├── x509_acert.h
+│   │   │   │   ├── x509err.h
+│   │   │   │   ├── x509.h
+│   │   │   │   ├── x509v3err.h
+│   │   │   │   ├── x509v3.h
+│   │   │   │   └── x509_vfy.h
+│   │   │   ├── panel.h
+│   │   │   ├── pqStubs.h
+│   │   │   ├── profile.h
+│   │   │   ├── python3.13
+│   │   │   │   ├── abstract.h
+│   │   │   │   ├── bltinmodule.h
+│   │   │   │   ├── boolobject.h
+│   │   │   │   ├── bytearrayobject.h
+│   │   │   │   ├── bytesobject.h
+│   │   │   │   ├── ceval.h
+│   │   │   │   ├── codecs.h
+│   │   │   │   ├── compile.h
+│   │   │   │   ├── complexobject.h
+│   │   │   │   ├── cpython
+│   │   │   │   ├── critical_section.h
+│   │   │   │   ├── datetime.h
+│   │   │   │   ├── descrobject.h
+│   │   │   │   ├── dictobject.h
+│   │   │   │   ├── dynamic_annotations.h
+│   │   │   │   ├── enumobject.h
+│   │   │   │   ├── errcode.h
+│   │   │   │   ├── exports.h
+│   │   │   │   ├── fileobject.h
+│   │   │   │   ├── fileutils.h
+│   │   │   │   ├── floatobject.h
+│   │   │   │   ├── frameobject.h
+│   │   │   │   ├── genericaliasobject.h
+│   │   │   │   ├── import.h
+│   │   │   │   ├── internal
+│   │   │   │   ├── intrcheck.h
+│   │   │   │   ├── iterobject.h
+│   │   │   │   ├── listobject.h
+│   │   │   │   ├── lock.h
+│   │   │   │   ├── longobject.h
+│   │   │   │   ├── marshal.h
+│   │   │   │   ├── memoryobject.h
+│   │   │   │   ├── methodobject.h
+│   │   │   │   ├── modsupport.h
+│   │   │   │   ├── moduleobject.h
+│   │   │   │   ├── monitoring.h
+│   │   │   │   ├── object.h
+│   │   │   │   ├── objimpl.h
+│   │   │   │   ├── opcode.h
+│   │   │   │   ├── opcode_ids.h
+│   │   │   │   ├── osdefs.h
+│   │   │   │   ├── osmodule.h
+│   │   │   │   ├── patchlevel.h
+│   │   │   │   ├── pyatomic.h
+│   │   │   │   ├── pybuffer.h
+│   │   │   │   ├── pycapsule.h
+│   │   │   │   ├── pyconfig.h
+│   │   │   │   ├── py_curses.h
+│   │   │   │   ├── pydtrace.h
+│   │   │   │   ├── pyerrors.h
+│   │   │   │   ├── pyexpat.h
+│   │   │   │   ├── pyframe.h
+│   │   │   │   ├── pyhash.h
+│   │   │   │   ├── pylifecycle.h
+│   │   │   │   ├── pymacconfig.h
+│   │   │   │   ├── pymacro.h
+│   │   │   │   ├── pymath.h
+│   │   │   │   ├── pymem.h
+│   │   │   │   ├── pyport.h
+│   │   │   │   ├── pystate.h
+│   │   │   │   ├── pystats.h
+│   │   │   │   ├── pystrcmp.h
+│   │   │   │   ├── pystrtod.h
+│   │   │   │   ├── Python.h
+│   │   │   │   ├── pythonrun.h
+│   │   │   │   ├── pythread.h
+│   │   │   │   ├── pytypedefs.h
+│   │   │   │   ├── rangeobject.h
+│   │   │   │   ├── setobject.h
+│   │   │   │   ├── sliceobject.h
+│   │   │   │   ├── structmember.h
+│   │   │   │   ├── structseq.h
+│   │   │   │   ├── sysmodule.h
+│   │   │   │   ├── traceback.h
+│   │   │   │   ├── tupleobject.h
+│   │   │   │   ├── typeslots.h
+│   │   │   │   ├── unicodeobject.h
+│   │   │   │   ├── warnings.h
+│   │   │   │   └── weakrefobject.h
+│   │   │   ├── readline
+│   │   │   │   ├── chardefs.h
+│   │   │   │   ├── history.h
+│   │   │   │   ├── keymaps.h
+│   │   │   │   ├── readline.h
+│   │   │   │   ├── rlconf.h
+│   │   │   │   ├── rlstdc.h
+│   │   │   │   ├── rltypedefs.h
+│   │   │   │   └── tilde.h
+│   │   │   ├── reproc
+│   │   │   │   ├── drain.h
+│   │   │   │   ├── export.h
+│   │   │   │   ├── reproc.h
+│   │   │   │   └── run.h
+│   │   │   ├── reproc++
+│   │   │   │   ├── arguments.hpp
+│   │   │   │   ├── detail
+│   │   │   │   ├── drain.hpp
+│   │   │   │   ├── env.hpp
+│   │   │   │   ├── export.hpp
+│   │   │   │   ├── input.hpp
+│   │   │   │   ├── reproc.hpp
+│   │   │   │   └── run.hpp
+│   │   │   ├── simdjson.h
+│   │   │   ├── solv
+│   │   │   │   ├── bitmap.h
+│   │   │   │   ├── chksum.h
+│   │   │   │   ├── conda.h
+│   │   │   │   ├── dataiterator.h
+│   │   │   │   ├── dirpool.h
+│   │   │   │   ├── evr.h
+│   │   │   │   ├── hash.h
+│   │   │   │   ├── knownid.h
+│   │   │   │   ├── policy.h
+│   │   │   │   ├── poolarch.h
+│   │   │   │   ├── pool.h
+│   │   │   │   ├── poolid.h
+│   │   │   │   ├── pooltypes.h
+│   │   │   │   ├── poolvendor.h
+│   │   │   │   ├── problems.h
+│   │   │   │   ├── queue.h
+│   │   │   │   ├── repo_conda.h
+│   │   │   │   ├── repodata.h
+│   │   │   │   ├── repo.h
+│   │   │   │   ├── repo_solv.h
+│   │   │   │   ├── repo_write.h
+│   │   │   │   ├── rules.h
+│   │   │   │   ├── selection.h
+│   │   │   │   ├── solvable.h
+│   │   │   │   ├── solverdebug.h
+│   │   │   │   ├── solver.h
+│   │   │   │   ├── solvversion.h
+│   │   │   │   ├── solv_xfopen.h
+│   │   │   │   ├── strpool.h
+│   │   │   │   ├── testcase.h
+│   │   │   │   ├── tools_util.h
+│   │   │   │   ├── transaction.h
+│   │   │   │   └── util.h
+│   │   │   ├── spdlog
+│   │   │   │   ├── async.h
+│   │   │   │   ├── async_logger.h
+│   │   │   │   ├── async_logger-inl.h
+│   │   │   │   ├── cfg
+│   │   │   │   ├── common.h
+│   │   │   │   ├── common-inl.h
+│   │   │   │   ├── details
+│   │   │   │   ├── fmt
+│   │   │   │   ├── formatter.h
+│   │   │   │   ├── fwd.h
+│   │   │   │   ├── logger.h
+│   │   │   │   ├── logger-inl.h
+│   │   │   │   ├── mdc.h
+│   │   │   │   ├── pattern_formatter.h
+│   │   │   │   ├── pattern_formatter-inl.h
+│   │   │   │   ├── sinks
+│   │   │   │   ├── spdlog.h
+│   │   │   │   ├── spdlog-inl.h
+│   │   │   │   ├── stopwatch.h
+│   │   │   │   ├── tweakme.h
+│   │   │   │   └── version.h
+│   │   │   ├── sqlite3ext.h
+│   │   │   ├── sqlite3.h
+│   │   │   ├── tclDecls.h
+│   │   │   ├── tcl.h
+│   │   │   ├── tclIntDecls.h
+│   │   │   ├── tclInt.h
+│   │   │   ├── tclIntPlatDecls.h
+│   │   │   ├── tclOODecls.h
+│   │   │   ├── tclOO.h
+│   │   │   ├── tclOOIntDecls.h
+│   │   │   ├── tclOOInt.h
+│   │   │   ├── tclPlatDecls.h
+│   │   │   ├── tclPort.h
+│   │   │   ├── tclThread.h
+│   │   │   ├── tclTomMathDecls.h
+│   │   │   ├── tclTomMath.h
+│   │   │   ├── tclUnixPort.h
+│   │   │   ├── tdbcDecls.h
+│   │   │   ├── tdbc.h
+│   │   │   ├── tdbcInt.h
+│   │   │   ├── termcap.h
+│   │   │   ├── term_entry.h
+│   │   │   ├── term.h
+│   │   │   ├── tk3d.h
+│   │   │   ├── tkArray.h
+│   │   │   ├── tkBusy.h
+│   │   │   ├── tkButton.h
+│   │   │   ├── tkCanvas.h
+│   │   │   ├── tkColor.h
+│   │   │   ├── tkDecls.h
+│   │   │   ├── tkDList.h
+│   │   │   ├── tkEntry.h
+│   │   │   ├── tkFileFilter.h
+│   │   │   ├── tkFont.h
+│   │   │   ├── tk.h
+│   │   │   ├── tkImgPhoto.h
+│   │   │   ├── tkIntDecls.h
+│   │   │   ├── tkInt.h
+│   │   │   ├── tkIntPlatDecls.h
+│   │   │   ├── tkIntXlibDecls.h
+│   │   │   ├── tkMacOSXColor.h
+│   │   │   ├── tkMacOSXConstants.h
+│   │   │   ├── tkMacOSXCursors.h
+│   │   │   ├── tkMacOSXDebug.h
+│   │   │   ├── tkMacOSXDefault.h
+│   │   │   ├── tkMacOSXEvent.h
+│   │   │   ├── tkMacOSXFileTypes.h
+│   │   │   ├── tkMacOSXFont.h
+│   │   │   ├── tkMacOSX.h
+│   │   │   ├── tkMacOSXInt.h
+│   │   │   ├── tkMacOSXKeysyms.h
+│   │   │   ├── tkMacOSXPort.h
+│   │   │   ├── tkMacOSXPrivate.h
+│   │   │   ├── tkMacOSXWm.h
+│   │   │   ├── tkMacOSXXCursors.h
+│   │   │   ├── tkMenubutton.h
+│   │   │   ├── tkMenu.h
+│   │   │   ├── tkPlatDecls.h
+│   │   │   ├── tkPort.h
+│   │   │   ├── tkScale.h
+│   │   │   ├── tkScrollbar.h
+│   │   │   ├── tkSelect.h
+│   │   │   ├── tkText.h
+│   │   │   ├── tkUndo.h
+│   │   │   ├── tkUnixDefault.h
+│   │   │   ├── tkUnixInt.h
+│   │   │   ├── tkUnixPort.h
+│   │   │   ├── tkUuid.h
+│   │   │   ├── tl
+│   │   │   │   └── expected.hpp
+│   │   │   ├── unctrl.h
+│   │   │   ├── uuid
+│   │   │   │   └── uuid.h
+│   │   │   ├── verto.h
+│   │   │   ├── verto-module.h
+│   │   │   ├── yaml-cpp
+│   │   │   │   ├── anchor.h
+│   │   │   │   ├── binary.h
+│   │   │   │   ├── contrib
+│   │   │   │   ├── depthguard.h
+│   │   │   │   ├── dll.h
+│   │   │   │   ├── emitfromevents.h
+│   │   │   │   ├── emitterdef.h
+│   │   │   │   ├── emitter.h
+│   │   │   │   ├── emittermanip.h
+│   │   │   │   ├── emitterstyle.h
+│   │   │   │   ├── eventhandler.h
+│   │   │   │   ├── exceptions.h
+│   │   │   │   ├── mark.h
+│   │   │   │   ├── node
+│   │   │   │   ├── noexcept.h
+│   │   │   │   ├── null.h
+│   │   │   │   ├── ostream_wrapper.h
+│   │   │   │   ├── parser.h
+│   │   │   │   ├── stlemitter.h
+│   │   │   │   ├── traits.h
+│   │   │   │   └── yaml.h
+│   │   │   ├── zdict.h
+│   │   │   ├── zstd_errors.h
+│   │   │   └── zstd.h
+│   │   ├── lib
+│   │   │   ├── cmake
+│   │   │   │   ├── c-ares
+│   │   │   │   ├── fmt
+│   │   │   │   ├── libmamba
+│   │   │   │   ├── libmamba-spdlog
+│   │   │   │   ├── libssh2
+│   │   │   │   ├── OpenSSL
+│   │   │   │   ├── reproc
+│   │   │   │   ├── reproc++
+│   │   │   │   ├── simdjson
+│   │   │   │   ├── spdlog
+│   │   │   │   ├── yaml-cpp
+│   │   │   │   └── zstd
+│   │   │   ├── itcl4.2.3
+│   │   │   │   ├── itclConfig.sh
+│   │   │   │   ├── itclHullCmds.tcl
+│   │   │   │   ├── itcl.tcl
+│   │   │   │   ├── itclWidget.tcl
+│   │   │   │   ├── libitcl4.2.3.so
+│   │   │   │   ├── libitclstub4.2.3.a
+│   │   │   │   └── pkgIndex.tcl
+│   │   │   ├── krb5
+│   │   │   │   └── plugins
+│   │   │   ├── libarchive.a
+│   │   │   ├── libarchive.so -> libarchive.so.13.8.7
+│   │   │   ├── libarchive.so.13 -> libarchive.so.13.8.7
+│   │   │   ├── libarchive.so.13.8.7
+│   │   │   ├── libatomic.so -> libatomic.so.1.2.0
+│   │   │   ├── libatomic.so.1 -> libatomic.so.1.2.0
+│   │   │   ├── libatomic.so.1.2.0
+│   │   │   ├── libbz2.a
+│   │   │   ├── libbz2.so -> libbz2.so.1.0.8
+│   │   │   ├── libbz2.so.1.0 -> libbz2.so.1.0.8
+│   │   │   ├── libbz2.so.1.0.8
+│   │   │   ├── libcares.so -> libcares.so.2.19.5
+│   │   │   ├── libcares.so.2 -> libcares.so.2.19.5
+│   │   │   ├── libcares.so.2.19.5
+│   │   │   ├── libcharset.a
+│   │   │   ├── libcharset.so -> libcharset.so.1.0.0
+│   │   │   ├── libcharset.so.1 -> libcharset.so.1.0.0
+│   │   │   ├── libcharset.so.1.0.0
+│   │   │   ├── libcom_err.so -> libcom_err.so.3.0
+│   │   │   ├── libcom_err.so.3 -> libcom_err.so.3.0
+│   │   │   ├── libcom_err.so.3.0
+│   │   │   ├── libcrypto.so -> libcrypto.so.3
+│   │   │   ├── libcrypto.so.3
+│   │   │   ├── libcurl.so -> libcurl.so.4.8.0
+│   │   │   ├── libcurl.so.4 -> libcurl.so.4.8.0
+│   │   │   ├── libcurl.so.4.8.0
+│   │   │   ├── libedit.so -> libedit.so.0.0.75
+│   │   │   ├── libedit.so.0 -> libedit.so.0.0.75
+│   │   │   ├── libedit.so.0.0.75
+│   │   │   ├── libev.so -> libev.so.4.0.0
+│   │   │   ├── libev.so.4 -> libev.so.4.0.0
+│   │   │   ├── libev.so.4.0.0
+│   │   │   ├── libexpat.so.1 -> libexpat.so.1.12.1
+│   │   │   ├── libexpat.so.1.12.1
+│   │   │   ├── libffi.a
+│   │   │   ├── libffi.so -> libffi.so.8.2.0
+│   │   │   ├── libffi.so.8 -> libffi.so.8.2.0
+│   │   │   ├── libffi.so.8.2.0
+│   │   │   ├── libfmt.so -> libfmt.so.12.1.0
+│   │   │   ├── libfmt.so.12 -> libfmt.so.12.1.0
+│   │   │   ├── libfmt.so.12.1.0
+│   │   │   ├── libform.so -> libform.so.6.6
+│   │   │   ├── libform.so.6 -> libform.so.6.6
+│   │   │   ├── libform.so.6.6
+│   │   │   ├── libformw.so -> libformw.so.6.6
+│   │   │   ├── libformw.so.6 -> libformw.so.6.6
+│   │   │   ├── libformw.so.6.6
+│   │   │   ├── libgcc_s.so
+│   │   │   ├── libgcc_s.so.1
+│   │   │   ├── libgomp.so -> libgomp.so.1.0.0
+│   │   │   ├── libgomp.so.1 -> libgomp.so.1.0.0
+│   │   │   ├── libgomp.so.1.0.0
+│   │   │   ├── libgssapi_krb5.so -> libgssapi_krb5.so.2.2
+│   │   │   ├── libgssapi_krb5.so.2 -> libgssapi_krb5.so.2.2
+│   │   │   ├── libgssapi_krb5.so.2.2
+│   │   │   ├── libgssrpc.so -> libgssrpc.so.4.2
+│   │   │   ├── libgssrpc.so.4 -> libgssrpc.so.4.2
+│   │   │   ├── libgssrpc.so.4.2
+│   │   │   ├── libhistory.so -> libhistory.so.8.3
+│   │   │   ├── libhistory.so.8 -> libhistory.so.8.3
+│   │   │   ├── libhistory.so.8.3
+│   │   │   ├── libiconv.a
+│   │   │   ├── libiconv.so -> libiconv.so.2.7.0
+│   │   │   ├── libiconv.so.2 -> libiconv.so.2.7.0
+│   │   │   ├── libiconv.so.2.7.0
+│   │   │   ├── libitm.so -> libitm.so.1.0.0
+│   │   │   ├── libitm.so.1 -> libitm.so.1.0.0
+│   │   │   ├── libitm.so.1.0.0
+│   │   │   ├── libk5crypto.so -> libk5crypto.so.3.1
+│   │   │   ├── libk5crypto.so.3 -> libk5crypto.so.3.1
+│   │   │   ├── libk5crypto.so.3.1
+│   │   │   ├── libkadm5clnt_mit.so -> libkadm5clnt_mit.so.12.0
+│   │   │   ├── libkadm5clnt_mit.so.12 -> libkadm5clnt_mit.so.12.0
+│   │   │   ├── libkadm5clnt_mit.so.12.0
+│   │   │   ├── libkadm5clnt.so -> libkadm5clnt_mit.so.12.0
+│   │   │   ├── libkadm5srv_mit.so -> libkadm5srv_mit.so.12.0
+│   │   │   ├── libkadm5srv_mit.so.12 -> libkadm5srv_mit.so.12.0
+│   │   │   ├── libkadm5srv_mit.so.12.0
+│   │   │   ├── libkadm5srv.so -> libkadm5srv_mit.so.12.0
+│   │   │   ├── libkdb5.so -> libkdb5.so.10.0
+│   │   │   ├── libkdb5.so.10 -> libkdb5.so.10.0
+│   │   │   ├── libkdb5.so.10.0
+│   │   │   ├── libkeyutils.a
+│   │   │   ├── libkeyutils.so -> libkeyutils.so.1.10
+│   │   │   ├── libkeyutils.so.1 -> libkeyutils.so.1.10
+│   │   │   ├── libkeyutils.so.1.10
+│   │   │   ├── libkrad.so -> libkrad.so.0.0
+│   │   │   ├── libkrad.so.0 -> libkrad.so.0.0
+│   │   │   ├── libkrad.so.0.0
+│   │   │   ├── libkrb5.so -> libkrb5.so.3.3
+│   │   │   ├── libkrb5.so.3 -> libkrb5.so.3.3
+│   │   │   ├── libkrb5.so.3.3
+│   │   │   ├── libkrb5support.so -> libkrb5support.so.0.1
+│   │   │   ├── libkrb5support.so.0 -> libkrb5support.so.0.1
+│   │   │   ├── libkrb5support.so.0.1
+│   │   │   ├── liblz4.so -> liblz4.so.1.10.0
+│   │   │   ├── liblz4.so.1 -> liblz4.so.1.10.0
+│   │   │   ├── liblz4.so.1.10.0
+│   │   │   ├── liblzma.so.5
+│   │   │   ├── liblzma.so.5.8.3
+│   │   │   ├── liblzo2.a
+│   │   │   ├── liblzo2.so -> liblzo2.so.2
+│   │   │   ├── liblzo2.so.2 -> liblzo2.so.2.0.0
+│   │   │   ├── liblzo2.so.2.0.0
+│   │   │   ├── libmamba.so -> libmamba.so.4
+│   │   │   ├── libmamba.so.4 -> libmamba.so.4.0.1
+│   │   │   ├── libmamba.so.4.0.1
+│   │   │   ├── libmenu.so -> libmenu.so.6.6
+│   │   │   ├── libmenu.so.6 -> libmenu.so.6.6
+│   │   │   ├── libmenu.so.6.6
+│   │   │   ├── libmenuw.so -> libmenuw.so.6.6
+│   │   │   ├── libmenuw.so.6 -> libmenuw.so.6.6
+│   │   │   ├── libmenuw.so.6.6
+│   │   │   ├── libmpdec.so.4 -> libmpdec.so.4.0.0
+│   │   │   ├── libmpdec.so.4.0.0
+│   │   │   ├── libncurses++.a
+│   │   │   ├── libncurses.so
+│   │   │   ├── libncurses.so.6 -> libncurses.so.6.6
+│   │   │   ├── libncurses.so.6.6
+│   │   │   ├── libncurses++w.a
+│   │   │   ├── libncursesw.so
+│   │   │   ├── libncursesw.so.6 -> libncursesw.so.6.6
+│   │   │   ├── libncursesw.so.6.6
+│   │   │   ├── libnghttp2.so -> libnghttp2.so.14.29.3
+│   │   │   ├── libnghttp2.so.14 -> libnghttp2.so.14.29.3
+│   │   │   ├── libnghttp2.so.14.29.3
+│   │   │   ├── libpanel.so -> libpanel.so.6.6
+│   │   │   ├── libpanel.so.6 -> libpanel.so.6.6
+│   │   │   ├── libpanel.so.6.6
+│   │   │   ├── libpanelw.so -> libpanelw.so.6.6
+│   │   │   ├── libpanelw.so.6 -> libpanelw.so.6.6
+│   │   │   ├── libpanelw.so.6.6
+│   │   │   ├── libpython3.13.so -> libpython3.13.so.1.0
+│   │   │   ├── libpython3.13.so.1.0
+│   │   │   ├── libpython3.so
+│   │   │   ├── libreadline.so -> libreadline.so.8.3
+│   │   │   ├── libreadline.so.8 -> libreadline.so.8.3
+│   │   │   ├── libreadline.so.8.3
+│   │   │   ├── libreproc++.so -> libreproc++.so.14.2.7
+│   │   │   ├── libreproc.so -> libreproc.so.14.2.7
+│   │   │   ├── libreproc++.so.14 -> libreproc++.so.14.2.7
+│   │   │   ├── libreproc.so.14 -> libreproc.so.14.2.7
+│   │   │   ├── libreproc++.so.14.2.7
+│   │   │   ├── libreproc.so.14.2.7
+│   │   │   ├── libsimdjson.so -> libsimdjson.so.29.0.0
+│   │   │   ├── libsimdjson.so.29 -> libsimdjson.so.29.0.0
+│   │   │   ├── libsimdjson.so.29.0.0
+│   │   │   ├── libsolvext.so -> libsolvext.so.1
+│   │   │   ├── libsolvext.so.1
+│   │   │   ├── libsolv.so -> libsolv.so.1
+│   │   │   ├── libsolv.so.1
+│   │   │   ├── libspdlog.so -> libspdlog.so.1.17.0
+│   │   │   ├── libspdlog.so.1.17 -> libspdlog.so.1.17.0
+│   │   │   ├── libspdlog.so.1.17.0
+│   │   │   ├── libsqlite3.so -> libsqlite3.so.3.53.1
+│   │   │   ├── libsqlite3.so.0 -> libsqlite3.so.3.53.1
+│   │   │   ├── libsqlite3.so.3.53.1
+│   │   │   ├── libssh2.so -> libssh2.so.1.0.1
+│   │   │   ├── libssh2.so.1 -> libssh2.so.1.0.1
+│   │   │   ├── libssh2.so.1.0.1
+│   │   │   ├── libssl.so -> libssl.so.3
+│   │   │   ├── libssl.so.3
+│   │   │   ├── libstdc++.so -> libstdc++.so.6.0.34
+│   │   │   ├── libstdc++.so.6 -> libstdc++.so.6.0.34
+│   │   │   ├── libstdc++.so.6.0.34
+│   │   │   ├── libtcl8.6.so
+│   │   │   ├── libtclstub8.6.a
+│   │   │   ├── libtinfo.so -> libtinfo.so.6.6
+│   │   │   ├── libtinfo.so.6 -> libtinfo.so.6.6
+│   │   │   ├── libtinfo.so.6.6
+│   │   │   ├── libtinfow.so -> libtinfow.so.6.6
+│   │   │   ├── libtinfow.so.6 -> libtinfow.so.6.6
+│   │   │   ├── libtinfow.so.6.6
+│   │   │   ├── libtk8.6.so
+│   │   │   ├── libtkstub8.6.a
+│   │   │   ├── libuuid.a
+│   │   │   ├── libuuid.so -> libuuid.so.1.3.0
+│   │   │   ├── libuuid.so.1 -> libuuid.so.1.3.0
+│   │   │   ├── libuuid.so.1.3.0
+│   │   │   ├── libverto.so -> libverto.so.0.0
+│   │   │   ├── libverto.so.0 -> libverto.so.0.0
+│   │   │   ├── libverto.so.0.0
+│   │   │   ├── libxml2.so.16 -> libxml2.so.16.1.3
+│   │   │   ├── libxml2.so.16.1.3
+│   │   │   ├── libyaml-cpp.so -> libyaml-cpp.so.0.8
+│   │   │   ├── libyaml-cpp.so.0.8 -> libyaml-cpp.so.0.8.0
+│   │   │   ├── libyaml-cpp.so.0.8.0
+│   │   │   ├── libz.so.1 -> libz.so.1.3.2
+│   │   │   ├── libz.so.1.3.2
+│   │   │   ├── libzstd.so -> libzstd.so.1
+│   │   │   ├── libzstd.so.1 -> libzstd.so.1.5.7
+│   │   │   ├── libzstd.so.1.5.7
+│   │   │   ├── pkgconfig
+│   │   │   │   ├── fmt.pc
+│   │   │   │   ├── form.pc
+│   │   │   │   ├── formw.pc
+│   │   │   │   ├── gssrpc.pc
+│   │   │   │   ├── history.pc
+│   │   │   │   ├── kadm-client.pc
+│   │   │   │   ├── kadm-server.pc
+│   │   │   │   ├── kdb.pc
+│   │   │   │   ├── krb5-gssapi.pc
+│   │   │   │   ├── krb5.pc
+│   │   │   │   ├── libarchive.pc
+│   │   │   │   ├── libcares.pc
+│   │   │   │   ├── libcrypto.pc
+│   │   │   │   ├── libcurl.pc
+│   │   │   │   ├── libedit.pc
+│   │   │   │   ├── libffi.pc
+│   │   │   │   ├── libkeyutils.pc
+│   │   │   │   ├── liblz4.pc
+│   │   │   │   ├── libnghttp2.pc
+│   │   │   │   ├── libsolvext.pc
+│   │   │   │   ├── libsolv.pc
+│   │   │   │   ├── libssh2.pc
+│   │   │   │   ├── libssl.pc
+│   │   │   │   ├── libzstd.pc
+│   │   │   │   ├── menu.pc
+│   │   │   │   ├── menuw.pc
+│   │   │   │   ├── mit-krb5-gssapi.pc
+│   │   │   │   ├── mit-krb5.pc
+│   │   │   │   ├── ncurses++.pc
+│   │   │   │   ├── ncurses.pc
+│   │   │   │   ├── ncurses++w.pc
+│   │   │   │   ├── ncursesw.pc
+│   │   │   │   ├── openssl.pc
+│   │   │   │   ├── panel.pc
+│   │   │   │   ├── panelw.pc
+│   │   │   │   ├── python-3.13-embed.pc
+│   │   │   │   ├── python-3.13.pc
+│   │   │   │   ├── python3-embed.pc -> python-3.13-embed.pc
+│   │   │   │   ├── python3.pc -> python-3.13.pc
+│   │   │   │   ├── readline.pc
+│   │   │   │   ├── reproc++.pc
+│   │   │   │   ├── reproc.pc
+│   │   │   │   ├── simdjson.pc
+│   │   │   │   ├── spdlog.pc
+│   │   │   │   ├── sqlite3.pc
+│   │   │   │   ├── tcl.pc
+│   │   │   │   ├── tinfo.pc
+│   │   │   │   ├── tinfow.pc
+│   │   │   │   ├── tk.pc
+│   │   │   │   ├── uuid.pc
+│   │   │   │   └── yaml-cpp.pc
+│   │   │   ├── python3.13
+│   │   │   │   ├── abc.py
+│   │   │   │   ├── _aix_support.py
+│   │   │   │   ├── _android_support.py
+│   │   │   │   ├── antigravity.py
+│   │   │   │   ├── _apple_support.py
+│   │   │   │   ├── argparse.py
+│   │   │   │   ├── ast.py
+│   │   │   │   ├── asyncio
+│   │   │   │   ├── base64.py
+│   │   │   │   ├── bdb.py
+│   │   │   │   ├── bisect.py
+│   │   │   │   ├── bz2.py
+│   │   │   │   ├── calendar.py
+│   │   │   │   ├── cmd.py
+│   │   │   │   ├── codecs.py
+│   │   │   │   ├── codeop.py
+│   │   │   │   ├── code.py
+│   │   │   │   ├── collections
+│   │   │   │   ├── _collections_abc.py
+│   │   │   │   ├── _colorize.py
+│   │   │   │   ├── colorsys.py
+│   │   │   │   ├── _compat_pickle.py
+│   │   │   │   ├── compileall.py
+│   │   │   │   ├── _compression.py
+│   │   │   │   ├── concurrent
+│   │   │   │   ├── config-3.13-aarch64-linux-gnu
+│   │   │   │   ├── configparser.py
+│   │   │   │   ├── contextlib.py
+│   │   │   │   ├── contextvars.py
+│   │   │   │   ├── copy.py
+│   │   │   │   ├── copyreg.py
+│   │   │   │   ├── cProfile.py
+│   │   │   │   ├── csv.py
+│   │   │   │   ├── ctypes
+│   │   │   │   ├── curses
+│   │   │   │   ├── dataclasses.py
+│   │   │   │   ├── datetime.py
+│   │   │   │   ├── dbm
+│   │   │   │   ├── decimal.py
+│   │   │   │   ├── difflib.py
+│   │   │   │   ├── dis.py
+│   │   │   │   ├── doctest.py
+│   │   │   │   ├── email
+│   │   │   │   ├── encodings
+│   │   │   │   ├── ensurepip
+│   │   │   │   ├── enum.py
+│   │   │   │   ├── filecmp.py
+│   │   │   │   ├── fileinput.py
+│   │   │   │   ├── fnmatch.py
+│   │   │   │   ├── fractions.py
+│   │   │   │   ├── ftplib.py
+│   │   │   │   ├── functools.py
+│   │   │   │   ├── __future__.py
+│   │   │   │   ├── genericpath.py
+│   │   │   │   ├── getopt.py
+│   │   │   │   ├── getpass.py
+│   │   │   │   ├── gettext.py
+│   │   │   │   ├── glob.py
+│   │   │   │   ├── graphlib.py
+│   │   │   │   ├── gzip.py
+│   │   │   │   ├── hashlib.py
+│   │   │   │   ├── heapq.py
+│   │   │   │   ├── __hello__.py
+│   │   │   │   ├── hmac.py
+│   │   │   │   ├── html
+│   │   │   │   ├── http
+│   │   │   │   ├── idlelib
+│   │   │   │   ├── imaplib.py
+│   │   │   │   ├── importlib
+│   │   │   │   ├── inspect.py
+│   │   │   │   ├── io.py
+│   │   │   │   ├── _ios_support.py
+│   │   │   │   ├── ipaddress.py
+│   │   │   │   ├── json
+│   │   │   │   ├── keyword.py
+│   │   │   │   ├── lib-dynload
+│   │   │   │   ├── LICENSE.txt
+│   │   │   │   ├── linecache.py
+│   │   │   │   ├── locale.py
+│   │   │   │   ├── logging
+│   │   │   │   ├── lzma.py
+│   │   │   │   ├── mailbox.py
+│   │   │   │   ├── _markupbase.py
+│   │   │   │   ├── mimetypes.py
+│   │   │   │   ├── modulefinder.py
+│   │   │   │   ├── multiprocessing
+│   │   │   │   ├── netrc.py
+│   │   │   │   ├── ntpath.py
+│   │   │   │   ├── nturl2path.py
+│   │   │   │   ├── numbers.py
+│   │   │   │   ├── _opcode_metadata.py
+│   │   │   │   ├── opcode.py
+│   │   │   │   ├── operator.py
+│   │   │   │   ├── optparse.py
+│   │   │   │   ├── os.py
+│   │   │   │   ├── _osx_support.py
+│   │   │   │   ├── pathlib
+│   │   │   │   ├── pdb.py
+│   │   │   │   ├── __phello__
+│   │   │   │   ├── pickle.py
+│   │   │   │   ├── pickletools.py
+│   │   │   │   ├── pkgutil.py
+│   │   │   │   ├── platform.py
+│   │   │   │   ├── plistlib.py
+│   │   │   │   ├── poplib.py
+│   │   │   │   ├── posixpath.py
+│   │   │   │   ├── pprint.py
+│   │   │   │   ├── profile.py
+│   │   │   │   ├── pstats.py
+│   │   │   │   ├── pty.py
+│   │   │   │   ├── _py_abc.py
+│   │   │   │   ├── pyclbr.py
+│   │   │   │   ├── py_compile.py
+│   │   │   │   ├── _pydatetime.py
+│   │   │   │   ├── _pydecimal.py
+│   │   │   │   ├── pydoc_data
+│   │   │   │   ├── pydoc.py
+│   │   │   │   ├── _pyio.py
+│   │   │   │   ├── _pylong.py
+│   │   │   │   ├── _pyrepl
+│   │   │   │   ├── queue.py
+│   │   │   │   ├── quopri.py
+│   │   │   │   ├── random.py
+│   │   │   │   ├── re
+│   │   │   │   ├── reprlib.py
+│   │   │   │   ├── rlcompleter.py
+│   │   │   │   ├── runpy.py
+│   │   │   │   ├── sched.py
+│   │   │   │   ├── secrets.py
+│   │   │   │   ├── selectors.py
+│   │   │   │   ├── shelve.py
+│   │   │   │   ├── shlex.py
+│   │   │   │   ├── shutil.py
+│   │   │   │   ├── signal.py
+│   │   │   │   ├── _sitebuiltins.py
+│   │   │   │   ├── site.py
+│   │   │   │   ├── smtplib.py
+│   │   │   │   ├── socket.py
+│   │   │   │   ├── socketserver.py
+│   │   │   │   ├── sqlite3
+│   │   │   │   ├── sre_compile.py
+│   │   │   │   ├── sre_constants.py
+│   │   │   │   ├── sre_parse.py
+│   │   │   │   ├── ssl.py
+│   │   │   │   ├── statistics.py
+│   │   │   │   ├── stat.py
+│   │   │   │   ├── stringprep.py
+│   │   │   │   ├── string.py
+│   │   │   │   ├── _strptime.py
+│   │   │   │   ├── struct.py
+│   │   │   │   ├── subprocess.py
+│   │   │   │   ├── symtable.py
+│   │   │   │   ├── sysconfig
+│   │   │   │   ├── _sysconfigdata_aarch64_conda_linux_gnu.py
+│   │   │   │   ├── _sysconfigdata__linux_aarch64-linux-gnu.py
+│   │   │   │   ├── _sysconfigdata__linux_aarch64-linux-gnu.py.orig
+│   │   │   │   ├── tabnanny.py
+│   │   │   │   ├── tarfile.py
+│   │   │   │   ├── tempfile.py
+│   │   │   │   ├── test
+│   │   │   │   ├── textwrap.py
+│   │   │   │   ├── this.py
+│   │   │   │   ├── _threading_local.py
+│   │   │   │   ├── threading.py
+│   │   │   │   ├── timeit.py
+│   │   │   │   ├── tkinter
+│   │   │   │   ├── tokenize.py
+│   │   │   │   ├── token.py
+│   │   │   │   ├── tomllib
+│   │   │   │   ├── traceback.py
+│   │   │   │   ├── tracemalloc.py
+│   │   │   │   ├── trace.py
+│   │   │   │   ├── tty.py
+│   │   │   │   ├── turtledemo
+│   │   │   │   ├── turtle.py
+│   │   │   │   ├── types.py
+│   │   │   │   ├── typing.py
+│   │   │   │   ├── unittest
+│   │   │   │   ├── urllib
+│   │   │   │   ├── uuid.py
+│   │   │   │   ├── venv
+│   │   │   │   ├── warnings.py
+│   │   │   │   ├── wave.py
+│   │   │   │   ├── weakref.py
+│   │   │   │   ├── _weakrefset.py
+│   │   │   │   ├── webbrowser.py
+│   │   │   │   ├── wsgiref
+│   │   │   │   ├── xml
+│   │   │   │   ├── xmlrpc
+│   │   │   │   ├── zipapp.py
+│   │   │   │   ├── zipfile
+│   │   │   │   ├── zipimport.py
+│   │   │   │   └── zoneinfo
+│   │   │   ├── sqlite3.40.0
+│   │   │   │   ├── libsqlite3.40.0.so
+│   │   │   │   └── pkgIndex.tcl
+│   │   │   ├── tcl8
+│   │   │   │   ├── 8.4
+│   │   │   │   ├── 8.5
+│   │   │   │   └── 8.6
+│   │   │   ├── tcl8.6
+│   │   │   │   ├── auto.tcl
+│   │   │   │   ├── clock.tcl
+│   │   │   │   ├── encoding
+│   │   │   │   ├── history.tcl
+│   │   │   │   ├── http1.0
+│   │   │   │   ├── init.tcl
+│   │   │   │   ├── msgs
+│   │   │   │   ├── opt0.4
+│   │   │   │   ├── package.tcl
+│   │   │   │   ├── parray.tcl
+│   │   │   │   ├── safe.tcl
+│   │   │   │   ├── tclAppInit.c
+│   │   │   │   ├── tclIndex
+│   │   │   │   ├── tm.tcl
+│   │   │   │   └── word.tcl
+│   │   │   ├── tclConfig.sh
+│   │   │   ├── tclooConfig.sh
+│   │   │   ├── tdbc1.1.5
+│   │   │   │   ├── libtdbc1.1.5.so
+│   │   │   │   ├── libtdbcstub1.1.5.a
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   ├── tdbcConfig.sh
+│   │   │   │   └── tdbc.tcl
+│   │   │   ├── tdbcmysql1.1.5
+│   │   │   │   ├── libtdbcmysql1.1.5.so
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   └── tdbcmysql.tcl
+│   │   │   ├── tdbcodbc1.1.5
+│   │   │   │   ├── libtdbcodbc1.1.5.so
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   └── tdbcodbc.tcl
+│   │   │   ├── tdbcpostgres1.1.5
+│   │   │   │   ├── libtdbcpostgres1.1.5.so
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   └── tdbcpostgres.tcl
+│   │   │   ├── terminfo -> ../share/terminfo
+│   │   │   ├── thread2.8.8
+│   │   │   │   ├── libthread2.8.8.so
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   └── ttrace.tcl
+│   │   │   ├── tk8.6
+│   │   │   │   ├── bgerror.tcl
+│   │   │   │   ├── button.tcl
+│   │   │   │   ├── choosedir.tcl
+│   │   │   │   ├── clrpick.tcl
+│   │   │   │   ├── comdlg.tcl
+│   │   │   │   ├── console.tcl
+│   │   │   │   ├── demos
+│   │   │   │   ├── dialog.tcl
+│   │   │   │   ├── entry.tcl
+│   │   │   │   ├── focus.tcl
+│   │   │   │   ├── fontchooser.tcl
+│   │   │   │   ├── iconlist.tcl
+│   │   │   │   ├── icons.tcl
+│   │   │   │   ├── images
+│   │   │   │   ├── listbox.tcl
+│   │   │   │   ├── megawidget.tcl
+│   │   │   │   ├── menu.tcl
+│   │   │   │   ├── mkpsenc.tcl
+│   │   │   │   ├── msgbox.tcl
+│   │   │   │   ├── msgs
+│   │   │   │   ├── obsolete.tcl
+│   │   │   │   ├── optMenu.tcl
+│   │   │   │   ├── palette.tcl
+│   │   │   │   ├── panedwindow.tcl
+│   │   │   │   ├── pkgIndex.tcl
+│   │   │   │   ├── safetk.tcl
+│   │   │   │   ├── scale.tcl
+│   │   │   │   ├── scrlbar.tcl
+│   │   │   │   ├── spinbox.tcl
+│   │   │   │   ├── tclIndex
+│   │   │   │   ├── tearoff.tcl
+│   │   │   │   ├── text.tcl
+│   │   │   │   ├── tkAppInit.c
+│   │   │   │   ├── tkfbox.tcl
+│   │   │   │   ├── tk.tcl
+│   │   │   │   ├── ttk
+│   │   │   │   ├── unsupported.tcl
+│   │   │   │   └── xmfbox.tcl
+│   │   │   └── tkConfig.sh
+│   │   ├── libexec
+│   │   │   └── lzo
+│   │   │       └── examples
+│   │   ├── LICENSE.txt
+│   │   ├── micromamba
+│   │   ├── sbin
+│   │   │   ├── gss-server
+│   │   │   ├── kadmind
+│   │   │   ├── kadmin.local
+│   │   │   ├── kdb5_util
+│   │   │   ├── key.dns_resolver
+│   │   │   ├── kprop
+│   │   │   ├── kpropd
+│   │   │   ├── kproplog
+│   │   │   ├── krb5kdc
+│   │   │   ├── krb5-send-pr
+│   │   │   ├── request-key
+│   │   │   ├── sim_server
+│   │   │   ├── sserver
+│   │   │   └── uuserver
+│   │   ├── share
+│   │   │   ├── cmake
+│   │   │   │   ├── Modules
+│   │   │   │   └── tl-expected
+│   │   │   ├── doc
+│   │   │   │   ├── libssh2
+│   │   │   │   ├── lzo
+│   │   │   │   └── readline
+│   │   │   ├── et
+│   │   │   │   ├── et_c.awk
+│   │   │   │   └── et_h.awk
+│   │   │   ├── examples
+│   │   │   │   └── krb5
+│   │   │   ├── info
+│   │   │   │   ├── history.info
+│   │   │   │   ├── libffi.info
+│   │   │   │   ├── libgomp.info
+│   │   │   │   ├── libquadmath.info
+│   │   │   │   ├── readline.info
+│   │   │   │   └── rluserman.info
+│   │   │   ├── keyutils
+│   │   │   │   └── request-key-debug.sh
+│   │   │   ├── licenses
+│   │   │   │   ├── gcc-libs
+│   │   │   │   └── libstdc++
+│   │   │   ├── locale
+│   │   │   │   ├── af
+│   │   │   │   ├── be
+│   │   │   │   ├── bg
+│   │   │   │   ├── ca
+│   │   │   │   ├── cs
+│   │   │   │   ├── da
+│   │   │   │   ├── de
+│   │   │   │   ├── el
+│   │   │   │   ├── en_US
+│   │   │   │   ├── eo
+│   │   │   │   ├── es
+│   │   │   │   ├── et
+│   │   │   │   ├── fi
+│   │   │   │   ├── fr
+│   │   │   │   ├── ga
+│   │   │   │   ├── gl
+│   │   │   │   ├── hr
+│   │   │   │   ├── hu
+│   │   │   │   ├── id
+│   │   │   │   ├── it
+│   │   │   │   ├── ja
+│   │   │   │   ├── ka
+│   │   │   │   ├── ko
+│   │   │   │   ├── lt
+│   │   │   │   ├── nl
+│   │   │   │   ├── pl
+│   │   │   │   ├── pt_BR
+│   │   │   │   ├── rm
+│   │   │   │   ├── ro
+│   │   │   │   ├── ru
+│   │   │   │   ├── sk
+│   │   │   │   ├── sl
+│   │   │   │   ├── sq
+│   │   │   │   ├── sr
+│   │   │   │   ├── sv
+│   │   │   │   ├── tr
+│   │   │   │   ├── uk
+│   │   │   │   ├── vi
+│   │   │   │   ├── wa
+│   │   │   │   ├── zh_CN
+│   │   │   │   └── zh_TW
+│   │   │   ├── man
+│   │   │   │   ├── man1
+│   │   │   │   ├── man3
+│   │   │   │   ├── man5
+│   │   │   │   ├── man7
+│   │   │   │   └── man8
+│   │   │   ├── python_compiler_compat
+│   │   │   │   ├── ld -> ../../bin/aarch64-conda-linux-gnu-ld
+│   │   │   │   └── README
+│   │   │   ├── tabset
+│   │   │   │   ├── std
+│   │   │   │   ├── stdcrt
+│   │   │   │   ├── vt100
+│   │   │   │   └── vt300
+│   │   │   ├── terminfo
+│   │   │   │   ├── 31
+│   │   │   │   ├── 32
+│   │   │   │   ├── 33
+│   │   │   │   ├── 34
+│   │   │   │   ├── 35
+│   │   │   │   ├── 36
+│   │   │   │   ├── 37
+│   │   │   │   ├── 38
+│   │   │   │   ├── 39
+│   │   │   │   ├── 41
+│   │   │   │   ├── 45
+│   │   │   │   ├── 4c
+│   │   │   │   ├── 4d
+│   │   │   │   ├── 4e
+│   │   │   │   ├── 50
+│   │   │   │   ├── 51
+│   │   │   │   ├── 58
+│   │   │   │   ├── 61
+│   │   │   │   ├── 62
+│   │   │   │   ├── 63
+│   │   │   │   ├── 64
+│   │   │   │   ├── 65
+│   │   │   │   ├── 66
+│   │   │   │   ├── 67
+│   │   │   │   ├── 68
+│   │   │   │   ├── 69
+│   │   │   │   ├── 6a
+│   │   │   │   ├── 6b
+│   │   │   │   ├── 6c
+│   │   │   │   ├── 6d
+│   │   │   │   ├── 6e
+│   │   │   │   ├── 6f
+│   │   │   │   ├── 70
+│   │   │   │   ├── 71
+│   │   │   │   ├── 72
+│   │   │   │   ├── 73
+│   │   │   │   ├── 74
+│   │   │   │   ├── 75
+│   │   │   │   ├── 76
+│   │   │   │   ├── 77
+│   │   │   │   ├── 78
+│   │   │   │   └── 7a
+│   │   │   └── zoneinfo
+│   │   │       ├── Africa
+│   │   │       ├── America
+│   │   │       ├── Antarctica
+│   │   │       ├── Arctic
+│   │   │       ├── Asia
+│   │   │       ├── Atlantic
+│   │   │       ├── Australia
+│   │   │       ├── Brazil
+│   │   │       ├── build
+│   │   │       ├── Canada
+│   │   │       ├── CET
+│   │   │       ├── Chile
+│   │   │       ├── CST6CDT
+│   │   │       ├── Cuba
+│   │   │       ├── EET
+│   │   │       ├── Egypt
+│   │   │       ├── Eire
+│   │   │       ├── EST
+│   │   │       ├── EST5EDT
+│   │   │       ├── Etc
+│   │   │       ├── Europe
+│   │   │       ├── Factory
+│   │   │       ├── GB
+│   │   │       ├── GB-Eire
+│   │   │       ├── GMT
+│   │   │       ├── GMT+0
+│   │   │       ├── GMT-0
+│   │   │       ├── GMT0
+│   │   │       ├── Greenwich
+│   │   │       ├── Hongkong
+│   │   │       ├── HST
+│   │   │       ├── Iceland
+│   │   │       ├── Indian
+│   │   │       ├── Iran
+│   │   │       ├── iso3166.tab
+│   │   │       ├── Israel
+│   │   │       ├── Jamaica
+│   │   │       ├── Japan
+│   │   │       ├── Kwajalein
+│   │   │       ├── leapseconds
+│   │   │       ├── leap-seconds.list
+│   │   │       ├── Libya
+│   │   │       ├── MET
+│   │   │       ├── Mexico
+│   │   │       ├── MST
+│   │   │       ├── MST7MDT
+│   │   │       ├── Navajo
+│   │   │       ├── NZ
+│   │   │       ├── NZ-CHAT
+│   │   │       ├── Pacific
+│   │   │       ├── Poland
+│   │   │       ├── Portugal
+│   │   │       ├── PRC
+│   │   │       ├── PST8PDT
+│   │   │       ├── ROC
+│   │   │       ├── ROK
+│   │   │       ├── Singapore
+│   │   │       ├── Turkey
+│   │   │       ├── tzdata.zi
+│   │   │       ├── UCT
+│   │   │       ├── Universal
+│   │   │       ├── US
+│   │   │       ├── UTC
+│   │   │       ├── WET
+│   │   │       ├── W-SU
+│   │   │       ├── zone1970.tab
+│   │   │       ├── zonenow.tab
+│   │   │       ├── zone.tab
+│   │   │       └── Zulu
+│   │   ├── shell
+│   │   │   └── condabin
+│   │   │       ├── conda-hook.ps1
+│   │   │       └── Conda.psm1
+│   │   └── ssl
+│   │       ├── cacert.pem
+│   │       ├── cert.pem -> cacert.pem
+│   │       ├── certs
+│   │       │   └── .keep
+│   │       ├── ct_log_list.cnf
+│   │       ├── ct_log_list.cnf.dist
+│   │       ├── misc
+│   │       │   ├── CA.pl
+│   │       │   ├── tsget -> tsget.pl
+│   │       │   └── tsget.pl
+│   │       ├── openssl.cnf
+│   │       └── openssl.cnf.dist
+│   ├── Miniforge3-Linux-aarch64.sh
+│   ├── sofa
+│   │   ├── build
+│   │   ├── build_plugins
+│   │   │   ├── applications
+│   │   │   │   ├── collections
+│   │   │   │   ├── plugins
+│   │   │   │   └── projects
+│   │   │   ├── bin
+│   │   │   │   ├── runSofa -> runSofa-21.12.00
+│   │   │   │   └── runSofa-21.12.00
+│   │   │   ├── build.ninja
+│   │   │   ├── CMakeCache.txt
+│   │   │   ├── CMakeFiles
+│   │   │   │   ├── 3.25.1
+│   │   │   │   ├── clean_additional.cmake
+│   │   │   │   ├── cmake.check_cache
+│   │   │   │   ├── CMakeOutput.log
+│   │   │   │   ├── CMakeTmp
+│   │   │   │   ├── pkgRedirects
+│   │   │   │   ├── rules.ninja
+│   │   │   │   └── TargetDirectories.txt
+│   │   │   ├── cmake_install.cmake
+│   │   │   ├── config
+│   │   │   │   └── lastUsedGUI.ini
+│   │   │   ├── CPackConfig.cmake
+│   │   │   ├── CPackSourceConfig.cmake
+│   │   │   ├── _deps
+│   │   │   │   ├── cxxopts-build
+│   │   │   │   ├── cxxopts-src
+│   │   │   │   └── cxxopts-subbuild
+│   │   │   ├── etc
+│   │   │   │   ├── installedrunSofa.ini
+│   │   │   │   ├── installedSofaGuiQt.ini
+│   │   │   │   ├── installedSofa.ini
+│   │   │   │   ├── runSofa.ini
+│   │   │   │   ├── sofa
+│   │   │   │   ├── SofaGuiQt.ini
+│   │   │   │   └── sofa.ini
+│   │   │   ├── external_directories
+│   │   │   │   ├── BeamAdapter
+│   │   │   │   ├── SofaPython3
+│   │   │   │   ├── SoftRobots
+│   │   │   │   └── STLIB
+│   │   │   ├── extlibs
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   └── tinyxml
+│   │   │   ├── include
+│   │   │   │   ├── BeamAdapter
+│   │   │   │   ├── CImgPlugin
+│   │   │   │   ├── SofaAdvanced
+│   │   │   │   ├── SofaBase
+│   │   │   │   ├── SofaBaseCollision
+│   │   │   │   ├── SofaBaseLinearSolver
+│   │   │   │   ├── SofaBaseMechanics
+│   │   │   │   ├── SofaBaseTopology
+│   │   │   │   ├── SofaBaseUtils
+│   │   │   │   ├── SofaBaseVisual
+│   │   │   │   ├── SofaBoundaryCondition
+│   │   │   │   ├── SofaCommon
+│   │   │   │   ├── SofaComponentAll
+│   │   │   │   ├── Sofa.Config
+│   │   │   │   ├── SofaConstraint
+│   │   │   │   ├── Sofa.Core
+│   │   │   │   ├── Sofa.DefaultType
+│   │   │   │   ├── SofaDeformable
+│   │   │   │   ├── SofaDenseSolver
+│   │   │   │   ├── SofaEigen2Solver
+│   │   │   │   ├── SofaEngine
+│   │   │   │   ├── SofaExplicitOdeSolver
+│   │   │   │   ├── SofaExporter
+│   │   │   │   ├── SofaFramework
+│   │   │   │   ├── SofaGeneral
+│   │   │   │   ├── SofaGeneralAnimationLoop
+│   │   │   │   ├── SofaGeneralDeformable
+│   │   │   │   ├── SofaGeneralEngine
+│   │   │   │   ├── SofaGeneralExplicitOdeSolver
+│   │   │   │   ├── SofaGeneralImplicitOdeSolver
+│   │   │   │   ├── SofaGeneralLinearSolver
+│   │   │   │   ├── SofaGeneralLoader
+│   │   │   │   ├── SofaGeneralMeshCollision
+│   │   │   │   ├── SofaGeneralObjectInteraction
+│   │   │   │   ├── SofaGeneralRigid
+│   │   │   │   ├── SofaGeneralSimpleFem
+│   │   │   │   ├── SofaGeneralTopology
+│   │   │   │   ├── SofaGeneralVisual
+│   │   │   │   ├── Sofa.Geometry
+│   │   │   │   ├── Sofa.GL
+│   │   │   │   ├── SofaGraphComponent
+│   │   │   │   ├── SofaGui
+│   │   │   │   ├── SofaGuiCommon
+│   │   │   │   ├── SofaGuiQt
+│   │   │   │   ├── Sofa.Helper
+│   │   │   │   ├── SofaImplicitOdeSolver
+│   │   │   │   ├── Sofa.LinearAlgebra
+│   │   │   │   ├── SofaLoader
+│   │   │   │   ├── SofaMeshCollision
+│   │   │   │   ├── SofaMisc
+│   │   │   │   ├── SofaMiscCollision
+│   │   │   │   ├── SofaMiscEngine
+│   │   │   │   ├── SofaMiscExtra
+│   │   │   │   ├── SofaMiscFem
+│   │   │   │   ├── SofaMiscForceField
+│   │   │   │   ├── SofaMiscMapping
+│   │   │   │   ├── SofaMiscSolver
+│   │   │   │   ├── SofaMiscTopology
+│   │   │   │   ├── SofaNonUniformFem
+│   │   │   │   ├── SofaObjectInteraction
+│   │   │   │   ├── SofaPreconditioner
+│   │   │   │   ├── SofaRigid
+│   │   │   │   ├── SofaSimpleFem
+│   │   │   │   ├── SofaSimulation
+│   │   │   │   ├── SofaSimulationCommon
+│   │   │   │   ├── Sofa.SimulationCore
+│   │   │   │   ├── SofaSimulationGraph
+│   │   │   │   ├── SofaSparseSolver
+│   │   │   │   ├── Sofa.Topology
+│   │   │   │   ├── SofaTopologyMapping
+│   │   │   │   ├── Sofa.Type
+│   │   │   │   ├── SofaUserInteraction
+│   │   │   │   ├── SofaValidation
+│   │   │   │   └── SoftRobots
+│   │   │   ├── lib
+│   │   │   │   ├── cmake
+│   │   │   │   ├── libCImgPlugin.so -> libCImgPlugin.so.0.1
+│   │   │   │   ├── libCImgPlugin.so.0.1
+│   │   │   │   ├── libcsparse.a
+│   │   │   │   ├── libmetis.a
+│   │   │   │   ├── libQGLViewer.so
+│   │   │   │   ├── libSofaAdvanced.so -> libSofaAdvanced.so.21.12.00
+│   │   │   │   ├── libSofaAdvanced.so.21.12.00
+│   │   │   │   ├── libSofaBaseCollision.so -> libSofaBaseCollision.so.21.12.00
+│   │   │   │   ├── libSofaBaseCollision.so.21.12.00
+│   │   │   │   ├── libSofaBaseLinearSolver.so -> libSofaBaseLinearSolver.so.21.12.00
+│   │   │   │   ├── libSofaBaseLinearSolver.so.21.12.00
+│   │   │   │   ├── libSofaBaseMechanics.so -> libSofaBaseMechanics.so.21.12.00
+│   │   │   │   ├── libSofaBaseMechanics.so.21.12.00
+│   │   │   │   ├── libSofaBase.so -> libSofaBase.so.21.12.00
+│   │   │   │   ├── libSofaBase.so.21.12.00
+│   │   │   │   ├── libSofaBaseTopology.so -> libSofaBaseTopology.so.21.12.00
+│   │   │   │   ├── libSofaBaseTopology.so.21.12.00
+│   │   │   │   ├── libSofaBaseUtils.so -> libSofaBaseUtils.so.21.12.00
+│   │   │   │   ├── libSofaBaseUtils.so.21.12.00
+│   │   │   │   ├── libSofaBaseVisual.so -> libSofaBaseVisual.so.21.12.00
+│   │   │   │   ├── libSofaBaseVisual.so.21.12.00
+│   │   │   │   ├── libSofaBoundaryCondition.so -> libSofaBoundaryCondition.so.21.12.00
+│   │   │   │   ├── libSofaBoundaryCondition.so.21.12.00
+│   │   │   │   ├── libSofaCommon.so -> libSofaCommon.so.21.12.00
+│   │   │   │   ├── libSofaCommon.so.21.12.00
+│   │   │   │   ├── libSofa.Compat.so -> libSofa.Compat.so.21.12.00
+│   │   │   │   ├── libSofa.Compat.so.21.12.00
+│   │   │   │   ├── libSofaComponentAll.so -> libSofaComponentAll.so.1.0
+│   │   │   │   ├── libSofaComponentAll.so.1.0
+│   │   │   │   ├── libSofa.Config.so -> libSofa.Config.so.21.12.00
+│   │   │   │   ├── libSofa.Config.so.21.12.00
+│   │   │   │   ├── libSofaConstraint.so -> libSofaConstraint.so.21.12.00
+│   │   │   │   ├── libSofaConstraint.so.21.12.00
+│   │   │   │   ├── libSofa.Core.so -> libSofa.Core.so.21.12.00
+│   │   │   │   ├── libSofa.Core.so.21.12.00
+│   │   │   │   ├── libSofa.DefaultType.so -> libSofa.DefaultType.so.21.12.00
+│   │   │   │   ├── libSofa.DefaultType.so.21.12.00
+│   │   │   │   ├── libSofaDeformable.so -> libSofaDeformable.so.21.12.00
+│   │   │   │   ├── libSofaDeformable.so.21.12.00
+│   │   │   │   ├── libSofaDenseSolver.so -> libSofaDenseSolver.so.21.12.00
+│   │   │   │   ├── libSofaDenseSolver.so.21.12.00
+│   │   │   │   ├── libSofaEigen2Solver.so -> libSofaEigen2Solver.so.21.12.00
+│   │   │   │   ├── libSofaEigen2Solver.so.21.12.00
+│   │   │   │   ├── libSofaEngine.so -> libSofaEngine.so.21.12.00
+│   │   │   │   ├── libSofaEngine.so.21.12.00
+│   │   │   │   ├── libSofaExplicitOdeSolver.so -> libSofaExplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaExplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaExporter.so -> libSofaExporter.so.21.12.00
+│   │   │   │   ├── libSofaExporter.so.21.12.00
+│   │   │   │   ├── libSofaFramework.so -> libSofaFramework.so.21.12.00
+│   │   │   │   ├── libSofaFramework.so.21.12.00
+│   │   │   │   ├── libSofaGeneralAnimationLoop.so -> libSofaGeneralAnimationLoop.so.21.12.00
+│   │   │   │   ├── libSofaGeneralAnimationLoop.so.21.12.00
+│   │   │   │   ├── libSofaGeneralDeformable.so -> libSofaGeneralDeformable.so.21.12.00
+│   │   │   │   ├── libSofaGeneralDeformable.so.21.12.00
+│   │   │   │   ├── libSofaGeneralEngine.so -> libSofaGeneralEngine.so.21.12.00
+│   │   │   │   ├── libSofaGeneralEngine.so.21.12.00
+│   │   │   │   ├── libSofaGeneralExplicitOdeSolver.so -> libSofaGeneralExplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralExplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralImplicitOdeSolver.so -> libSofaGeneralImplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralImplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralLinearSolver.so -> libSofaGeneralLinearSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralLinearSolver.so.21.12.00
+│   │   │   │   ├── libSofaGeneralLoader.so -> libSofaGeneralLoader.so.21.12.00
+│   │   │   │   ├── libSofaGeneralLoader.so.21.12.00
+│   │   │   │   ├── libSofaGeneralMeshCollision.so -> libSofaGeneralMeshCollision.so.21.12.00
+│   │   │   │   ├── libSofaGeneralMeshCollision.so.21.12.00
+│   │   │   │   ├── libSofaGeneralObjectInteraction.so -> libSofaGeneralObjectInteraction.so.21.12.00
+│   │   │   │   ├── libSofaGeneralObjectInteraction.so.21.12.00
+│   │   │   │   ├── libSofaGeneralRigid.so -> libSofaGeneralRigid.so.21.12.00
+│   │   │   │   ├── libSofaGeneralRigid.so.21.12.00
+│   │   │   │   ├── libSofaGeneralSimpleFem.so -> libSofaGeneralSimpleFem.so.21.12.00
+│   │   │   │   ├── libSofaGeneralSimpleFem.so.21.12.00
+│   │   │   │   ├── libSofaGeneral.so -> libSofaGeneral.so.21.12.00
+│   │   │   │   ├── libSofaGeneral.so.21.12.00
+│   │   │   │   ├── libSofaGeneralTopology.so -> libSofaGeneralTopology.so.21.12.00
+│   │   │   │   ├── libSofaGeneralTopology.so.21.12.00
+│   │   │   │   ├── libSofaGeneralVisual.so -> libSofaGeneralVisual.so.21.12.00
+│   │   │   │   ├── libSofaGeneralVisual.so.21.12.00
+│   │   │   │   ├── libSofa.Geometry.so -> libSofa.Geometry.so.21.12.00
+│   │   │   │   ├── libSofa.Geometry.so.21.12.00
+│   │   │   │   ├── libSofa.GL.so -> libSofa.GL.so.21.12.00
+│   │   │   │   ├── libSofa.GL.so.21.12.00
+│   │   │   │   ├── libSofaGraphComponent.so -> libSofaGraphComponent.so.21.12.00
+│   │   │   │   ├── libSofaGraphComponent.so.21.12.00
+│   │   │   │   ├── libSofaGuiCommon.so -> libSofaGuiCommon.so.21.12.00
+│   │   │   │   ├── libSofaGuiCommon.so.21.12.00
+│   │   │   │   ├── libSofaGuiQt.so -> libSofaGuiQt.so.21.12.00
+│   │   │   │   ├── libSofaGuiQt.so.21.12.00
+│   │   │   │   ├── libSofaGui.so -> libSofaGui.so.21.12.00
+│   │   │   │   ├── libSofaGui.so.21.12.00
+│   │   │   │   ├── libSofaHaptics.so -> libSofaHaptics.so.21.12.00
+│   │   │   │   ├── libSofaHaptics.so.21.12.00
+│   │   │   │   ├── libSofa.Helper.so -> libSofa.Helper.so.21.12.00
+│   │   │   │   ├── libSofa.Helper.so.21.12.00
+│   │   │   │   ├── libSofaImplicitOdeSolver.so -> libSofaImplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofaImplicitOdeSolver.so.21.12.00
+│   │   │   │   ├── libSofa.LinearAlgebra.so -> libSofa.LinearAlgebra.so.21.12.00
+│   │   │   │   ├── libSofa.LinearAlgebra.so.21.12.00
+│   │   │   │   ├── libSofaLoader.so -> libSofaLoader.so.21.12.00
+│   │   │   │   ├── libSofaLoader.so.21.12.00
+│   │   │   │   ├── libSofaMeshCollision.so -> libSofaMeshCollision.so.21.12.00
+│   │   │   │   ├── libSofaMeshCollision.so.21.12.00
+│   │   │   │   ├── libSofaMiscCollision.so -> libSofaMiscCollision.so.1.0
+│   │   │   │   ├── libSofaMiscCollision.so.1.0
+│   │   │   │   ├── libSofaMiscEngine.so -> libSofaMiscEngine.so.21.12.00
+│   │   │   │   ├── libSofaMiscEngine.so.21.12.00
+│   │   │   │   ├── libSofaMiscExtra.so -> libSofaMiscExtra.so.21.12.00
+│   │   │   │   ├── libSofaMiscExtra.so.21.12.00
+│   │   │   │   ├── libSofaMiscFem.so -> libSofaMiscFem.so.21.12.00
+│   │   │   │   ├── libSofaMiscFem.so.21.12.00
+│   │   │   │   ├── libSofaMiscForceField.so -> libSofaMiscForceField.so.21.12.00
+│   │   │   │   ├── libSofaMiscForceField.so.21.12.00
+│   │   │   │   ├── libSofaMiscMapping.so -> libSofaMiscMapping.so.21.12.00
+│   │   │   │   ├── libSofaMiscMapping.so.21.12.00
+│   │   │   │   ├── libSofaMisc.so -> libSofaMisc.so.21.12.00
+│   │   │   │   ├── libSofaMisc.so.21.12.00
+│   │   │   │   ├── libSofaMiscSolver.so -> libSofaMiscSolver.so.21.12.00
+│   │   │   │   ├── libSofaMiscSolver.so.21.12.00
+│   │   │   │   ├── libSofaMiscTopology.so -> libSofaMiscTopology.so.21.12.00
+│   │   │   │   ├── libSofaMiscTopology.so.21.12.00
+│   │   │   │   ├── libSofaNonUniformFem.so -> libSofaNonUniformFem.so.21.12.00
+│   │   │   │   ├── libSofaNonUniformFem.so.21.12.00
+│   │   │   │   ├── libSofaObjectInteraction.so -> libSofaObjectInteraction.so.21.12.00
+│   │   │   │   ├── libSofaObjectInteraction.so.21.12.00
+│   │   │   │   ├── libSofaOpenglVisual.so -> libSofaOpenglVisual.so.21.12.00
+│   │   │   │   ├── libSofaOpenglVisual.so.21.12.00
+│   │   │   │   ├── libSofaPreconditioner.so -> libSofaPreconditioner.so.21.12.00
+│   │   │   │   ├── libSofaPreconditioner.so.21.12.00
+│   │   │   │   ├── libSofaPython3.so -> libSofaPython3.so.1.0
+│   │   │   │   ├── libSofaPython3.so.1.0
+│   │   │   │   ├── libSofaRigid.so -> libSofaRigid.so.21.12.00
+│   │   │   │   ├── libSofaRigid.so.21.12.00
+│   │   │   │   ├── libSofaSimpleFem.so -> libSofaSimpleFem.so.21.12.00
+│   │   │   │   ├── libSofaSimpleFem.so.21.12.00
+│   │   │   │   ├── libSofaSimulationCommon.so -> libSofaSimulationCommon.so.21.12.00
+│   │   │   │   ├── libSofaSimulationCommon.so.21.12.00
+│   │   │   │   ├── libSofa.SimulationCore.so -> libSofa.SimulationCore.so.21.12.00
+│   │   │   │   ├── libSofa.SimulationCore.so.21.12.00
+│   │   │   │   ├── libSofaSimulationGraph.so -> libSofaSimulationGraph.so.21.12.00
+│   │   │   │   ├── libSofaSimulationGraph.so.21.12.00
+│   │   │   │   ├── libSofaSimulation.so -> libSofaSimulation.so.21.12.00
+│   │   │   │   ├── libSofaSimulation.so.21.12.00
+│   │   │   │   ├── libSofaSparseSolver.so -> libSofaSparseSolver.so.21.12.00
+│   │   │   │   ├── libSofaSparseSolver.so.21.12.00
+│   │   │   │   ├── libSofaTopologyMapping.so -> libSofaTopologyMapping.so.21.12.00
+│   │   │   │   ├── libSofaTopologyMapping.so.21.12.00
+│   │   │   │   ├── libSofa.Topology.so -> libSofa.Topology.so.21.12.00
+│   │   │   │   ├── libSofa.Topology.so.21.12.00
+│   │   │   │   ├── libSofa.Type.so -> libSofa.Type.so.21.12.00
+│   │   │   │   ├── libSofa.Type.so.21.12.00
+│   │   │   │   ├── libSofaUserInteraction.so -> libSofaUserInteraction.so.21.12.00
+│   │   │   │   ├── libSofaUserInteraction.so.21.12.00
+│   │   │   │   ├── libSofaValidation.so -> libSofaValidation.so.21.12.00
+│   │   │   │   ├── libSofaValidation.so.21.12.00
+│   │   │   │   ├── libtinyxml.so -> libtinyxml.so.2.6.2
+│   │   │   │   ├── libtinyxml.so.2.6.2
+│   │   │   │   ├── plugin_list.conf.default
+│   │   │   │   └── python3
+│   │   │   ├── modules
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   ├── SofaBoundaryCondition
+│   │   │   │   ├── SofaConstraint
+│   │   │   │   ├── SofaDenseSolver
+│   │   │   │   ├── SofaExporter
+│   │   │   │   ├── SofaGeneralAnimationLoop
+│   │   │   │   ├── SofaGeneralDeformable
+│   │   │   │   ├── SofaGeneralEngine
+│   │   │   │   ├── SofaGeneralExplicitOdeSolver
+│   │   │   │   ├── SofaGeneralImplicitOdeSolver
+│   │   │   │   ├── SofaGeneralLinearSolver
+│   │   │   │   ├── SofaGeneralLoader
+│   │   │   │   ├── SofaGeneralMeshCollision
+│   │   │   │   ├── SofaGeneralObjectInteraction
+│   │   │   │   ├── SofaGeneralRigid
+│   │   │   │   ├── SofaGeneralSimpleFem
+│   │   │   │   ├── SofaGeneralTopology
+│   │   │   │   ├── SofaGeneralVisual
+│   │   │   │   ├── SofaGraphComponent
+│   │   │   │   ├── SofaHaptics
+│   │   │   │   ├── SofaMiscCollision
+│   │   │   │   ├── SofaMiscEngine
+│   │   │   │   ├── SofaMiscExtra
+│   │   │   │   ├── SofaMiscFem
+│   │   │   │   ├── SofaMiscForceField
+│   │   │   │   ├── SofaMiscMapping
+│   │   │   │   ├── SofaMiscSolver
+│   │   │   │   ├── SofaMiscTopology
+│   │   │   │   ├── SofaNonUniformFem
+│   │   │   │   ├── SofaOpenglVisual
+│   │   │   │   ├── SofaPreconditioner
+│   │   │   │   ├── SofaSparseSolver
+│   │   │   │   ├── SofaTopologyMapping
+│   │   │   │   ├── SofaUserInteraction
+│   │   │   │   └── SofaValidation
+│   │   │   ├── .ninja_deps
+│   │   │   ├── .ninja_log
+│   │   │   ├── plugins
+│   │   │   │   └── README.txt
+│   │   │   ├── screenshots
+│   │   │   ├── SofaAdvanced
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   └── SofaAdvancedConfigVersion.cmake
+│   │   │   ├── Sofa.Config
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   └── Sofa.ConfigConfigVersion.cmake
+│   │   │   ├── SofaGeneral
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   └── SofaGeneralConfigVersion.cmake
+│   │   │   ├── SofaGui
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   ├── SofaGuiCommon
+│   │   │   │   ├── SofaGuiConfigVersion.cmake
+│   │   │   │   └── SofaGuiQt
+│   │   │   ├── SofaKernel
+│   │   │   │   ├── modules
+│   │   │   │   ├── SofaBase
+│   │   │   │   ├── SofaCommon
+│   │   │   │   ├── SofaFramework
+│   │   │   │   └── SofaSimulation
+│   │   │   ├── SofaMisc
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   └── SofaMiscConfigVersion.cmake
+│   │   │   └── tools
+│   │   │       └── postinstall-fixup
+│   │   ├── configure_sofa.sh
+│   │   ├── logs
+│   │   │   ├── build_gui.log
+│   │   │   ├── build.log
+│   │   │   ├── build.pid
+│   │   │   ├── cmake_configure.log
+│   │   │   └── cmake_gui_configure.log
+│   │   └── src
+│   │       ├── BeamAdapter
+│   │       │   ├── Authors.md
+│   │       │   ├── BeamAdapterConfig.cmake.in
+│   │       │   ├── BeamAdapter_test
+│   │       │   ├── cmake
+│   │       │   ├── CMakeLists.txt
+│   │       │   ├── doc
+│   │       │   ├── examples
+│   │       │   ├── .github
+│   │       │   ├── LICENSE.md
+│   │       │   ├── README.md
+│   │       │   └── src
+│   │       ├── BeamAdapter.tar.gz
+│   │       ├── sofa
+│   │       │   ├── applications
+│   │       │   ├── Authors.txt
+│   │       │   ├── CHANGELOG.md
+│   │       │   ├── cmake
+│   │       │   ├── CMakeLists.txt
+│   │       │   ├── config.sh
+│   │       │   ├── CONTRIBUTING.md
+│   │       │   ├── custom.cmake.example
+│   │       │   ├── doc
+│   │       │   ├── examples
+│   │       │   ├── extlibs
+│   │       │   ├── .gitattributes
+│   │       │   ├── .github
+│   │       │   ├── .gitignore
+│   │       │   ├── GUIDELINES.md
+│   │       │   ├── LICENSE.LGPL.txt
+│   │       │   ├── modules
+│   │       │   ├── package.cmake
+│   │       │   ├── README.md
+│   │       │   ├── scripts
+│   │       │   ├── share
+│   │       │   ├── SofaAdvanced
+│   │       │   ├── SofaGeneral
+│   │       │   ├── SofaGui
+│   │       │   ├── sofa_include_stats.md
+│   │       │   ├── SofaKernel
+│   │       │   ├── SofaMisc
+│   │       │   ├── TODO.md
+│   │       │   └── tools
+│   │       ├── SofaPython3
+│   │       │   ├── Authors.txt
+│   │       │   ├── bindings
+│   │       │   ├── CMake
+│   │       │   ├── CMakeLists.txt
+│   │       │   ├── constants
+│   │       │   ├── docs
+│   │       │   ├── examples
+│   │       │   ├── .github
+│   │       │   ├── .gitignore
+│   │       │   ├── License.md
+│   │       │   ├── Plugin
+│   │       │   ├── README.md
+│   │       │   ├── .readthedocs.yml
+│   │       │   ├── SofaPython3Config.cmake.in
+│   │       │   └── splib
+│   │       ├── SofaPython3.tar.gz
+│   │       ├── sofa.tar.gz
+│   │       ├── SoftRobots
+│   │       │   ├── CHANGELOG
+│   │       │   ├── cmake
+│   │       │   ├── CMakeLists.txt
+│   │       │   ├── docs
+│   │       │   ├── General.ah
+│   │       │   ├── .github
+│   │       │   ├── .gitignore
+│   │       │   ├── LICENSE
+│   │       │   ├── python
+│   │       │   ├── python3
+│   │       │   ├── README.md
+│   │       │   ├── SoftRobots.ah
+│   │       │   ├── SoftRobotsConfig.cmake.in
+│   │       │   ├── softrobots.html
+│   │       │   ├── softrobots.html.backup
+│   │       │   ├── softrobots.md
+│   │       │   ├── softrobots.pyscn
+│   │       │   ├── src
+│   │       │   ├── STLIB.ah
+│   │       │   ├── tests
+│   │       │   └── tools
+│   │       ├── SoftRobots.tar.gz
+│   │       ├── STLIB
+│   │       │   ├── cmake
+│   │       │   ├── CMakeLists.txt
+│   │       │   ├── docs
+│   │       │   ├── .github
+│   │       │   ├── .gitignore
+│   │       │   ├── LICENSE
+│   │       │   ├── MATLAB
+│   │       │   ├── python
+│   │       │   ├── python3
+│   │       │   ├── README.md
+│   │       │   ├── src
+│   │       │   ├── STLIBConfig.cmake.in
+│   │       │   └── stlib.pyscn
+│   │       └── STLIB.tar.gz
+│   ├── tesla_core
+│   │   ├── CHANGELOG.md
+│   │   ├── CPPLINT.cfg
+│   │   ├── dependencies.rosinstall
+│   │   ├── docker
+│   │   │   ├── Dockerfile-docs
+│   │   │   ├── Dockerfile-jupyter.melodic
+│   │   │   ├── Dockerfile-jupyter.noetic
+│   │   │   ├── Dockerfile.melodic
+│   │   │   ├── Dockerfile.noetic
+│   │   │   ├── jupyter-requirements.txt
+│   │   │   └── scripts
+│   │   │       ├── catkin_build.sh
+│   │   │       ├── entrypoint.sh
+│   │   │       ├── init_catkin.sh
+│   │   │       ├── init_rosdep.sh
+│   │   │       ├── inject_rosinstall_credentials.sh
+│   │   │       ├── install_debs.sh
+│   │   │       ├── install_dependencies.sh
+│   │   │       ├── install_rosdep.sh
+│   │   │       └── jupyter
+│   │   ├── GUIDELINES.md
+│   │   ├── images
+│   │   │   └── repo_structure.png
+│   │   ├── LICENSE
+│   │   ├── mag_control
+│   │   │   ├── mag_calculator
+│   │   │   │   ├── cfg
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── config
+│   │   │   │   ├── doc
+│   │   │   │   ├── include
+│   │   │   │   ├── launch
+│   │   │   │   ├── package.xml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── review.md
+│   │   │   │   ├── rviz
+│   │   │   │   ├── scripts
+│   │   │   │   ├── src
+│   │   │   │   └── srv
+│   │   │   ├── mag_manip
+│   │   │   │   ├── bench
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── doc
+│   │   │   │   ├── examples
+│   │   │   │   ├── include
+│   │   │   │   ├── models
+│   │   │   │   ├── nosetests
+│   │   │   │   ├── package.xml
+│   │   │   │   ├── params
+│   │   │   │   ├── python
+│   │   │   │   ├── README.md
+│   │   │   │   ├── scripts
+│   │   │   │   ├── setup.py
+│   │   │   │   ├── src
+│   │   │   │   └── test
+│   │   │   ├── mag_rviz
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── launch
+│   │   │   │   ├── package.xml
+│   │   │   │   ├── plugin_description.xml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── rviz
+│   │   │   │   └── src
+│   │   │   ├── mag_tensorflow
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── .gitattributes
+│   │   │   │   ├── .gitignore
+│   │   │   │   ├── include
+│   │   │   │   ├── package.xml
+│   │   │   │   ├── README.md
+│   │   │   │   ├── scripts
+│   │   │   │   ├── src
+│   │   │   │   └── test
+│   │   │   └── mpem
+│   │   │       ├── cal
+│   │   │       ├── cal_ic_files
+│   │   │       ├── CMakeLists.txt
+│   │   │       ├── find_numpy_include_dir.py
+│   │   │       ├── include
+│   │   │       ├── MagneticSystem.m
+│   │   │       ├── MATLAB
+│   │   │       ├── nosetests
+│   │   │       ├── package.xml
+│   │   │       ├── python
+│   │   │       ├── README.md
+│   │   │       ├── setup.py
+│   │   │       ├── src
+│   │   │       └── test
+│   │   ├── packaging
+│   │   │   ├── 50-tc-packages.list
+│   │   │   ├── build-packages.sh
+│   │   │   ├── Dockerfile.melodic
+│   │   │   ├── Dockerfile.noetic
+│   │   │   ├── README.md
+│   │   │   └── rosdep.yaml
+│   │   ├── README.md
+│   │   ├── run-clang-format.py
+│   │   ├── standalone_mag_manip
+│   │   │   ├── bindings.cpp
+│   │   │   ├── build
+│   │   │   │   ├── build.ninja
+│   │   │   │   ├── CMakeCache.txt
+│   │   │   │   ├── CMakeFiles
+│   │   │   │   ├── cmake_install.cmake
+│   │   │   │   ├── mag_manip.cpython-38-aarch64-linux-gnu.so
+│   │   │   │   ├── .ninja_deps
+│   │   │   │   └── .ninja_log
+│   │   │   └── CMakeLists.txt
+│   │   ├── tsc_msgs
+│   │   │   ├── ecb_msgs
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── msg
+│   │   │   │   ├── package.xml
+│   │   │   │   └── srv
+│   │   │   ├── mag_msgs
+│   │   │   │   ├── CMakeLists.txt
+│   │   │   │   ├── msg
+│   │   │   │   └── package.xml
+│   │   │   └── mag_rod_msgs
+│   │   │       ├── CMakeLists.txt
+│   │   │       ├── msg
+│   │   │       └── package.xml
+│   │   └── tsc_utils
+│   │       ├── cmake
+│   │       │   ├── create_swig_python_module.cmake
+│   │       │   ├── find_numpy_include_dir.py
+│   │       │   ├── find_rviz_qt.cmake
+│   │       │   └── mac_include_numpy.cmake
+│   │       ├── CMakeLists.txt
+│   │       ├── doc
+│   │       │   ├── conf.py
+│   │       │   └── index.rst
+│   │       ├── GetGitRevisionDescription.cmake
+│   │       ├── GetGitRevisionDescription.cmake.in
+│   │       ├── include
+│   │       │   └── tsc_utils
+│   │       ├── input_lists
+│   │       │   ├── aligned_gradient
+│   │       │   ├── cmag_current_-5A_5A_single_coil.csv
+│   │       │   ├── cmag_current_list.csv
+│   │       │   ├── currents_0_1A_allcoils.csv
+│   │       │   ├── currents_0_1A_coil0.csv
+│   │       │   ├── currents_0_1A_coil0.txt
+│   │       │   ├── currents_-1A_1A.txt
+│   │       │   ├── currents_-4A_0A_allcoils.csv
+│   │       │   ├── currents_8_
+│   │       │   ├── currents_8_-5A_5A_single_coil.txt
+│   │       │   ├── currents_8_5A_single_coil.txt
+│   │       │   ├── fields
+│   │       │   ├── .~lock.cmag_current_list.csv#
+│   │       │   └── ramps_zero_current
+│   │       ├── nosetests
+│   │       │   ├── generate_bags.py
+│   │       │   ├── test.bag
+│   │       │   ├── test_conversions.py
+│   │       │   ├── test_coordinates.py
+│   │       │   ├── test_geometry.py
+│   │       │   ├── test_mag_utils.py
+│   │       │   ├── test_rosbag_extract.py
+│   │       │   ├── test_rotations.py
+│   │       │   └── test.txt
+│   │       ├── package.xml
+│   │       ├── python
+│   │       │   └── tsc_utils
+│   │       ├── README.md
+│   │       ├── scripts
+│   │       │   ├── broadcast_transform_node.py
+│   │       │   ├── currents_list_node.py
+│   │       │   ├── fields_list_node.py
+│   │       │   ├── generate_docs.py
+│   │       │   ├── get_python_package_info.py
+│   │       │   ├── poses_custom_grid_node.py
+│   │       │   ├── print_packages_and_maintainers.py
+│   │       │   ├── publish_rviz_mesh_marker_node.py
+│   │       │   ├── rosbag_processor.py
+│   │       │   ├── set_param_from_transform_node.py
+│   │       │   ├── test_field_array_pub_node.py
+│   │       │   ├── update_license_tags.py
+│   │       │   └── update_version_number.py
+│   │       ├── setup.py
+│   │       └── test
+│   │           ├── test_eigen_matrix_compare.cpp
+│   │           └── test_eigen_tensor_compare.cpp
+│   └── tesla_core.tar.gz
+├── mcr_project
+│   └── mCR_simulator-master
+│       ├── calib
+│       │   └── Navion_2_Calibration_24-02-2020.yaml
+│       ├── data
+│       │   └── 01_tip_pose
+│       │       ├── 11_video_tracker_9976
+│       │       ├── 12_video_tracker_9978
+│       │       ├── 13_video_tracker_9975
+│       │       ├── 21_rod_sim_tip_topic_9976
+│       │       ├── 220427_iros_exp_sim_plot.svg
+│       │       ├── 22_rod_sim_tip_topic_9978
+│       │       ├── 23_rod_sim_tip_topic_9975
+│       │       └── .ipynb_checkpoints
+│       ├── mesh
+│       │   ├── test
+│       │   │   ├── aorta1
+│       │   │   ├── aorta10
+│       │   │   ├── aorta2
+│       │   │   ├── aorta3
+│       │   │   ├── aorta4
+│       │   │   ├── aorta5
+│       │   │   ├── aorta6
+│       │   │   ├── aorta7
+│       │   │   ├── aorta8
+│       │   │   ├── aorta9
+│       │   │   ├── Y001
+│       │   │   ├── Y002
+│       │   │   ├── Y003
+│       │   │   ├── Y004
+│       │   │   ├── Y005
+│       │   │   ├── Y006
+│       │   │   ├── Y007
+│       │   │   ├── Y008
+│       │   │   ├── Y009
+│       │   │   └── Y010
+│       │   └── train
+│       │       ├── B01
+│       │       ├── B02
+│       │       ├── B03
+│       │       ├── B04
+│       │       ├── B05
+│       │       ├── C01
+│       │       ├── C02
+│       │       ├── C03
+│       │       ├── C04
+│       │       ├── C05
+│       │       └── manifest.json
+│       ├── python
+│       │   ├── example_flat.py.qglviewer.view
+│       │   ├── .gitignore
+│       │   ├── lastUsedGUI.ini
+│       │   ├── MCR_PROJECT_STRUCTURE_CURRENT(1).txt
+│       │   ├── mcr_sim
+│       │   │   ├── distributed
+│       │   │   ├── __init__.py
+│       │   │   ├── mcr_centerline.py
+│       │   │   ├── mcr_controller_sofa.py
+│       │   │   ├── mcr_emns.py
+│       │   │   ├── mcr_environment.py
+│       │   │   ├── mcr_instrument.py
+│       │   │   ├── mcr_mag_controller.py
+│       │   │   ├── mcr_magnet.py
+│       │   │   ├── mcr_rl_env.py
+│       │   │   ├── mcr_simulator.py
+│       │   │   ├── mcr_simulator.py.bak
+│       │   │   └── rl_core
+│       │   ├── mcr_sim_ros
+│       │   │   ├── __init__.py
+│       │   │   ├── mcr_centerline_ros.py
+│       │   │   ├── mcr_controller_sofa_ros.py
+│       │   │   ├── mcr_emns_ros.py
+│       │   │   ├── mcr_environment_ros.py
+│       │   │   ├── mcr_instrument_ros.py
+│       │   │   ├── mcr_mag_controller_ros.py
+│       │   │   ├── mcr_magnet_ros.py
+│       │   │   ├── mcr_rl_env_ros.py
+│       │   │   ├── mcr_simulator_ros.py
+│       │   │   └── rl_core_ros
+│       │   ├── run_inference_closed_loop.sh
+│       │   ├── runSofa.ini
+│       │   ├── run_sofa_ros.sh
+│       │   ├── scene
+│       │   │   ├── example_aortic_arch.py
+│       │   │   ├── example_aortic_arch_ros.py
+│       │   │   └── __init__.py
+│       │   ├── testing
+│       │   │   ├── py
+│       │   │   └── sh
+│       │   ├── tools
+│       │   │   ├── generate_artificial_vessels.py
+│       │   │   └── validate_artificial_vessels.py
+│       │   └── training
+│       │       ├── DISTRIBUTED_ASCEND.md
+│       │       ├── py
+│       │       └── sh
+│       ├── training_runs
+│       │   ├── sac_mix0207V1_3mm_resume17900k_5M_nenv2_grad2_ori15_aortic_3mm_20260623_230114
+│       │   │   ├── models
+│       │   │   └── tb
+│       │   ├── sac_mix0207V1_3mm_resume19550k_5M_nenv2_stuckRetract_defaultProx1mm_DR20_aortic_3mm_20260630_164125
+│       │   │   ├── models
+│       │   │   └── tb
+│       │   ├── sac_mix4_fixed_3mm_resume15900k_5M_nenv4_grad2_aortic_3mm_20260620_232824
+│       │   │   ├── models
+│       │   │   └── tb
+│       │   └── speed_test_0237_nenv16_0237_only_aortic_3mm_20260806_124020
+│       │       ├── models
+│       │       └── tb
+│       └── .vscode
+│           └── settings.json
+├── MCR_PROJECT_STRUCTURE_CURRENT.txt
+├── mcr_sim_structure.txt
+├── readme.md
+├── setup_mcr_sofa.sh
+├── .ssh
+│   ├── github_ed25519
+│   ├── github_ed25519.pub
+│   └── known_hosts
+└── test_example.log
+
+640 directories, 1743 files
