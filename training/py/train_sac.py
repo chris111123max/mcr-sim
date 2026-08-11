@@ -1,4 +1,7 @@
 import argparse
+import math
+import os
+import platform
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +28,7 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
+from mcr_sim.distributed import DistributedSAC, initialize_distributed
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
 
 ARTIFICIAL_MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [
@@ -296,6 +300,31 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 self.logger.record(f"{prefix}/success_deficit_from_best_w{self.window_size}", float(best_success - item["success_rate"]), exclude="stdout")
 
 
+class DistributedRuntimeCallback(BaseCallback):
+    """Rank-0 TensorBoard scalars describing global distributed progress."""
+
+    def __init__(self, world_size: int, total_n_envs: int, global_batch_size: int, local_batch_size: int):
+        super().__init__(verbose=0)
+        self.world_size = int(world_size)
+        self.total_n_envs = int(total_n_envs)
+        self.global_batch_size = int(global_batch_size)
+        self.local_batch_size = int(local_batch_size)
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        self.logger.record(
+            "distributed/global_timesteps",
+            float(self.model.num_timesteps * self.world_size),
+            exclude="stdout",
+        )
+        self.logger.record("distributed/world_size", float(self.world_size), exclude="stdout")
+        self.logger.record("distributed/total_n_envs", float(self.total_n_envs), exclude="stdout")
+        self.logger.record("distributed/global_batch_size", float(self.global_batch_size), exclude="stdout")
+        self.logger.record("distributed/local_batch_size", float(self.local_batch_size), exclude="stdout")
+
+
 def _parse_ent_coef(value: str) -> Union[str, float]:
     """Parse SAC ent_coef argument.
 
@@ -336,7 +365,7 @@ def _current_ent_coef_value(model: SAC, fallback: float = 1.0) -> float:
     return float(fallback)
 
 
-def _override_learning_rate(model: SAC, learning_rate: float) -> None:
+def _override_learning_rate(model: SAC, learning_rate: float, announce: bool = True) -> None:
     """Override learning rate of a loaded SAC model when resuming.
 
     SB3 checkpoints keep the old lr_schedule and optimizer learning rates.
@@ -358,10 +387,11 @@ def _override_learning_rate(model: SAC, learning_rate: float) -> None:
         for param_group in optimizer.param_groups:
             param_group["lr"] = learning_rate
 
-    print(f"Resume learning_rate overridden to: {learning_rate:.6g}")
+    if announce:
+        print(f"Resume learning_rate overridden to: {learning_rate:.6g}")
 
 
-def _force_auto_ent_coef(model: SAC, ent_coef_arg: Union[str, float]) -> None:
+def _force_auto_ent_coef(model: SAC, ent_coef_arg: Union[str, float], announce: bool = True) -> None:
     """Force a loaded SAC model to use automatic entropy tuning.
 
     This is useful when:
@@ -386,17 +416,42 @@ def _force_auto_ent_coef(model: SAC, ent_coef_arg: Union[str, float]) -> None:
     model.ent_coef_optimizer = th.optim.Adam([model.log_ent_coef], lr=model.lr_schedule(1))
     model.ent_coef_tensor = None
 
-    print(f"Automatic ent_coef tuning enabled. init_ent_coef={init_value:.6g}")
+    if announce:
+        print(f"Automatic ent_coef tuning enabled. init_ent_coef={init_value:.6g}")
 
 
-def _force_fixed_ent_coef(model: SAC, ent_coef_value: float) -> None:
+def _force_fixed_ent_coef(model: SAC, ent_coef_value: float, announce: bool = True) -> None:
     """Force a loaded SAC model to use a fixed entropy coefficient."""
     ent_coef_value = float(ent_coef_value)
     model.ent_coef = ent_coef_value
     model.ent_coef_tensor = th.tensor(ent_coef_value, device=model.device)
     model.log_ent_coef = None
     model.ent_coef_optimizer = None
-    print(f"Fixed ent_coef enabled. ent_coef={ent_coef_value:.6g}")
+    if announce:
+        print(f"Fixed ent_coef enabled. ent_coef={ent_coef_value:.6g}")
+
+
+def _adapt_resume_timestep_counter(
+    model: SAC,
+    current_world_size: int,
+    reset_num_timesteps: bool,
+    announce: bool = True,
+) -> None:
+    """Preserve global timestep meaning across single/distributed checkpoints."""
+    current_world_size = max(1, int(current_world_size))
+    saved_world_size = max(1, int(getattr(model, "distributed_world_size_at_save", 1)))
+    if not reset_num_timesteps and saved_world_size != current_world_size:
+        old_local_steps = int(model.num_timesteps)
+        completed_global_steps = old_local_steps * saved_world_size
+        model.num_timesteps = int(math.ceil(completed_global_steps / current_world_size))
+        if announce:
+            print(
+                "Resume timestep counter adapted: "
+                f"saved_world_size={saved_world_size}, current_world_size={current_world_size}, "
+                f"saved_local_steps={old_local_steps}, completed_global_steps={completed_global_steps}, "
+                f"current_local_steps={model.num_timesteps}"
+            )
+    model.distributed_world_size_at_save = current_world_size
 
 
 def parse_args():
@@ -416,15 +471,52 @@ def parse_args():
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument(
+        "--distributed",
+        action="store_true",
+        help="Enable one synchronized multi-process SAC learner under torchrun.",
+    )
+    parser.add_argument(
+        "--world-size",
+        type=int,
+        default=4,
+        help="Number of learner ranks/devices. The launcher defaults to four for Ascend 910B3.",
+    )
+    parser.add_argument(
+        "--local-rank",
+        "--local_rank",
+        dest="local_rank",
+        type=int,
+        default=0,
+        help="Local rank fallback; torchrun LOCAL_RANK takes precedence.",
+    )
+    parser.add_argument(
+        "--dist-backend",
+        type=str,
+        default="",
+        choices=["", "hccl", "nccl", "gloo"],
+        help="Distributed backend. Empty selects hccl/nccl/gloo from the resolved device.",
+    )
+    parser.add_argument(
         "--n-envs",
         type=int,
         default=1,
-        help="Number of parallel SOFA environments. Use 1 for DummyVecEnv, >1 for SubprocVecEnv headless training.",
+        help=(
+            "Global number of SOFA environments. Distributed mode divides it "
+            "equally across ranks; single-process mode uses all locally."
+        ),
     )
 
     # SAC-specific arguments
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--batch-size", type=int, default=128)
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=128,
+        help=(
+            "Global SAC minibatch size. Distributed mode requires divisibility "
+            "by world size and uses batch_size/world_size per rank."
+        ),
+    )
     parser.add_argument("--buffer-size", type=int, default=300_000)
     parser.add_argument("--learning-starts", type=int, default=10_000)
     parser.add_argument("--train-freq", type=int, default=1)
@@ -567,7 +659,8 @@ def parse_args():
 def build_env(args):
     env_type = EnvType.AORTIC if args.env_type == "aortic" else EnvType.FLAT
     render_mode = RenderMode.HUMAN if args.render == "human" else RenderMode.NONE
-    n_envs = max(1, int(getattr(args, "n_envs", 1)))
+    n_envs = max(1, int(getattr(args, "local_n_envs", args.n_envs)))
+    global_env_offset = int(getattr(args, "distributed_rank", 0)) * n_envs
 
     if n_envs > 1 and args.render == "human":
         raise ValueError("Parallel SOFA environments require --render headless. Do not use GUI/human render with --n-envs > 1.")
@@ -578,7 +671,7 @@ def build_env(args):
             # environment seeding, but this avoids identical default RNG streams
             # during SOFA scene construction/randomization.
             try:
-                np.random.seed(int(args.seed) + int(rank))
+                np.random.seed(int(args.seed) + global_env_offset + int(rank))
             except Exception:
                 pass
 
@@ -630,137 +723,273 @@ def build_env(args):
 
 def main():
     args = parse_args()
+    context = initialize_distributed(
+        enabled=bool(args.distributed),
+        requested_device=args.device,
+        requested_world_size=int(args.world_size),
+        cli_local_rank=int(args.local_rank),
+        requested_backend=args.dist_backend,
+    )
+
+    args.distributed_rank = int(context.rank)
+    args.resolved_device = context.device.resolved
+    total_n_envs = max(1, int(args.n_envs))
+    global_batch_size = int(args.batch_size)
+
+    if context.enabled:
+        if total_n_envs % context.world_size != 0:
+            raise ValueError(
+                f"--n-envs={total_n_envs} must be divisible by world_size={context.world_size}."
+            )
+        if global_batch_size % context.world_size != 0:
+            raise ValueError(
+                f"--batch-size={global_batch_size} must be divisible by world_size={context.world_size}."
+            )
+        args.local_n_envs = total_n_envs // context.world_size
+        local_batch_size = global_batch_size // context.world_size
+        local_total_timesteps = int(math.ceil(float(args.timesteps) / context.world_size))
+    else:
+        args.local_n_envs = total_n_envs
+        local_batch_size = global_batch_size
+        local_total_timesteps = int(args.timesteps)
+    args.rank_seed = int(args.seed) + int(context.rank) * int(args.local_n_envs)
+
+    if args.local_n_envs > 1 and args.render == "human":
+        raise ValueError("Parallel SOFA environments require --render headless.")
+    if local_batch_size <= 0:
+        raise ValueError("Local batch size must be positive.")
 
     threshold_mm = int(round(float(args.target_threshold) * 1000.0))
     threshold_tag = f"{threshold_mm}mm"
     forced_tag = f"_{args.force_model}_only" if args.force_model else ""
 
-    now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_timestamp = str(os.environ.get("MCR_RUN_TIMESTAMP", "")).strip()
+    if not run_timestamp and context.is_main:
+        run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_timestamp = context.broadcast_text(run_timestamp)
+
     log_root = Path(args.log_root).expanduser()
     if not log_root.is_absolute():
         log_root = PROJECT_ROOT / log_root
-    run_dir = log_root.resolve() / f"{args.exp_name}{forced_tag}_{args.env_type}_{threshold_tag}_{now}"
+    run_dir = log_root.resolve() / (
+        f"{args.exp_name}{forced_tag}_{args.env_type}_{threshold_tag}_{run_timestamp}"
+    )
     model_dir = run_dir / "models"
     tb_dir = run_dir / "tb"
-    model_dir.mkdir(parents=True, exist_ok=True)
-    tb_dir.mkdir(parents=True, exist_ok=True)
+    if context.is_main:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        tb_dir.mkdir(parents=True, exist_ok=True)
+    context.barrier()
 
-    env = build_env(args)
-
-    checkpoint_prefix = f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_ckpt"
-    # CheckpointCallback is called once per vectorized env step. With n_envs > 1,
-    # each callback step contains n_envs transitions, so divide save_freq to keep
-    # the checkpoint interval measured in total environment timesteps.
-    effective_save_freq = max(1, int(args.save_freq) // max(1, int(args.n_envs)))
-    checkpoint_callback = CheckpointCallback(
-        save_freq=effective_save_freq,
-        save_path=str(model_dir),
-        name_prefix=checkpoint_prefix,
-        save_replay_buffer=False,
-        save_vecnormalize=False,
-    )
-
-    extra_metrics_callback = ExtraRolloutMetricsCallback(window_size=50, success_label=threshold_tag)
-    callback_list = CallbackList([checkpoint_callback, extra_metrics_callback])
-
-    if args.resume_from:
-        resume_path = Path(args.resume_from).expanduser()
-        if not resume_path.is_absolute():
-            resume_path = PROJECT_ROOT / resume_path
-        resume_path = resume_path.resolve()
-        if not resume_path.is_file():
-            raise FileNotFoundError(f"Resume model not found: {resume_path}")
-
-        # custom_objects makes resume-time hyperparameters such as buffer_size/batch_size visible
-        # to the loaded model instead of silently keeping checkpoint defaults.
-        custom_objects = {
-            "learning_rate": args.learning_rate,
-            "buffer_size": args.buffer_size,
-            "batch_size": args.batch_size,
-            "learning_starts": args.learning_starts,
-            "train_freq": args.train_freq,
-            "gradient_steps": args.gradient_steps,
-            "tau": args.tau,
-            "gamma": args.gamma,
-        }
-
-        model = SAC.load(
-            str(resume_path),
-            env=env,
-            device=args.device,
-            custom_objects=custom_objects,
-        )
-        model.tensorboard_log = str(tb_dir)
-        model.verbose = int(args.sb3_verbose)
-        reset_num_timesteps = args.reset_num_timesteps
-
-        print(f"Resuming SAC training from: {resume_path}")
-        print("IMPORTANT: resume model must have the same observation shape as current env.")
-        print(f"Original ent_coef from checkpoint: {_current_ent_coef_value(model):.6g}")
-
-        # Important: override lr before rebuilding automatic ent_coef optimizer,
-        # because _force_auto_ent_coef uses model.lr_schedule(1).
-        _override_learning_rate(model, args.learning_rate)
-
-        if isinstance(args.ent_coef, str) and args.ent_coef.startswith("auto"):
-            _force_auto_ent_coef(model, args.ent_coef)
-        else:
-            _force_fixed_ent_coef(model, float(args.ent_coef))
-
-        print(f"Resume hyperparams: batch_size={model.batch_size}, buffer_size={model.buffer_size}")
-
-    else:
-        model = SAC(
-            policy="MlpPolicy",
-            env=env,
-            learning_rate=args.learning_rate,
-            buffer_size=args.buffer_size,
-            learning_starts=args.learning_starts,
-            batch_size=args.batch_size,
-            tau=args.tau,
-            gamma=args.gamma,
-            train_freq=args.train_freq,
-            gradient_steps=args.gradient_steps,
-            ent_coef=args.ent_coef,
-            tensorboard_log=str(tb_dir),
-            seed=args.seed,
-            device=args.device,
-            verbose=int(args.sb3_verbose),
-        )
-        reset_num_timesteps = True
-        print(f"New SAC model: ent_coef={args.ent_coef}, lr={args.learning_rate:g}, batch={args.batch_size}, buffer={args.buffer_size}")
-
-    print("[RUN]")
-    print(f"  stage={threshold_tag}  env={args.env_type}  force_model={args.force_model or 'uniform/all'}")
-    print(f"  obs={env.observation_space}  action={env.action_space}")
-    print("  algorithm=standard SAC: actor and critic use the same 52-D waypoint observation")
-    print(f"  timesteps={args.timesteps}  n_envs={int(args.n_envs)}  lr={args.learning_rate:g}  batch={args.batch_size}  buffer={args.buffer_size}  ent_coef={args.ent_coef}")
-    print(f"  max_steps={args.max_episode_steps}")
-    print(f"  radius_obs_scale={float(args.radius_observation_scale)*1000.0:.2f}mm")
     print(
-        f"  active_train_models={','.join(ARTIFICIAL_MODEL_IDS)}  randomize_start_target={bool(args.randomize_start_target)} "
-        f"radius={float(args.start_target_random_radius)*1000.0:.2f}mm  "
-        f"randomize_initial_orientation={bool(args.randomize_initial_orientation)} "
-        f"max_angle={float(args.initial_orientation_max_angle_deg):.1f}deg  "
-        f"soft_randomize_single_vessel={bool(args.soft_randomize_single_vessel)}"
+        f"[RANK {context.rank}] local_rank={context.local_rank} "
+        f"device={context.device.resolved} local_n_envs={args.local_n_envs} "
+        f"seed={args.rank_seed}"
     )
-    print(f"  run_dir={run_dir}")
 
+    env = None
     try:
+        env = build_env(args)
+
+        callback_list = None
+        if context.is_main:
+            checkpoint_prefix = f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_ckpt"
+            # One callback call represents total_n_envs transitions across all
+            # synchronized ranks, so save_freq retains global-timestep semantics.
+            effective_save_freq = max(1, int(args.save_freq) // total_n_envs)
+            checkpoint_callback = CheckpointCallback(
+                save_freq=effective_save_freq,
+                save_path=str(model_dir),
+                name_prefix=checkpoint_prefix,
+                save_replay_buffer=False,
+                save_vecnormalize=False,
+            )
+            extra_metrics_callback = ExtraRolloutMetricsCallback(
+                window_size=50, success_label=threshold_tag
+            )
+            distributed_callback = DistributedRuntimeCallback(
+                world_size=context.world_size,
+                total_n_envs=total_n_envs,
+                global_batch_size=global_batch_size,
+                local_batch_size=local_batch_size,
+            )
+            callback_list = CallbackList(
+                [checkpoint_callback, extra_metrics_callback, distributed_callback]
+            )
+
+        algorithm_class = DistributedSAC if context.enabled else SAC
+        tensorboard_log = str(tb_dir) if context.is_main else None
+        sb3_verbose = int(args.sb3_verbose) if context.is_main else 0
+
+        if args.resume_from:
+            resume_path = Path(args.resume_from).expanduser()
+            if not resume_path.is_absolute():
+                resume_path = PROJECT_ROOT / resume_path
+            resume_path = resume_path.resolve()
+            if not resume_path.is_file():
+                raise FileNotFoundError(f"Resume model not found: {resume_path}")
+
+            custom_objects = {
+                "learning_rate": args.learning_rate,
+                "buffer_size": args.buffer_size,
+                "batch_size": local_batch_size,
+                "learning_starts": args.learning_starts,
+                "train_freq": args.train_freq,
+                "gradient_steps": args.gradient_steps,
+                "tau": args.tau,
+                "gamma": args.gamma,
+            }
+            model = algorithm_class.load(
+                str(resume_path),
+                env=env,
+                device=args.resolved_device,
+                custom_objects=custom_objects,
+            )
+            model.tensorboard_log = tensorboard_log
+            model.verbose = sb3_verbose
+            model.seed = int(args.rank_seed)
+            model.set_random_seed(int(args.rank_seed))
+            reset_num_timesteps = args.reset_num_timesteps
+            _adapt_resume_timestep_counter(
+                model,
+                current_world_size=context.world_size,
+                reset_num_timesteps=reset_num_timesteps,
+                announce=context.is_main,
+            )
+
+            if context.is_main:
+                print(f"Resuming SAC training from: {resume_path}")
+                print("IMPORTANT: resume model must have the same observation shape as current env.")
+                print(f"Original ent_coef from checkpoint: {_current_ent_coef_value(model):.6g}")
+
+            _override_learning_rate(model, args.learning_rate, announce=context.is_main)
+            if isinstance(args.ent_coef, str) and args.ent_coef.startswith("auto"):
+                _force_auto_ent_coef(model, args.ent_coef, announce=context.is_main)
+            else:
+                _force_fixed_ent_coef(model, float(args.ent_coef), announce=context.is_main)
+
+            if context.is_main:
+                print(
+                    f"Resume hyperparams: batch_size={model.batch_size}, "
+                    f"buffer_size={model.buffer_size}"
+                )
+                print(
+                    f"Resume hyperparams: local_batch_size={model.batch_size}, "
+                    f"buffer_size_per_rank={model.buffer_size}"
+                )
+        else:
+            model_kwargs = dict(
+                policy="MlpPolicy",
+                env=env,
+                learning_rate=args.learning_rate,
+                buffer_size=args.buffer_size,
+                learning_starts=args.learning_starts,
+                batch_size=local_batch_size,
+                tau=args.tau,
+                gamma=args.gamma,
+                train_freq=args.train_freq,
+                gradient_steps=args.gradient_steps,
+                ent_coef=args.ent_coef,
+                tensorboard_log=tensorboard_log,
+                seed=args.rank_seed,
+                device=args.resolved_device,
+                verbose=sb3_verbose,
+            )
+            if context.enabled:
+                model_kwargs["distributed_context"] = context
+            model = algorithm_class(**model_kwargs)
+            model.distributed_world_size_at_save = int(context.world_size)
+            reset_num_timesteps = True
+            if context.is_main:
+                print(
+                    f"New SAC model: ent_coef={args.ent_coef}, lr={args.learning_rate:g}, "
+                    f"batch={args.batch_size}, buffer={args.buffer_size}"
+                )
+                print(
+                    f"New SAC model: ent_coef={args.ent_coef}, lr={args.learning_rate:g}, "
+                    f"global_batch={global_batch_size}, local_batch={local_batch_size}, "
+                    f"buffer_per_rank={args.buffer_size}"
+                )
+
+        if context.enabled:
+            model.set_distributed_context(context)
+            model.synchronize_parameters()
+
+        if context.is_main:
+            print("[HARDWARE TARGET]")
+            print(f"  architecture             = {platform.machine()}")
+            print(f"  cpu_count                = {os.cpu_count()}")
+            print(f"  accelerator              = {context.device.accelerator}")
+            print("[DISTRIBUTED]")
+            print(f"  enabled                  = {context.enabled}")
+            print(f"  backend                  = {context.backend}")
+            print(f"  world_size               = {context.world_size}")
+            print("[ENV PARALLELISM]")
+            print(f"  total_n_envs             = {total_n_envs}")
+            print(f"  envs_per_rank            = {args.local_n_envs}")
+            print(f"  vec_env                  = {'SubprocVecEnv' if args.local_n_envs > 1 else 'DummyVecEnv'}")
+            print("  SOFA backend             = CPU")
+            print("[SAC]")
+            print(f"  accelerator backend      = {context.device.resolved}")
+            print(f"  global_batch_size        = {global_batch_size}")
+            print(f"  local_batch_size         = {local_batch_size}")
+            print(f"  replay_buffer            = CPU RAM ({args.buffer_size} transitions/rank)")
+            print(
+                f"  gradient_sync            = "
+                f"{context.backend + ' all-reduce' if context.enabled else 'disabled'}"
+            )
+
+            print("[RUN]")
+            print(
+                f"  stage={threshold_tag}  env={args.env_type}  "
+                f"force_model={args.force_model or 'uniform/all'}"
+            )
+            print(f"  obs={env.observation_space}  action={env.action_space}")
+            print("  algorithm=standard SAC: actor and critic use the same 52-D waypoint observation")
+            print(
+                f"  timesteps={args.timesteps}  n_envs={int(args.n_envs)}  "
+                f"lr={args.learning_rate:g}  batch={args.batch_size}  "
+                f"buffer={args.buffer_size}  ent_coef={args.ent_coef}"
+            )
+            print("  algorithm=standard SAC math with synchronized actor/critic/entropy gradients")
+            print(
+                f"  global_timesteps={args.timesteps}  local_timesteps/rank={local_total_timesteps}  "
+                f"total_n_envs={total_n_envs}  lr={args.learning_rate:g}  "
+                f"global_batch={global_batch_size}  local_batch={local_batch_size}  "
+                f"buffer_per_rank={args.buffer_size}  ent_coef={args.ent_coef}"
+            )
+            print(f"  max_steps={args.max_episode_steps}")
+            print(
+                f"  radius_obs_scale={float(args.radius_observation_scale)*1000.0:.2f}mm"
+            )
+            print(
+                f"  active_train_models={','.join(ARTIFICIAL_MODEL_IDS)}  "
+                f"randomize_start_target={bool(args.randomize_start_target)} "
+                f"radius={float(args.start_target_random_radius)*1000.0:.2f}mm  "
+                f"randomize_initial_orientation={bool(args.randomize_initial_orientation)} "
+                f"max_angle={float(args.initial_orientation_max_angle_deg):.1f}deg  "
+                f"soft_randomize_single_vessel={bool(args.soft_randomize_single_vessel)}"
+            )
+            print(f"  run_dir={run_dir}")
+
         model.learn(
-            total_timesteps=args.timesteps,
+            total_timesteps=local_total_timesteps,
             callback=callback_list,
             reset_num_timesteps=reset_num_timesteps,
-            progress_bar=bool(args.progress_bar),
+            progress_bar=bool(args.progress_bar and context.is_main),
         )
 
+        context.barrier()
         final_model_path = model_dir / f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_final"
-        model.save(str(final_model_path))
-
-        print(f"[DONE] model={final_model_path}.zip")
-        print(f"[DONE] tensorboard={tb_dir}")
+        if context.is_main:
+            model.save(str(final_model_path))
+            print(f"[DONE] model={final_model_path}.zip")
+            print(f"[DONE] tensorboard={tb_dir}")
+        context.barrier()
     finally:
-        env.close()
+        if env is not None:
+            env.close()
+        context.close()
 
 
 if __name__ == "__main__":

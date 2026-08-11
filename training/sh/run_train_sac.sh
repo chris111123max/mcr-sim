@@ -49,8 +49,44 @@ export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
 
 cd "$PYTHON_ROOT"
 
-# Unified training entrypoint; pass through all CLI args.
-# This version does NOT save raw terminal logs.
-# It only filters repetitive LocalMinDistance determinant warnings from console output.
-"$PYTHON_BIN" "$PYTHON_ROOT/training/py/train_sac.py" "$@" \
-    2>&1 | awk '!/\[WARNING\] \[LocalMinDistance\(localmindistance\)\] Determinant is null/'
+# Distributed mode keeps the same user-facing launcher. Parse only the two
+# launcher-owned flags; every argument is still forwarded unchanged to Python.
+DISTRIBUTED=0
+WORLD_SIZE_ARG=4
+ARGS=("$@")
+for ((i = 0; i < ${#ARGS[@]}; i++)); do
+    case "${ARGS[$i]}" in
+        --distributed)
+            DISTRIBUTED=1
+            ;;
+        --world-size)
+            if ((i + 1 >= ${#ARGS[@]})); then
+                echo "[ERROR] --world-size requires a value"
+                exit 2
+            fi
+            WORLD_SIZE_ARG="${ARGS[$((i + 1))]}"
+            ;;
+        --world-size=*)
+            WORLD_SIZE_ARG="${ARGS[$i]#*=}"
+            ;;
+    esac
+done
+
+export MCR_RUN_TIMESTAMP="${MCR_RUN_TIMESTAMP:-$(date +%Y%m%d_%H%M%S)}"
+TRAIN_SCRIPT="$PYTHON_ROOT/training/py/train_sac.py"
+WARNING_FILTER='!/\[WARNING\] \[LocalMinDistance\(localmindistance\)\] Determinant is null/'
+
+# Do not nest torchrun if this script is invoked from an existing torchrun rank.
+if ((DISTRIBUTED == 1)) && [[ "${WORLD_SIZE:-1}" -le 1 ]]; then
+    TORCHRUN_BIN="${TORCHRUN_BIN:-torchrun}"
+    echo "[LAUNCH] distributed world_size=$WORLD_SIZE_ARG command=$TORCHRUN_BIN"
+    "$TORCHRUN_BIN" \
+        --standalone \
+        --nnodes=1 \
+        --nproc_per_node="$WORLD_SIZE_ARG" \
+        "$TRAIN_SCRIPT" "$@" \
+        2>&1 | awk "$WARNING_FILTER"
+else
+    "$PYTHON_BIN" "$TRAIN_SCRIPT" "$@" \
+        2>&1 | awk "$WARNING_FILTER"
+fi
