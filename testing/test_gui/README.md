@@ -24,6 +24,12 @@ The viewer uses nominal vessel scale 1.00 by default. Use
 `--vessel-scale-factor 0.90` to inspect the hardest shrink-only geometry with
 the same collision and control path before training.
 
+Manual preflight advances 10 training-equivalent environment steps before each
+rendered frame by default. Every individual step still uses the training action
+limit and collision solve. Hold W/S (or hold the pointer button); a quick click
+can be released between simulation updates. Use `--sim-steps-per-frame 1` for
+literal one-step-per-frame playback.
+
 On the Ascend worker, stop any previous server using port 8765 and run:
 
 ```bash
@@ -51,5 +57,5 @@ Available artificial models are B01..B05 and C01..C05. Example:
 ```bash
 bash testing/test_gui/run_mcr_web_viewer.sh \
   --model C05 --vessel-scale-factor 0.90 \
-  --width 1920 --height 1080 --fps 3
+  --width 1280 --height 720 --fps 10 --sim-steps-per-frame 10
 ```

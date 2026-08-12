@@ -198,6 +198,8 @@ INDEX_HTML = r"""<!doctype html>
     try {
       const response = await fetch(endpoint('/api/status'), {cache:'no-store'});
       const data = await response.json();
+      document.getElementById('title').textContent =
+        `MCR SOFA Web Viewer x${data.sim_steps_per_frame}`;
       const requested = data.requested_action.map(v => Number(v).toFixed(1)).join(',');
       const applied = data.applied_action.map(v => Number(v).toFixed(2)).join(',');
       status.textContent = `模型 ${data.model}　${data.width}×${data.height}　` +
@@ -262,9 +264,10 @@ INDEX_HTML = r"""<!doctype html>
 
 
 class ViewerState:
-    def __init__(self, token: str, model: str):
+    def __init__(self, token: str, model: str, sim_steps_per_frame: int):
         self.token = token
         self.model = model
+        self.sim_steps_per_frame = int(sim_steps_per_frame)
         self.frame = b""
         self.width = 0
         self.height = 0
@@ -323,6 +326,7 @@ class ViewerState:
         with self.lock:
             return {
                 "model": self.model,
+                "sim_steps_per_frame": self.sim_steps_per_frame,
                 "width": self.width,
                 "height": self.height,
                 "render_fps": self.render_fps,
@@ -436,6 +440,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=5.0)
     parser.add_argument(
+        "--sim-steps-per-frame",
+        type=int,
+        default=10,
+        help=(
+            "Training-equivalent environment steps before each rendered frame. "
+            "This accelerates manual inspection without enlarging one action step."
+        ),
+    )
+    parser.add_argument(
         "--time-step",
         type=float,
         default=float(os.environ.get("MCR_SOFA_DT", str(SOFA_TIME_STEP_S))),
@@ -492,6 +505,8 @@ def main() -> int:
         raise SystemExit("--width/--height must be at least 320x240")
     if not (0.2 <= args.fps <= 20.0):
         raise SystemExit("--fps must be between 0.2 and 20")
+    if not (1 <= args.sim_steps_per_frame <= 100):
+        raise SystemExit("--sim-steps-per-frame must be between 1 and 100")
     if args.time_step <= 0.0:
         raise SystemExit("--time-step must be positive")
     if args.frame_skip < 1:
@@ -505,7 +520,11 @@ def main() -> int:
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
 
     token = args.access_token.strip() or secrets.token_urlsafe(18)
-    state = ViewerState(token=token, model=args.model)
+    state = ViewerState(
+        token=token,
+        model=args.model,
+        sim_steps_per_frame=int(args.sim_steps_per_frame),
+    )
     state.set_playing(args.start_playing)
 
     env = MCREnv(
@@ -564,7 +583,8 @@ def main() -> int:
             f"settle_steps={args.settle_steps} "
             f"target_threshold={args.target_threshold} "
             f"max_episode_steps={args.max_episode_steps} "
-            f"vessel_scale_factor={args.vessel_scale_factor}",
+            f"vessel_scale_factor={args.vessel_scale_factor} "
+            f"sim_steps_per_frame={args.sim_steps_per_frame}",
             flush=True,
         )
         print(
@@ -593,13 +613,23 @@ def main() -> int:
                 apply_camera_command(env, state, command, initial_camera)
 
             if state.is_playing():
-                requested_action = state.get_requested_action()
-                _, _, terminated, truncated, _ = env.step(requested_action)
-                state.update_applied_action(
-                    getattr(env, "_last_smoothed_action", requested_action),
-                    getattr(env, "current_effective_insert", requested_action[2]),
+                initial_requested_action = state.get_requested_action()
+                active_manual_action = bool(
+                    np.any(np.abs(initial_requested_action) > 1e-8)
                 )
-                state.record_step(stopped=bool(terminated or truncated))
+                steps_this_frame = (
+                    int(args.sim_steps_per_frame) if active_manual_action else 1
+                )
+                for _ in range(steps_this_frame):
+                    requested_action = state.get_requested_action()
+                    _, _, terminated, truncated, _ = env.step(requested_action)
+                    state.update_applied_action(
+                        getattr(env, "_last_smoothed_action", requested_action),
+                        getattr(env, "current_effective_insert", requested_action[2]),
+                    )
+                    state.record_step(stopped=bool(terminated or truncated))
+                    if terminated or truncated:
+                        break
             else:
                 env._update_rgb_buffer()
 
