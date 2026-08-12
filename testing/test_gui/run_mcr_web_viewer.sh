@@ -43,5 +43,31 @@ fi
 # Ascend NPUs are not graphics devices. Mesa software EGL is the portable
 # rendering backend on this display-less worker.
 export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
+export EGL_PLATFORM="${EGL_PLATFORM:-surfaceless}"
+export PYOPENGL_PLATFORM="${PYOPENGL_PLATFORM:-egl}"
+export GALLIUM_DRIVER="${GALLIUM_DRIVER:-llvmpipe}"
+
+# GLVND does not always search a Conda prefix for Mesa's EGL vendor manifest.
+# Discover the persistent files instead of relying on worker-local /usr paths.
+MESA_EGL_VENDOR_JSON="$(find "$PYTHON_PREFIX" -type f \
+    -path '*/glvnd/egl_vendor.d/*.json' -print -quit 2>/dev/null || true)"
+MESA_DRI_DRIVER="$(find "$PYTHON_PREFIX" -type f \
+    \( -name 'swrast_dri.so' -o -name 'kms_swrast_dri.so' \) \
+    -print -quit 2>/dev/null || true)"
+
+if [[ -n "$MESA_EGL_VENDOR_JSON" ]]; then
+    export __EGL_VENDOR_LIBRARY_FILENAMES="$MESA_EGL_VENDOR_JSON"
+fi
+if [[ -n "$MESA_DRI_DRIVER" ]]; then
+    export LIBGL_DRIVERS_PATH="$(dirname -- "$MESA_DRI_DRIVER")"
+fi
+
+if [[ -z "$MESA_EGL_VENDOR_JSON" || -z "$MESA_DRI_DRIVER" ]]; then
+    echo "[ERROR] Persistent Mesa EGL software renderer is incomplete."
+    echo "[ERROR] EGL vendor JSON: ${MESA_EGL_VENDOR_JSON:-missing}"
+    echo "[ERROR] DRI software driver: ${MESA_DRI_DRIVER:-missing}"
+    echo "[HINT]  Install libegl, libgl and mesalib into: $PYTHON_PREFIX"
+    exit 1
+fi
 
 exec "$PYTHON_BIN" "$PYTHON_ROOT/testing/test_gui/run_mcr_web_viewer.py" "$@"
