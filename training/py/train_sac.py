@@ -50,6 +50,7 @@ from mcr_sim.training_config import (
     SAC_BATCH_SIZE,
     SAC_BUFFER_SIZE,
     SAC_EPOCHS,
+    SAC_EPISODES_PER_EPOCH,
     SAC_GAMMA,
     SAC_GRADIENT_STEPS,
     SAC_LEARNING_RATE,
@@ -440,6 +441,8 @@ class DistributedRuntimeCallback(BaseCallback):
         global_batch_size: int,
         local_batch_size: int,
         steps_per_epoch: int,
+        episodes_per_epoch: int = 0,
+        episode_callback=None,
     ):
         super().__init__(verbose=0)
         self.world_size = int(world_size)
@@ -447,6 +450,8 @@ class DistributedRuntimeCallback(BaseCallback):
         self.global_batch_size = int(global_batch_size)
         self.local_batch_size = int(local_batch_size)
         self.steps_per_epoch = int(steps_per_epoch)
+        self.episodes_per_epoch = int(episodes_per_epoch)
+        self.episode_callback = episode_callback
 
     def _on_step(self) -> bool:
         return True
@@ -454,15 +459,93 @@ class DistributedRuntimeCallback(BaseCallback):
     def _on_rollout_end(self) -> None:
         global_timesteps = float(self.model.num_timesteps * self.world_size)
         self.logger.record("distributed/global_timesteps", global_timesteps, exclude="stdout")
-        self.logger.record(
-            "distributed/global_epoch",
-            global_timesteps / float(self.steps_per_epoch),
-            exclude="stdout",
-        )
+        if self.episode_callback is not None and self.episodes_per_epoch > 0:
+            self.logger.record(
+                "distributed/global_epoch",
+                float(self.episode_callback.global_episodes) / float(self.episodes_per_epoch),
+                exclude="stdout",
+            )
+        else:
+            self.logger.record(
+                "distributed/global_epoch",
+                global_timesteps / float(self.steps_per_epoch),
+                exclude="stdout",
+            )
         self.logger.record("distributed/world_size", float(self.world_size), exclude="stdout")
         self.logger.record("distributed/total_n_envs", float(self.total_n_envs), exclude="stdout")
         self.logger.record("distributed/global_batch_size", float(self.global_batch_size), exclude="stdout")
         self.logger.record("distributed/local_batch_size", float(self.local_batch_size), exclude="stdout")
+
+
+class EpisodeBudgetCallback(BaseCallback):
+    """Stop a run after a global number of completed episodes.
+
+    In distributed mode every rank participates in the same all-reduce, so an
+    episode completed on any rank advances the shared budget.  The callback is
+    intentionally installed on every rank; only rank 0 writes checkpoints and
+    TensorBoard scalars.
+    """
+
+    def __init__(
+        self,
+        context,
+        epochs: int,
+        episodes_per_epoch: int,
+        model_dir: Path,
+        checkpoint_prefix: str,
+    ):
+        super().__init__(verbose=0)
+        self.context = context
+        self.epochs = int(epochs)
+        self.episodes_per_epoch = int(episodes_per_epoch)
+        self.target_episodes = self.epochs * self.episodes_per_epoch
+        self.global_episodes = 0
+        self.next_epoch = 1
+        self.model_dir = Path(model_dir)
+        self.checkpoint_prefix = str(checkpoint_prefix)
+
+    def _global_done_count(self) -> int:
+        local_done = int(np.asarray(self.locals.get("dones", []), dtype=np.int64).sum())
+        if not self.context.enabled:
+            return local_done
+        import torch.distributed as dist
+
+        value = th.tensor(
+            [float(local_done)], dtype=th.float32, device=self.context.device.resolved
+        )
+        dist.all_reduce(value, op=dist.ReduceOp.SUM)
+        return int(round(float(value.detach().cpu().item())))
+
+    def _on_step(self) -> bool:
+        completed_now = self._global_done_count()
+        # A vectorized step can finish several environments simultaneously.
+        # Cap accounting at the configured budget so every epoch is reported
+        # as exactly 100 episodes even when the physical step overshoots it.
+        self.global_episodes = min(
+            self.target_episodes, self.global_episodes + completed_now
+        )
+        if self.context.is_main:
+            self.logger.record("episodes/global", float(self.global_episodes), exclude="stdout")
+            self.logger.record(
+                "episodes/epoch",
+                float(min(self.epochs, self.global_episodes // self.episodes_per_epoch)),
+                exclude="stdout",
+            )
+            while (
+                self.global_episodes >= self.next_epoch * self.episodes_per_epoch
+                and self.next_epoch <= self.epochs
+            ):
+                path = self.model_dir / (
+                    f"{self.checkpoint_prefix}_epoch_{self.next_epoch:02d}_"
+                    f"episodes_{self.global_episodes:05d}"
+                )
+                self.model.save(str(path))
+                print(
+                    f"[EPOCH {self.next_epoch:02d}/{self.epochs}] "
+                    f"global_episodes={self.global_episodes} checkpoint={path}.zip"
+                )
+                self.next_epoch += 1
+        return self.global_episodes < self.target_episodes
 
 
 def _parse_ent_coef(value: str) -> Union[str, float]:
@@ -612,15 +695,21 @@ def parse_args():
         type=int,
         default=SAC_EPOCHS,
         help=(
-            "Number of training epochs. One epoch is --steps-per-epoch global "
-            "environment transitions across all ranks (default: 50)."
+            "Number of training epochs. In the default episode mode, one epoch "
+            "contains --episodes-per-epoch completed episodes (default: 20)."
         ),
+    )
+    parser.add_argument(
+        "--episodes-per-epoch",
+        type=int,
+        default=SAC_EPISODES_PER_EPOCH,
+        help="Completed episodes per epoch (default: 100).",
     )
     parser.add_argument(
         "--steps-per-epoch",
         type=int,
         default=SAC_STEPS_PER_EPOCH,
-        help="Global environment transitions per epoch (default: 100000).",
+        help="Legacy transition budget per epoch; ignored in episode mode.",
     )
     parser.add_argument(
         "--timesteps",
@@ -628,7 +717,7 @@ def parse_args():
         default=None,
         help=(
             "Compatibility override for total global transitions. When omitted, "
-            "total transitions = epochs * steps-per-epoch."
+            "episode mode is used: epochs * episodes-per-epoch."
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
@@ -817,7 +906,18 @@ def parse_args():
         default=str(DEFAULT_LOG_ROOT),
         help="Training output root. Defaults to the project-level training_runs directory.",
     )
-    parser.add_argument("--exp-name", type=str, default="sac_waypoint_uniform")
+    parser.add_argument(
+        "--variant",
+        type=str,
+        default="base",
+        help="Algorithm/network variant tag used in output names (default: base).",
+    )
+    parser.add_argument(
+        "--exp-name",
+        type=str,
+        default="",
+        help="Explicit output name. Empty uses the standardized SAC variant name.",
+    )
     parser.add_argument(
         "--save-freq",
         type=int,
@@ -860,10 +960,15 @@ def parse_args():
     # Scene/env sampling is uniform over the active training vessels. No priority sampling.
 
     args = parser.parse_args()
-    if args.epochs <= 0 or args.steps_per_epoch <= 0:
-        parser.error("--epochs and --steps-per-epoch must be positive integers")
+    if args.epochs <= 0 or args.episodes_per_epoch <= 0:
+        parser.error("--epochs and --episodes-per-epoch must be positive integers")
+    if args.steps_per_epoch <= 0:
+        parser.error("--steps-per-epoch must be a positive integer")
+    args.episode_mode = args.timesteps is None
     if args.timesteps is None:
-        args.timesteps = int(args.epochs) * int(args.steps_per_epoch)
+        # Upper bound only; EpisodeBudgetCallback is the authoritative stop
+        # condition.  max_episode_steps makes the bound safe for timeout runs.
+        args.timesteps = int(args.epochs) * int(args.episodes_per_epoch) * int(args.max_episode_steps)
     elif args.timesteps <= 0:
         parser.error("--timesteps must be positive when provided")
     if args.save_freq <= 0:
@@ -1009,12 +1114,20 @@ def main():
         run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_timestamp = context.broadcast_text(run_timestamp)
 
+    if not args.exp_name:
+        dr_tag = f"dr{args.vessel_scale_min:.2f}-{args.vessel_scale_max:.2f}".replace(".", "")
+        device_tag = f"{context.world_size}npu" if context.enabled else "1device"
+        args.exp_name = (
+            f"sac_{args.variant}_{dr_tag}_{total_n_envs}env_"
+            f"{device_tag}_ep{args.episodes_per_epoch}"
+        )
+
     log_root = Path(args.log_root).expanduser()
     if not log_root.is_absolute():
         log_root = PROJECT_ROOT / log_root
-    run_dir = log_root.resolve() / (
-        f"{args.exp_name}{forced_tag}_{args.env_type}_{threshold_tag}_{run_timestamp}"
-    )
+    # Keep run names algorithm/variant/resource based; the task domain is a
+    # runtime setting and should not split otherwise comparable experiments.
+    run_dir = log_root.resolve() / f"{args.exp_name}{forced_tag}_{run_timestamp}"
     model_dir = run_dir / "models"
     tb_dir = run_dir / "tb"
     if context.is_main:
@@ -1033,20 +1146,35 @@ def main():
         env = build_env(args)
 
         callback_list = None
+        if args.episode_mode:
+            checkpoint_prefix = f"sac_{args.variant}"
+            episode_callback = EpisodeBudgetCallback(
+                context=context,
+                epochs=args.epochs,
+                episodes_per_epoch=args.episodes_per_epoch,
+                model_dir=model_dir,
+                checkpoint_prefix=checkpoint_prefix,
+            )
+        else:
+            episode_callback = None
+
         if context.is_main:
-            checkpoint_prefix = f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_ckpt"
+            if not args.episode_mode:
+                checkpoint_prefix = f"sac_{args.variant}_transition_ckpt"
             # One callback call represents total_n_envs transitions across all
             # synchronized ranks, so save_freq retains global-timestep semantics.
             effective_save_freq = max(
                 1, int(math.ceil(float(args.save_freq) / float(total_n_envs)))
             )
-            checkpoint_callback = CheckpointCallback(
-                save_freq=effective_save_freq,
-                save_path=str(model_dir),
-                name_prefix=checkpoint_prefix,
-                save_replay_buffer=False,
-                save_vecnormalize=False,
-            )
+            checkpoint_callback = None
+            if not args.episode_mode:
+                checkpoint_callback = CheckpointCallback(
+                    save_freq=effective_save_freq,
+                    save_path=str(model_dir),
+                    name_prefix=checkpoint_prefix,
+                    save_replay_buffer=False,
+                    save_vecnormalize=False,
+                )
             extra_metrics_callback = ExtraRolloutMetricsCallback(
                 window_size=50, success_label=threshold_tag
             )
@@ -1056,10 +1184,18 @@ def main():
                 global_batch_size=global_batch_size,
                 local_batch_size=local_batch_size,
                 steps_per_epoch=args.steps_per_epoch,
+                episodes_per_epoch=args.episodes_per_epoch if args.episode_mode else 0,
+                episode_callback=episode_callback,
             )
-            callback_list = CallbackList(
-                [checkpoint_callback, extra_metrics_callback, distributed_callback]
-            )
+            callbacks = [extra_metrics_callback, distributed_callback]
+            if checkpoint_callback is not None:
+                callbacks.insert(0, checkpoint_callback)
+            if episode_callback is not None:
+                callbacks.insert(0, episode_callback)
+            callback_list = CallbackList(callbacks)
+        elif episode_callback is not None:
+            # All distributed ranks must enter the same all-reduce collectives.
+            callback_list = episode_callback
 
         algorithm_class = DistributedSAC if context.enabled else SAC
         tensorboard_log = str(tb_dir) if context.is_main else None
@@ -1165,9 +1301,11 @@ def main():
                 f"obs={env.observation_space.shape} action={env.action_space.shape}"
             )
             print(
-                f"[MCR TRAIN] epochs={args.epochs} steps_per_epoch={args.steps_per_epoch} "
-                f"global_steps={args.timesteps} local_steps={local_total_timesteps} "
-                f"max_episode_steps={args.max_episode_steps} checkpoint={args.save_freq}"
+                f"[MCR TRAIN] epochs={args.epochs} "
+                f"episodes_per_epoch={args.episodes_per_epoch} "
+                f"episode_mode={args.episode_mode} "
+                f"global_step_upper_bound={args.timesteps} local_steps={local_total_timesteps} "
+                f"max_episode_steps={args.max_episode_steps}"
             )
             print(
                 f"[MCR TRAIN] SAC lr={args.learning_rate:g} "
@@ -1205,7 +1343,7 @@ def main():
         )
 
         context.barrier()
-        final_model_path = model_dir / f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_final"
+        final_model_path = model_dir / f"sac_{args.variant}_final_epoch_{args.epochs:02d}"
         if context.is_main:
             model.save(str(final_model_path))
             print(f"[DONE] model={final_model_path}.zip")

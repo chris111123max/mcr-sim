@@ -27,8 +27,11 @@ and entropy optimizer paths.
 
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
-- `--epochs` and `--steps-per-epoch`: the primary global transition budget.
-  The default is 50 x 100,000 = 5,000,000 global transitions.
+- `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
+  The default is 20 x 100 = 2,000 completed episodes. All ranks participate
+  in the episode counter and rank 0 saves one checkpoint per epoch.
+- `--steps-per-epoch`: legacy transition-budget setting, used only when
+  `--timesteps` is supplied.
 - `--timesteps`: optional compatibility override for the global transition
   budget (SB3 may overshoot by one global vectorized step).
 - `--buffer-size`: capacity of each rank-local CPU replay buffer.
@@ -36,7 +39,7 @@ and entropy optimizer paths.
 - checkpoint, TensorBoard, progress bar, experiment directory, and final model
   writes are rank-0 only.
 
-For the stable default, `--n-envs 4 --batch-size 512` means one SOFA environment
+For the stable default, `--n-envs 32 --batch-size 512` means eight SOFA environments
 and a 128-transition minibatch on every rank. Increase environment count only
 after measuring SOFA CPU/RAM throughput. Gradient averaging makes the effective
 global minibatch 512.
@@ -50,10 +53,10 @@ The normal launcher inserts `torchrun` automatically:
   --device npu \
   --distributed \
   --world-size 4 \
-  --n-envs 4 \
+  --n-envs 32 \
   --batch-size 512 \
-  --epochs 50 \
-  --steps-per-epoch 100000 \
+  --epochs 20 \
+  --episodes-per-epoch 100 \
   --target-threshold 0.003 \
   --time-step 0.01 \
   --frame-skip 1 \
@@ -74,8 +77,8 @@ size is used to retain global timestep meaning when changing world size.
 
 ## Server smoke test
 
-Do not start the full five-million-step run first. Use four ranks, four
-environments, and `--epochs 1 --steps-per-epoch 2000`. Confirm all rank/device
+Do not start the full run first. Use four ranks, 32 environments, and
+`--epochs 1 --episodes-per-epoch 2`. Confirm all rank/device
 lines appear, HCCL initializes, training losses advance, and exactly one
 checkpoint/TensorBoard run is written.
 

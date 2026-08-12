@@ -100,12 +100,16 @@ FRICTION_COEFFICIENT = 0.01
 CONSTRAINT_TOLERANCE = 1e-6
 CONSTRAINT_MAX_ITERATIONS = 20000
 
-# SAC defaults for the 4-NPU target.  Batch size and environment count are
+# SAC defaults for the 4-NPU target. Batch size and environment count are
 # global values; train_sac.py divides them evenly between ranks.
-SAC_EPOCHS = 50
-SAC_STEPS_PER_EPOCH = 100_000
+# Comparison runs use an episode-based budget.  A vectorized step can finish
+# several environments at once, so the callback stops at the first vector
+# step reaching the boundary (the reported count is therefore >= 100).
+SAC_EPOCHS = 20
+SAC_EPISODES_PER_EPOCH = 100
+SAC_STEPS_PER_EPOCH = MAX_EPISODE_STEPS * SAC_EPISODES_PER_EPOCH
 SAC_TOTAL_TIMESTEPS = SAC_EPOCHS * SAC_STEPS_PER_EPOCH
-SAC_N_ENVS = 4
+SAC_N_ENVS = 32
 SAC_LEARNING_RATE = 3e-4
 SAC_BATCH_SIZE = 512
 SAC_BUFFER_SIZE = 500_000

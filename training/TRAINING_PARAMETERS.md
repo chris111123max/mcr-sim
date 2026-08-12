@@ -83,13 +83,13 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 
 ## SAC 与 epoch 语义
 
-一个 epoch 定义为 **100000 条全局环境 transition**。默认训练 50 epoch，即
-500 万条全局 transition。四卡分布式训练时，该数量是四张卡和全部环境的合计，
-不是每张卡各自的数量。默认每 epoch 保存一次 checkpoint。
+一个 epoch 定义为 **100 个全局完成回合**。默认训练 20 epoch，即 2000 个回合。
+四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
+`--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| epoch / steps per epoch | 50 / 100000 | 训练预算与保存周期 |
+| epoch / episodes per epoch | 20 / 100 | 训练预算与保存周期 |
 | 全局环境数 | 4 | 四卡时每卡 1 个 SOFA 环境，先保证稳定再做吞吐测试 |
 | 全局/local batch（四卡） | 512 / 128 | 每卡独立采样，梯度同步后等效全局 512 |
 | replay buffer | 每卡 500000 | 每个 rank 的 CPU 回放容量 |
@@ -104,14 +104,14 @@ bash training/sh/run_train_sac.sh \
   --device npu \
   --distributed \
   --world-size 4 \
-  --n-envs 4 \
-  --epochs 50 \
-  --steps-per-epoch 100000 \
+  --n-envs 32 \
+  --epochs 20 \
+  --episodes-per-epoch 100 \
   --render headless \
   --exp-name sac_b_c_scale090_100
 ```
 
-旧的 `--timesteps` 仍可使用，并会覆盖 `epochs × steps-per-epoch`，以兼容已有
+旧的 `--timesteps` 仍可使用，并会切换到 transition-budget 模式，以兼容已有
 启动命令。第一次上服务器应先运行短 smoke test，例如
-`--epochs 1 --steps-per-epoch 2000`，确认 SOFA、HCCL、日志和 checkpoint 后再开始
+`--epochs 1 --episodes-per-epoch 2`，确认 SOFA、HCCL、日志和 checkpoint 后再开始
 完整训练。
