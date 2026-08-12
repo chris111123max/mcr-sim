@@ -84,12 +84,15 @@ INDEX_HTML = r"""<!doctype html>
     #frame { max-width: 100%; max-height: 100%; width: 100%; height: 100%;
              object-fit: contain; user-select: none; cursor: grab; background: #202f3d; }
     #frame.dragging { cursor: grabbing; }
-    #controls { position: absolute; left: 14px; bottom: 14px; display: flex; flex-wrap: wrap;
-                gap: 7px; padding: 9px; border-radius: 9px; background: #111a22dd;
+    #controls { position: absolute; left: 14px; bottom: 14px; display: flex;
+                flex-direction: column; gap: 7px; padding: 9px; border-radius: 9px; background: #111a22dd;
                 border: 1px solid #415263; backdrop-filter: blur(5px); }
+    .control-row { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+    .control-label { min-width: 64px; color: #a9bac9; font-size: 12px; }
     button { border: 1px solid #587086; background: #253646; color: #eef6fc;
              border-radius: 6px; padding: 7px 10px; cursor: pointer; }
     button:hover { background: #34516a; }
+    button.active { background: #176b87; border-color: #69d8fb; }
     #hint { position: absolute; right: 14px; bottom: 14px; padding: 8px 10px;
             border-radius: 7px; background: #111a22cc; color: #b7c7d4; font-size: 12px; }
     #error { position: absolute; top: 16px; background: #741f2bcc; border: 1px solid #ef7181;
@@ -102,17 +105,30 @@ INDEX_HTML = r"""<!doctype html>
     <img id="frame" alt="MCR SOFA frame" draggable="false">
     <div id="error"></div>
     <div id="controls">
-      <button data-op="play">▶ 仿真</button>
-      <button data-op="pause">⏸ 暂停</button>
-      <button data-op="reset_camera">重置视角</button>
-      <button data-op="zoom_in">放大</button>
-      <button data-op="zoom_out">缩小</button>
-      <button data-op="left">左转</button>
-      <button data-op="right">右转</button>
-      <button data-op="up">上转</button>
-      <button data-op="down">下转</button>
+      <div class="control-row">
+        <span class="control-label">仿真/相机</span>
+        <button data-op="play">▶ 仿真</button>
+        <button data-op="pause">⏸ 暂停</button>
+        <button data-op="reset_camera">重置视角</button>
+        <button data-op="zoom_in">放大</button>
+        <button data-op="zoom_out">缩小</button>
+        <button data-op="left">左转</button>
+        <button data-op="right">右转</button>
+        <button data-op="up">上转</button>
+        <button data-op="down">下转</button>
+      </div>
+      <div class="control-row">
+        <span class="control-label">导管动作</span>
+        <button data-action="rot_n_pos">N＋ (I)</button>
+        <button data-action="rot_n_neg">N－ (K)</button>
+        <button data-action="rot_b_pos">B＋ (J)</button>
+        <button data-action="rot_b_neg">B－ (L)</button>
+        <button data-action="insert">插入 (W)</button>
+        <button data-action="retract">回撤 (S)</button>
+        <button data-action="neutral">动作归零 (空格)</button>
+      </div>
     </div>
-    <div id="hint">左键拖动：旋转　右键拖动：平移　滚轮：缩放</div>
+    <div id="hint">先启动仿真；按住 I/K/J/L 调磁场，W/S 插入/回撤，空格归零</div>
   </div>
 <script>
 (() => {
@@ -122,6 +138,16 @@ INDEX_HTML = r"""<!doctype html>
   const error = document.getElementById('error');
   const endpoint = (path) => `${path}?token=${encodeURIComponent(token)}`;
   let frameSeq = 0, dragging = false, button = 0, lastX = 0, lastY = 0, lastSend = 0;
+  const heldKeys = new Set(), heldPointers = new Map();
+  const actionVectors = {
+    rot_n_pos: [1, 0, 0], rot_n_neg: [-1, 0, 0],
+    rot_b_pos: [0, 1, 0], rot_b_neg: [0, -1, 0],
+    insert: [0, 0, 1], retract: [0, 0, -1]
+  };
+  const keyActions = {
+    KeyI: 'rot_n_pos', KeyK: 'rot_n_neg', KeyJ: 'rot_b_pos',
+    KeyL: 'rot_b_neg', KeyW: 'insert', KeyS: 'retract'
+  };
 
   function showError(message) { error.textContent = message; error.style.display = 'block'; }
   function clearError() { error.style.display = 'none'; }
@@ -137,15 +163,67 @@ INDEX_HTML = r"""<!doctype html>
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
     } catch (e) { showError(`控制失败：${e}`); }
   }
+  function currentAction() {
+    const value = [0, 0, 0];
+    const names = [...heldKeys, ...heldPointers.values()];
+    names.forEach(name => actionVectors[name].forEach((v, i) => value[i] += v));
+    return value.map(v => Math.max(-1, Math.min(1, v)));
+  }
+  async function sendAction(action = currentAction(), keepalive = false) {
+    const extra = `&n=${action[0]}&b=${action[1]}&insert=${action[2]}`;
+    try {
+      const response = await fetch(endpoint('/api/action') + extra,
+        {method:'POST', keepalive});
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (e) { if (!keepalive) showError(`导管控制失败：${e}`); }
+  }
+  function neutralize(keepalive = false) {
+    heldKeys.clear(); heldPointers.clear();
+    document.querySelectorAll('button[data-action]').forEach(b => b.classList.remove('active'));
+    sendAction([0, 0, 0], keepalive);
+  }
   async function refreshStatus() {
     try {
       const response = await fetch(endpoint('/api/status'), {cache:'no-store'});
       const data = await response.json();
+      const requested = data.requested_action.map(v => Number(v).toFixed(1)).join(',');
+      const applied = data.applied_action.map(v => Number(v).toFixed(2)).join(',');
       status.textContent = `模型 ${data.model}　${data.width}×${data.height}　` +
-        `渲染 ${data.render_fps.toFixed(1)} FPS　仿真 ${data.playing ? '运行' : '暂停'}　步数 ${data.steps}`;
+        `渲染 ${data.render_fps.toFixed(1)} FPS　仿真 ${data.playing ? '运行' : '暂停'}　` +
+        `训练等价控制　请求 [${requested}]　应用 [${applied}]　` +
+        `有效插入 ${Number(data.effective_insert).toFixed(2)}　步数 ${data.steps}`;
     } catch (_) { status.textContent = '状态连接中断'; }
   }
   document.querySelectorAll('button[data-op]').forEach(b => b.onclick = () => command(b.dataset.op));
+  document.querySelectorAll('button[data-action]').forEach(b => {
+    b.addEventListener('contextmenu', e => e.preventDefault());
+    b.addEventListener('pointerdown', e => {
+      e.preventDefault();
+      if (b.dataset.action === 'neutral') { neutralize(); return; }
+      b.setPointerCapture(e.pointerId);
+      heldPointers.set(e.pointerId, b.dataset.action); b.classList.add('active'); sendAction();
+    });
+    const release = e => {
+      if (!heldPointers.has(e.pointerId)) return;
+      heldPointers.delete(e.pointerId); b.classList.remove('active'); sendAction();
+    };
+    b.addEventListener('pointerup', release); b.addEventListener('pointercancel', release);
+  });
+  window.addEventListener('keydown', e => {
+    if (e.code === 'Space') { e.preventDefault(); neutralize(); return; }
+    const name = keyActions[e.code];
+    if (!name || heldKeys.has(name)) return;
+    e.preventDefault(); heldKeys.add(name); sendAction();
+  });
+  window.addEventListener('keyup', e => {
+    const name = keyActions[e.code];
+    if (!name) return;
+    e.preventDefault(); heldKeys.delete(name); sendAction();
+  });
+  window.addEventListener('blur', () => neutralize(true));
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) neutralize(true);
+  });
   frame.addEventListener('contextmenu', e => e.preventDefault());
   frame.addEventListener('pointerdown', e => {
     dragging = true; button = e.button; lastX = e.clientX; lastY = e.clientY;
@@ -181,6 +259,9 @@ class ViewerState:
         self.render_fps = 0.0
         self.playing = False
         self.steps = 0
+        self.requested_action = [0.0, 0.0, 0.0]
+        self.applied_action = [0.0, 0.0, 0.0]
+        self.effective_insert = 0.0
         self.error: Optional[str] = None
         self.lock = threading.Lock()
         self.commands: "queue.Queue[Tuple[str, float, float]]" = queue.Queue()
@@ -195,6 +276,8 @@ class ViewerState:
     def set_playing(self, playing: bool) -> None:
         with self.lock:
             self.playing = bool(playing)
+            if not self.playing:
+                self.requested_action = [0.0, 0.0, 0.0]
 
     def is_playing(self) -> bool:
         with self.lock:
@@ -205,6 +288,20 @@ class ViewerState:
             self.steps += 1
             if stopped:
                 self.playing = False
+                self.requested_action = [0.0, 0.0, 0.0]
+
+    def set_requested_action(self, action) -> None:
+        with self.lock:
+            self.requested_action = [float(value) for value in action]
+
+    def get_requested_action(self) -> np.ndarray:
+        with self.lock:
+            return np.asarray(self.requested_action, dtype=np.float32)
+
+    def update_applied_action(self, action, effective_insert: float) -> None:
+        with self.lock:
+            self.applied_action = [float(value) for value in action]
+            self.effective_insert = float(effective_insert)
 
     def set_error(self, error: str) -> None:
         with self.lock:
@@ -219,6 +316,10 @@ class ViewerState:
                 "render_fps": self.render_fps,
                 "playing": self.playing,
                 "steps": self.steps,
+                "control_mode": "training_equivalent",
+                "requested_action": self.requested_action,
+                "applied_action": self.applied_action,
+                "effective_insert": self.effective_insert,
                 "error": self.error,
             }
 
@@ -272,6 +373,23 @@ def make_handler(state: ViewerState):
             path = urlparse(self.path).path
             if not self._authorized():
                 self._send(HTTPStatus.FORBIDDEN, "text/plain", b"Forbidden\n")
+                return
+            if path == "/api/action":
+                query = self._query()
+                try:
+                    action = [
+                        float(query.get("n", ["0"])[0]),
+                        float(query.get("b", ["0"])[0]),
+                        float(query.get("insert", ["0"])[0]),
+                    ]
+                except ValueError:
+                    self._send(HTTPStatus.BAD_REQUEST, "text/plain", b"Bad action\n")
+                    return
+                if any(not math.isfinite(value) or abs(value) > 1.0 for value in action):
+                    self._send(HTTPStatus.BAD_REQUEST, "text/plain", b"Action outside [-1, 1]\n")
+                    return
+                state.set_requested_action(action)
+                self._send(HTTPStatus.OK, "application/json", b'{"ok":true}')
                 return
             if path != "/api/control":
                 self._send(HTTPStatus.NOT_FOUND, "text/plain", b"Not found\n")
@@ -405,7 +523,6 @@ def main() -> int:
         print("Security  : do not share the URL or token; Ctrl+C stops the viewer", flush=True)
         print("=" * 72, flush=True)
 
-        zero_action = np.zeros(env.action_space.shape, dtype=np.float32)
         frame_period = 1.0 / float(args.fps)
         last_frame_time = time.monotonic()
         fps_ema = 0.0
@@ -420,7 +537,12 @@ def main() -> int:
                 apply_camera_command(env, state, command, initial_camera)
 
             if state.is_playing():
-                _, _, terminated, truncated, _ = env.step(zero_action)
+                requested_action = state.get_requested_action()
+                _, _, terminated, truncated, _ = env.step(requested_action)
+                state.update_applied_action(
+                    getattr(env, "_last_smoothed_action", requested_action),
+                    getattr(env, "current_effective_insert", requested_action[2]),
+                )
                 state.record_step(stopped=bool(terminated or truncated))
             else:
                 env._update_rgb_buffer()

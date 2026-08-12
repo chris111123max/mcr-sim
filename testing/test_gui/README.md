@@ -5,6 +5,13 @@ pyglet/EGL and exposes only the latest PNG frame plus camera controls on a
 loopback HTTP port. It does not change training, rewards, observations,
 actions, collision, or the ROS simulator.
 
+Manual catheter control defaults to training-equivalent mode. The browser
+sends a three-dimensional action to the existing `MCREnv.step(action)` path,
+so action clipping, rate limiting, insertion safety damping, magnetic control,
+and SOFA collision handling are identical to SAC environment interaction.
+Start the simulation first, then hold I/K for local-N magnetic rotation, J/L
+for local-B rotation, W/S for insertion/retraction, or Space to neutralize.
+
 On the Ascend worker, stop any previous server using port 8765 and run:
 
 ```bash
