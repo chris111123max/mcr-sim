@@ -133,6 +133,31 @@ class SignedDistanceGrid:
 
         return output[0] if scalar_input else output
 
+    def gradient(self, points_source) -> np.ndarray:
+        """Return the source-space SDF gradient at one or more points.
+
+        The generator stores distance and coordinates in the same units, so a
+        well-resolved signed-distance gradient has approximately unit length.
+        Central differences use one grid spacing on each axis.  Samples too
+        close to the VTI boundary return a zero vector rather than propagating
+        infinities into the policy observation.
+        """
+
+        points = np.asarray(points_source, dtype=np.float64)
+        scalar_input = points.ndim == 1
+        points = points.reshape((-1, 3))
+        result = np.zeros((len(points), 3), dtype=np.float64)
+        for axis in range(3):
+            offset = np.zeros(3, dtype=np.float64)
+            offset[axis] = float(self.spacing[axis])
+            lower = np.asarray(self.sample(points - offset[None, :]), dtype=np.float64)
+            upper = np.asarray(self.sample(points + offset[None, :]), dtype=np.float64)
+            valid = np.isfinite(lower) & np.isfinite(upper)
+            result[valid, axis] = (
+                upper[valid] - lower[valid]
+            ) / (2.0 * float(self.spacing[axis]))
+        return result[0] if scalar_input else result
+
 
 @lru_cache(maxsize=32)
 def load_signed_distance_grid(path: PathLike) -> SignedDistanceGrid:

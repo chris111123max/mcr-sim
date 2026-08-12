@@ -209,18 +209,24 @@ INDEX_HTML = r"""<!doctype html>
       const episodeLabel = episodeLabels[data.episode_state] || data.episode_state;
       const distance = data.distance_to_goal_mm == null
         ? '--' : Number(data.distance_to_goal_mm).toFixed(2);
-      const safety = data.safety_ratio == null
-        ? '--' : Number(data.safety_ratio).toFixed(3);
       const clearance = data.sdf_clearance_mm == null
         ? '--' : Number(data.sdf_clearance_mm).toFixed(2);
+      const bodyClearance = data.sdf_body_clearance_mm == null
+        ? '--' : Number(data.sdf_body_clearance_mm).toFixed(2);
+      const inserted = data.sdf_inserted_length_mm == null
+        ? '--' : Number(data.sdf_inserted_length_mm).toFixed(1);
+      const tipWallSteps = Number(data.sdf_tip_near_wall_counter || 0);
       const routeGap = data.route_graph_gap_mm == null
         ? '--' : Number(data.route_graph_gap_mm).toFixed(2);
+      const successQuality = data.episode_state === 'success'
+        ? `　Tip安全成功 ${data.safe_success ? '是' : '否'}　Tip全程无穿壁 ${data.contact_free_success ? '是' : '否'}`
+        : '';
       const requested = data.requested_action.map(v => Number(v).toFixed(1)).join(',');
       const applied = data.applied_action.map(v => Number(v).toFixed(2)).join(',');
       status.textContent = `模型 ${data.model}　${data.width}×${data.height}　` +
         `渲染 ${data.render_fps.toFixed(1)} FPS　回合 ${episodeLabel}　` +
-        `终点距离 ${distance}mm　SDF净空 ${clearance}mm　` +
-        `路径差 ${routeGap}mm　旧安全比 ${safety}　` +
+        `终点距离 ${distance}mm　Tip净空 ${clearance}mm　Body最小净空 ${bodyClearance}mm　` +
+        `Tip连续近壁 ${tipWallSteps}步　路径差 ${routeGap}mm　SDF检测段 ${inserted}mm${successQuality}　` +
         `训练等价控制　请求 [${requested}]　应用 [${applied}]　` +
         `有效插入 ${Number(data.effective_insert).toFixed(2)}　步数 ${data.steps}`;
     } catch (_) { status.textContent = '状态连接中断'; }
@@ -293,9 +299,13 @@ class ViewerState:
         self.episode_state = "paused"
         self.terminal_reason = "not_done"
         self.distance_to_goal_mm: Optional[float] = None
-        self.safety_ratio: Optional[float] = None
         self.sdf_clearance_mm: Optional[float] = None
+        self.sdf_body_clearance_mm: Optional[float] = None
+        self.sdf_inserted_length_mm: Optional[float] = None
+        self.sdf_tip_near_wall_counter = 0
         self.route_graph_gap_mm: Optional[float] = None
+        self.safe_success = False
+        self.contact_free_success = False
         self.steps = 0
         self.requested_action = [0.0, 0.0, 0.0]
         self.applied_action = [0.0, 0.0, 0.0]
@@ -345,14 +355,24 @@ class ViewerState:
             self.distance_to_goal_mm = self._finite_optional(
                 info.get("current_dist_to_goal"), 1000.0
             )
-            self.safety_ratio = self._finite_optional(
-                info.get("centerline_safety_ratio")
-            )
             self.sdf_clearance_mm = self._finite_optional(
-                info.get("sdf_surface_clearance"), 1000.0
+                info.get("sdf_tip_surface_clearance"), 1000.0
+            )
+            self.sdf_body_clearance_mm = self._finite_optional(
+                info.get("sdf_body_min_surface_clearance"), 1000.0
+            )
+            self.sdf_inserted_length_mm = self._finite_optional(
+                info.get("sdf_inserted_length"), 1000.0
+            )
+            self.sdf_tip_near_wall_counter = int(
+                info.get("sdf_tip_near_wall_counter", 0)
             )
             self.route_graph_gap_mm = self._finite_optional(
                 info.get("route_graph_distance_gap"), 1000.0
+            )
+            self.safe_success = bool(info.get("safe_success", False))
+            self.contact_free_success = bool(
+                info.get("contact_free_success", False)
             )
             if stopped:
                 self.playing = False
@@ -377,9 +397,13 @@ class ViewerState:
             self.episode_state = "paused"
             self.terminal_reason = "not_done"
             self.distance_to_goal_mm = None
-            self.safety_ratio = None
             self.sdf_clearance_mm = None
+            self.sdf_body_clearance_mm = None
+            self.sdf_inserted_length_mm = None
+            self.sdf_tip_near_wall_counter = 0
             self.route_graph_gap_mm = None
+            self.safe_success = False
+            self.contact_free_success = False
             self.steps = 0
             self.requested_action = [0.0, 0.0, 0.0]
             self.applied_action = [0.0, 0.0, 0.0]
@@ -414,9 +438,13 @@ class ViewerState:
                 "episode_state": self.episode_state,
                 "terminal_reason": self.terminal_reason,
                 "distance_to_goal_mm": self.distance_to_goal_mm,
-                "safety_ratio": self.safety_ratio,
                 "sdf_clearance_mm": self.sdf_clearance_mm,
+                "sdf_body_clearance_mm": self.sdf_body_clearance_mm,
+                "sdf_inserted_length_mm": self.sdf_inserted_length_mm,
+                "sdf_tip_near_wall_counter": self.sdf_tip_near_wall_counter,
                 "route_graph_gap_mm": self.route_graph_gap_mm,
+                "safe_success": self.safe_success,
+                "contact_free_success": self.contact_free_success,
                 "steps": self.steps,
                 "control_mode": "training_equivalent",
                 "requested_action": self.requested_action,
@@ -729,8 +757,11 @@ def main() -> int:
                             f"reason={info.get('terminal_reason', 'unknown')}",
                             f"steps={terminal_status['steps']}",
                             f"distance_mm={terminal_status['distance_to_goal_mm']}",
-                            f"safety_ratio={terminal_status['safety_ratio']}",
                             f"sdf_clearance_mm={terminal_status['sdf_clearance_mm']}",
+                            f"sdf_body_clearance_mm={terminal_status['sdf_body_clearance_mm']}",
+                            f"sdf_inserted_length_mm={terminal_status['sdf_inserted_length_mm']}",
+                            f"safe_success={terminal_status['safe_success']}",
+                            f"contact_free_success={terminal_status['contact_free_success']}",
                             f"route_graph_gap_mm={terminal_status['route_graph_gap_mm']}",
                             flush=True,
                         )

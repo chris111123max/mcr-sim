@@ -40,12 +40,16 @@ from .training_config import (
     SETTLE_STEPS,
     SOFA_TIME_STEP_S,
     SDF_CLEARANCE_OBSERVATION_SCALE_M,
+    SDF_FORWARD_PROBE_DISTANCES_M,
     SDF_NEAR_WALL_MARGIN_M,
     SDF_OUTSIDE_CENTER_TOLERANCE_M,
     SDF_OUTSIDE_CONFIRM_STEPS,
+    SDF_SAMPLE_STEP_FRACTION,
     START_WINDOW_DISTANCE_M,
     TARGET_THRESHOLD_M,
     TARGET_WINDOW_DISTANCE_M,
+    TIP_NEAR_WALL_GRACE_STEPS,
+    TIP_NEAR_WALL_RAMP_STEPS,
     WAYPOINT_HANDOFF_CONFIRM_STEPS,
     WAYPOINT_HANDOFF_MARGIN_M,
     WAYPOINT_OBSERVATION_SCALE_M,
@@ -64,7 +68,6 @@ FLAT_CATHETER_DESTINATION_EXIT_POINT = np.array([0.101129, 0.0238015, 0.002], dt
 AORTIC_CATHETER_DESTINATION_EXIT_POINT = np.array([-0.0101583, -0.180636, 0.0345185], dtype=np.float32)
 
 
-#这个是1950万步的环境，小分叉容易穿模
 @unique
 class ObservationType(Enum):
     RGB = 0
@@ -192,6 +195,46 @@ class MCREnv(SofaEnv):
                 )
             ),
         )
+        self.sdf_sample_step_fraction = float(
+            create_scene_kwargs.get(
+                "sdf_sample_step_fraction",
+                SDF_SAMPLE_STEP_FRACTION,
+            )
+        )
+        self.sdf_forward_probe_distances = tuple(
+            float(value)
+            for value in create_scene_kwargs.get(
+                "sdf_forward_probe_distances",
+                SDF_FORWARD_PROBE_DISTANCES_M,
+            )
+        )
+        if not (0.0 < self.sdf_sample_step_fraction <= 1.0):
+            raise ValueError("sdf_sample_step_fraction must be in (0, 1].")
+        if (
+            len(self.sdf_forward_probe_distances) != 3
+            or any(value <= 0.0 for value in self.sdf_forward_probe_distances)
+        ):
+            raise ValueError(
+                "Exactly three positive sdf_forward_probe_distances are required."
+            )
+        self.tip_near_wall_grace_steps = max(
+            0,
+            int(
+                create_scene_kwargs.get(
+                    "tip_near_wall_grace_steps",
+                    TIP_NEAR_WALL_GRACE_STEPS,
+                )
+            ),
+        )
+        self.tip_near_wall_ramp_steps = max(
+            1,
+            int(
+                create_scene_kwargs.get(
+                    "tip_near_wall_ramp_steps",
+                    TIP_NEAR_WALL_RAMP_STEPS,
+                )
+            ),
+        )
         self.wrong_branch_distance_margin = float(
             create_scene_kwargs.get(
                 "wrong_branch_distance_margin",
@@ -249,11 +292,13 @@ class MCREnv(SofaEnv):
             int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
         )
 
-        # Actor observation: 26-D current geometry + 4 * 7-D action-response history = 54-D.
-        # The six vessel features combine selected-route geometry, VTI wall
-        # clearance, and complete-graph branch deviation.
-        self.vessel_section_feature_dim = 6
-        self.actor_current_geometry_dim = 26
+        # Actor observation: 32-D current geometry + 4 * 7-D action-response
+        # history = 60-D.  The 12 vessel features combine selected-route
+        # geometry, tip SDF clearance/inward normal,
+        # three forward probes, and complete-graph branch deviation.  Dense
+        # clearance features are tip-only; whole-body SDF is containment-only.
+        self.vessel_section_feature_dim = 12
+        self.actor_current_geometry_dim = 32
         self.actor_dynamic_step_dim = 7
         self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", ACTOR_HISTORY_STEPS)))
         self.actor_dynamic_history_dim = self.actor_dynamic_step_dim * self.actor_history_steps
@@ -333,15 +378,33 @@ class MCREnv(SofaEnv):
         self.min_safety_margin_this_episode = np.inf
         self.current_sdf_tip_signed_distance = np.nan
         self.current_sdf_max_signed_distance = np.nan
+        self.current_sdf_body_min_surface_clearance = np.nan
         self.current_sdf_surface_clearance = np.nan
         self.current_sdf_near_wall = False
         self.current_sdf_penetrating = False
         self.current_sdf_sample_count = 0
+        self.current_sdf_inserted_length = 0.0
+        self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
+        self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_forward_clearances = np.full(
+            len(self.sdf_forward_probe_distances),
+            np.nan,
+            dtype=np.float64,
+        )
+        self._sdf_geometry_cache_step = -1
+        self._sdf_geometry_cache_tip = None
         self.sdf_outside_counter = 0
         self.sdf_outside_confirmed = False
         self.min_sdf_surface_clearance_this_episode = np.inf
+        self.min_sdf_body_surface_clearance_this_episode = np.inf
         self.max_sdf_signed_distance_this_episode = -np.inf
         self.sdf_wall_contact_steps_episode = 0
+        self.sdf_tip_near_wall_counter = 0
+        self.sdf_tip_near_wall_counter_max_episode = 0
+        self.sdf_tip_near_wall_steps_episode = 0
+        self.max_sdf_penetration_depth_this_episode = 0.0
+        self.sdf_penetration_integral_this_episode = 0.0
+        self.sdf_penetration_this_episode = False
         self.current_graph_distance = np.nan
         self.current_route_graph_distance_gap = 0.0
         self.current_off_target_branch_feature = 0.0
@@ -359,6 +422,8 @@ class MCREnv(SofaEnv):
         # Episode state.
         self.episode_success = False
         self.episode_success_2mm = False
+        self.episode_safe_success = False
+        self.episode_contact_free_success = False
         self.min_dist_this_episode = np.inf
         self.non_finite_failure = False
         self.is_out_of_bounds = False
@@ -764,6 +829,8 @@ class MCREnv(SofaEnv):
         self._elapsed_steps = 0
         self.episode_success = False
         self.episode_success_2mm = False
+        self.episode_safe_success = False
+        self.episode_contact_free_success = False
         self.min_dist_this_episode = np.inf
         self.non_finite_failure = False
         self.is_out_of_bounds = False
@@ -774,15 +841,33 @@ class MCREnv(SofaEnv):
         self.min_safety_margin_this_episode = np.inf
         self.current_sdf_tip_signed_distance = np.nan
         self.current_sdf_max_signed_distance = np.nan
+        self.current_sdf_body_min_surface_clearance = np.nan
         self.current_sdf_surface_clearance = np.nan
         self.current_sdf_near_wall = False
         self.current_sdf_penetrating = False
         self.current_sdf_sample_count = 0
+        self.current_sdf_inserted_length = 0.0
+        self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
+        self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_forward_clearances = np.full(
+            len(self.sdf_forward_probe_distances),
+            np.nan,
+            dtype=np.float64,
+        )
+        self._sdf_geometry_cache_step = -1
+        self._sdf_geometry_cache_tip = None
         self.sdf_outside_counter = 0
         self.sdf_outside_confirmed = False
         self.min_sdf_surface_clearance_this_episode = np.inf
+        self.min_sdf_body_surface_clearance_this_episode = np.inf
         self.max_sdf_signed_distance_this_episode = -np.inf
         self.sdf_wall_contact_steps_episode = 0
+        self.sdf_tip_near_wall_counter = 0
+        self.sdf_tip_near_wall_counter_max_episode = 0
+        self.sdf_tip_near_wall_steps_episode = 0
+        self.max_sdf_penetration_depth_this_episode = 0.0
+        self.sdf_penetration_integral_this_episode = 0.0
+        self.sdf_penetration_this_episode = False
         self.current_graph_distance = np.nan
         self.current_route_graph_distance_gap = 0.0
         self.current_off_target_branch_feature = 0.0
@@ -988,7 +1073,7 @@ class MCREnv(SofaEnv):
         tip_quat = tip_pose[3:7]
         frame = self._build_tip_local_frame(tip_quat)
 
-        # Update safety features from centerline; reward does not use centerline progress.
+        # Refresh selected-route geometry plus direct SDF/graph safety features.
         self._update_vessel_safety_state(tip_pos)
 
         tip_forward_world = self._quat_rotate_vector(tip_quat, np.array([1.0, 0.0, 0.0], dtype=np.float32))
@@ -1032,7 +1117,11 @@ class MCREnv(SofaEnv):
         prev_action = np.asarray(getattr(self, "_last_smoothed_action", np.zeros(3, dtype=np.float32)), dtype=np.float32).reshape(3).copy()
         prev_action[2] = float(getattr(self, "current_effective_insert", prev_action[2]))
 
-        vessel_section_features = self._get_vessel_section_features(tip_pos)
+        vessel_section_features = self._get_vessel_section_features(
+            tip_pos=tip_pos,
+            tip_frame=frame,
+            tip_forward_world=tip_forward_world,
+        )
         actor_current_geometry = self._build_actor_current_geometry_observation(
             tip_forward_local=tip_forward_local,
             magnetic_field_norm=magnetic_field_norm,
@@ -1094,9 +1183,8 @@ class MCREnv(SofaEnv):
         #   - final target phase: target_approach and successful_task;
         #   - out-of-vessel terminal penalty;
         #   - timeout terminal penalty is added in step() after truncated is known.
-        # Tip-centerline approach/keep/near-wall reward terms are disabled, but
-        # centerline safety features are still computed for observation, logging,
-        # waypoint gating, and out-of-vessel termination.
+        # Centreline geometry is retained for ordered navigation.  Wall risk and
+        # out-of-vessel termination come from the VTI SDF whenever it is present.
         # Continuous potential-style progress feature.  One feature unit is
         # 1 mm of actual approach, clipped to keep rare solver jumps bounded.
         # A micron-scale numerical change therefore no longer receives the
@@ -1112,18 +1200,35 @@ class MCREnv(SofaEnv):
         )
 
         if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
-            clearance = float(self.current_sdf_surface_clearance)
-            near_wall_feature = float(
+            # Dense wall shaping is tip-only.  The flexible body may rest on or
+            # slide along the wall; its SDF samples are used only for true
+            # centre-outside termination and diagnostics.
+            tip_clearance = float(self.current_sdf_surface_clearance)
+            base_near_wall_feature = float(
                 np.clip(
-                    (float(self.sdf_near_wall_margin) - max(clearance, 0.0))
+                    (float(self.sdf_near_wall_margin) - max(tip_clearance, 0.0))
                     / max(float(self.sdf_near_wall_margin), 1e-9),
                     0.0,
                     1.0,
                 )
             )
+            persistence = max(
+                0,
+                int(self.sdf_tip_near_wall_counter)
+                - int(self.tip_near_wall_grace_steps),
+            )
+            persistence_scale = float(
+                np.clip(
+                    persistence / float(self.tip_near_wall_ramp_steps),
+                    0.0,
+                    1.0,
+                )
+            )
+            near_wall_feature = base_near_wall_feature * persistence_scale
             penetration_feature = float(
                 np.clip(
-                    max(-clearance, 0.0) / max(float(self.catheter_radius), 1e-9),
+                    max(-tip_clearance, 0.0)
+                    / max(float(self.catheter_radius), 1e-9),
                     0.0,
                     1.0,
                 )
@@ -1161,6 +1266,18 @@ class MCREnv(SofaEnv):
             reward_features["successful_task"] = 1.0
             self.episode_success = True
             self.episode_success_2mm = bool(current_final_dist <= 0.002 + 1e-12)
+            current_clearance_safe = bool(
+                self.sdf_grid is None
+                or (
+                    np.isfinite(self.current_sdf_surface_clearance)
+                    and self.current_sdf_surface_clearance >= 0.0
+                )
+            )
+            self.episode_safe_success = current_clearance_safe
+            self.episode_contact_free_success = bool(
+                current_clearance_safe
+                and not self.sdf_penetration_this_episode
+            )
             self.is_out_of_bounds = True
 
         return {k: float(v) for k, v in reward_features.items()}
@@ -1220,6 +1337,8 @@ class MCREnv(SofaEnv):
             ),
             "centerline_vtk": str(getattr(self, "centerline_vtk", "unknown")),
             "success_2mm": bool(self.episode_success_2mm),
+            "safe_success": bool(self.episode_safe_success),
+            "contact_free_success": bool(self.episode_contact_free_success),
             "done_by_target": bool(self.episode_success),
             "done_by_timeout": bool(truncated),
             "done_by_out_of_vessel": bool(self.out_of_vessel_failure),
@@ -1278,10 +1397,25 @@ class MCREnv(SofaEnv):
             "sdf_surface_clearance": float(self.current_sdf_surface_clearance)
             if np.isfinite(self.current_sdf_surface_clearance)
             else np.nan,
+            "sdf_tip_surface_clearance": float(
+                self.current_sdf_surface_clearance
+            )
+            if np.isfinite(self.current_sdf_surface_clearance)
+            else np.nan,
+            "sdf_body_min_surface_clearance": float(
+                self.current_sdf_body_min_surface_clearance
+            )
+            if np.isfinite(self.current_sdf_body_min_surface_clearance)
+            else np.nan,
             "sdf_surface_clearance_min_episode": float(
                 self.min_sdf_surface_clearance_this_episode
             )
             if np.isfinite(self.min_sdf_surface_clearance_this_episode)
+            else np.nan,
+            "sdf_body_surface_clearance_min_episode": float(
+                self.min_sdf_body_surface_clearance_this_episode
+            )
+            if np.isfinite(self.min_sdf_body_surface_clearance_this_episode)
             else np.nan,
             "sdf_signed_distance_max_episode": float(
                 self.max_sdf_signed_distance_this_episode
@@ -1297,10 +1431,50 @@ class MCREnv(SofaEnv):
                 > float(self.sdf_outside_center_tolerance)
             ),
             "sdf_sample_count": int(self.current_sdf_sample_count),
+            "sdf_inserted_length": float(self.current_sdf_inserted_length),
+            "sdf_worst_point_sim": np.asarray(
+                self.current_sdf_worst_point_sim,
+                dtype=np.float64,
+            ).reshape(3).tolist(),
+            "sdf_inward_world": np.asarray(
+                self.current_sdf_inward_world,
+                dtype=np.float64,
+            ).reshape(3).tolist(),
+            "sdf_forward_probe_distances": list(
+                self.sdf_forward_probe_distances
+            ),
+            "sdf_forward_clearances": np.asarray(
+                self.current_sdf_forward_clearances,
+                dtype=np.float64,
+            ).reshape(-1).tolist(),
             "sdf_outside_counter": int(self.sdf_outside_counter),
             "sdf_outside_confirm_steps": int(self.sdf_outside_confirm_steps),
             "sdf_wall_contact_steps_episode": int(
                 self.sdf_wall_contact_steps_episode
+            ),
+            "sdf_tip_penetration_steps_episode": int(
+                self.sdf_wall_contact_steps_episode
+            ),
+            "sdf_tip_near_wall_counter": int(
+                self.sdf_tip_near_wall_counter
+            ),
+            "sdf_tip_near_wall_counter_max_episode": int(
+                self.sdf_tip_near_wall_counter_max_episode
+            ),
+            "sdf_tip_near_wall_steps_episode": int(
+                self.sdf_tip_near_wall_steps_episode
+            ),
+            "sdf_tip_near_wall_grace_steps": int(
+                self.tip_near_wall_grace_steps
+            ),
+            "sdf_penetration_this_episode": bool(
+                self.sdf_penetration_this_episode
+            ),
+            "sdf_penetration_depth_max_episode": float(
+                self.max_sdf_penetration_depth_this_episode
+            ),
+            "sdf_penetration_integral_episode": float(
+                self.sdf_penetration_integral_this_episode
             ),
             "centerline_graph_available": bool(
                 self.centerline_graph_points is not None
@@ -1469,12 +1643,13 @@ class MCREnv(SofaEnv):
         return float(np.min(np.linalg.norm(projection - point[None, :], axis=1)))
 
     def _get_sdf_sample_points(self, tip_pos: np.ndarray) -> np.ndarray:
-        """Return dense samples along the magnetic tip's Line primitives.
+        """Return dense samples along the physically inserted catheter.
 
-        SOFA collision uses both Point and Line primitives.  Sampling only the
-        node centres can miss a wall crossing between adjacent nodes, so each
-        of the final tip segments is subdivided at no more than half a VTI cell.
-        The uninserted catheter tail is intentionally excluded.
+        ``xtip`` is the deployed length measured from the distal node.  Walking
+        backwards through the ordered mechanical nodes and cutting the final
+        segment at that length excludes the catheter tail outside the inlet.
+        Every included Line primitive is then subdivided relative to the VTI
+        cell size, so a wall crossing between SOFA nodes cannot be missed.
         """
 
         try:
@@ -1483,23 +1658,54 @@ class MCREnv(SofaEnv):
                 dtype=np.float64,
             )
             if positions.ndim == 2 and positions.shape[1] >= 3 and len(positions) > 0:
-                sample_count = int(
-                    np.clip(
-                        max(1, self.num_catheter_tracking_points),
-                        1,
-                        len(positions),
-                    )
+                positions = positions[:, :3]
+                inserted_length = max(
+                    0.0,
+                    float(self.mcr_controller_sofa._getXTipValue()),
                 )
-                tip_nodes = positions[-sample_count:, :3].copy()
-                if len(tip_nodes) < 2 or self.sdf_grid is None:
-                    return tip_nodes
+                self.current_sdf_inserted_length = inserted_length
+
+                # The distal tip is the last mechanical node.  Build a distal
+                # to proximal polyline whose arclength is exactly xtip.
+                reversed_nodes = positions[::-1]
+                inserted_nodes = [reversed_nodes[0].copy()]
+                remaining = inserted_length
+                for distal, proximal in zip(
+                    reversed_nodes[:-1],
+                    reversed_nodes[1:],
+                ):
+                    if remaining <= 1e-12:
+                        break
+                    segment = proximal - distal
+                    segment_length = float(np.linalg.norm(segment))
+                    if segment_length <= 1e-12:
+                        continue
+                    if remaining >= segment_length:
+                        inserted_nodes.append(proximal.copy())
+                        remaining -= segment_length
+                    else:
+                        inserted_nodes.append(
+                            distal + segment * (remaining / segment_length)
+                        )
+                        remaining = 0.0
+                        break
+
+                inserted_nodes = np.asarray(inserted_nodes, dtype=np.float64)
+                if len(inserted_nodes) < 2 or self.sdf_grid is None:
+                    return inserted_nodes
                 sdf_cell_sim = float(
                     np.min(self.sdf_grid.spacing)
                     * float(self.asset_source_to_sim_scale)
                 )
-                max_sample_step = max(1e-6, 0.5 * sdf_cell_sim)
-                dense_points = [tip_nodes[0]]
-                for start, end in zip(tip_nodes[:-1], tip_nodes[1:]):
+                max_sample_step = max(
+                    1e-6,
+                    float(self.sdf_sample_step_fraction) * sdf_cell_sim,
+                )
+                dense_points = [inserted_nodes[0]]
+                for start, end in zip(
+                    inserted_nodes[:-1],
+                    inserted_nodes[1:],
+                ):
                     segment_length = float(np.linalg.norm(end - start))
                     subdivisions = max(
                         1,
@@ -1514,6 +1720,7 @@ class MCREnv(SofaEnv):
                 return np.asarray(dense_points, dtype=np.float64)
         except Exception:
             pass
+        self.current_sdf_inserted_length = 0.0
         return np.asarray(tip_pos, dtype=np.float64).reshape((1, 3))
 
     def _sim_points_to_asset_source(self, points_sim: np.ndarray) -> np.ndarray:
@@ -1526,19 +1733,98 @@ class MCREnv(SofaEnv):
         rotation = R.from_quat(transform[3:7])
         return rotation.inv().apply(points - translation[None, :]) / scale
 
+    def _asset_vectors_to_sim(self, vectors_source: np.ndarray) -> np.ndarray:
+        vectors = np.asarray(vectors_source, dtype=np.float64).reshape((-1, 3))
+        transform = np.asarray(self.asset_T_env_sim, dtype=np.float64).reshape(7)
+        return R.from_quat(transform[3:7]).apply(vectors)
+
+    def _get_sdf_forward_probe_features(
+        self,
+        tip_pos: np.ndarray,
+        tip_forward_world: np.ndarray,
+    ) -> np.ndarray:
+        probe_count = len(self.sdf_forward_probe_distances)
+        self.current_sdf_forward_clearances = np.full(
+            probe_count,
+            np.nan,
+            dtype=np.float64,
+        )
+        if self.sdf_grid is None or probe_count == 0:
+            return np.zeros(probe_count, dtype=np.float32)
+
+        forward = np.asarray(tip_forward_world, dtype=np.float64).reshape(3)
+        norm = float(np.linalg.norm(forward))
+        if not np.isfinite(norm) or norm <= 1e-12:
+            return np.zeros(probe_count, dtype=np.float32)
+        forward /= norm
+        distances = np.asarray(
+            self.sdf_forward_probe_distances,
+            dtype=np.float64,
+        )
+        probe_points_sim = (
+            np.asarray(tip_pos, dtype=np.float64).reshape(1, 3)
+            + distances[:, None] * forward[None, :]
+        )
+        probe_points_source = self._sim_points_to_asset_source(probe_points_sim)
+        signed_source = np.asarray(
+            self.sdf_grid.sample(probe_points_source),
+            dtype=np.float64,
+        ).reshape(-1)
+        signed_sim = signed_source * float(self.asset_source_to_sim_scale)
+        outside_sentinel = max(
+            0.05,
+            2.0 * float(self.sdf_outside_center_tolerance),
+        )
+        signed_sim = np.where(
+            np.isfinite(signed_sim),
+            signed_sim,
+            outside_sentinel,
+        )
+        clearances = -signed_sim - float(self.catheter_radius)
+        self.current_sdf_forward_clearances = clearances.astype(np.float64)
+        return np.clip(
+            clearances
+            / max(float(self.sdf_clearance_observation_scale), 1e-9),
+            -2.0,
+            2.0,
+        ).astype(np.float32)
+
     def _update_sdf_safety_state(
         self,
         tip_pos: np.ndarray,
         advance_failure_counters: bool,
     ) -> None:
+        tip_pos = np.asarray(tip_pos, dtype=np.float64).reshape(3)
+        cached_tip = getattr(self, "_sdf_geometry_cache_tip", None)
+        cache_matches = bool(
+            not advance_failure_counters
+            and int(getattr(self, "_sdf_geometry_cache_step", -1))
+            == int(getattr(self, "_elapsed_steps", -2))
+            and cached_tip is not None
+            and np.array_equal(
+                np.asarray(cached_tip, dtype=np.float64).reshape(3),
+                tip_pos,
+            )
+        )
+        if cache_matches:
+            return
+
         grid = getattr(self, "sdf_grid", None)
         if grid is None:
             self.current_sdf_tip_signed_distance = np.nan
             self.current_sdf_max_signed_distance = np.nan
+            self.current_sdf_body_min_surface_clearance = np.nan
             self.current_sdf_surface_clearance = np.nan
             self.current_sdf_near_wall = False
             self.current_sdf_penetrating = False
             self.current_sdf_sample_count = 0
+            self.current_sdf_inserted_length = 0.0
+            self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
+            self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+            self._sdf_geometry_cache_step = int(
+                getattr(self, "_elapsed_steps", -1)
+            )
+            self._sdf_geometry_cache_tip = tip_pos.copy()
             return
 
         sample_points = self._get_sdf_sample_points(tip_pos)
@@ -1559,16 +1845,51 @@ class MCREnv(SofaEnv):
         if not np.isfinite(tip_signed_sim):
             tip_signed_sim = outside_sentinel
 
-        max_signed = float(np.max(signed_sim))
-        surface_clearance = float(-max_signed - float(self.catheter_radius))
+        worst_index = int(np.argmax(signed_sim))
+        max_signed = float(signed_sim[worst_index])
+        body_surface_clearance = float(
+            -max_signed - float(self.catheter_radius)
+        )
+        tip_surface_clearance = float(
+            -tip_signed_sim - float(self.catheter_radius)
+        )
         self.current_sdf_tip_signed_distance = float(tip_signed_sim)
         self.current_sdf_max_signed_distance = max_signed
-        self.current_sdf_surface_clearance = surface_clearance
+        self.current_sdf_body_min_surface_clearance = body_surface_clearance
+        # Compatibility name now explicitly means tip-surface clearance.
+        self.current_sdf_surface_clearance = tip_surface_clearance
         self.current_sdf_near_wall = bool(
-            surface_clearance < float(self.sdf_near_wall_margin)
+            tip_surface_clearance < float(self.sdf_near_wall_margin)
         )
-        self.current_sdf_penetrating = bool(surface_clearance < 0.0)
+        self.current_sdf_penetrating = bool(tip_surface_clearance < 0.0)
         self.current_sdf_sample_count = int(len(signed_sim))
+        self.current_sdf_worst_point_sim = np.asarray(
+            sample_points[worst_index],
+            dtype=np.float64,
+        ).reshape(3)
+
+        # SDF increases from lumen interior toward the outside.  The tip-local
+        # negative gradient tells the policy how to steer the tip back inward;
+        # body-wall contact is intentionally not used for steering reward.
+        tip_gradient_source = np.asarray(
+            grid.gradient(tip_source),
+            dtype=np.float64,
+        ).reshape(1, 3)
+        tip_gradient_sim = self._asset_vectors_to_sim(
+            tip_gradient_source
+        )[0]
+        gradient_norm = float(np.linalg.norm(tip_gradient_sim))
+        if np.isfinite(gradient_norm) and gradient_norm > 1e-9:
+            self.current_sdf_inward_world = (
+                -tip_gradient_sim / gradient_norm
+            ).astype(np.float64)
+        else:
+            self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+
+        self._sdf_geometry_cache_step = int(
+            getattr(self, "_elapsed_steps", -1)
+        )
+        self._sdf_geometry_cache_tip = tip_pos.copy()
 
         outside_candidate = bool(
             max_signed > float(self.sdf_outside_center_tolerance)
@@ -1582,14 +1903,34 @@ class MCREnv(SofaEnv):
             )
             self.min_sdf_surface_clearance_this_episode = min(
                 float(self.min_sdf_surface_clearance_this_episode),
-                surface_clearance,
+                tip_surface_clearance,
+            )
+            self.min_sdf_body_surface_clearance_this_episode = min(
+                float(self.min_sdf_body_surface_clearance_this_episode),
+                body_surface_clearance,
             )
             self.max_sdf_signed_distance_this_episode = max(
                 float(self.max_sdf_signed_distance_this_episode),
                 max_signed,
             )
+            if self.current_sdf_near_wall:
+                self.sdf_tip_near_wall_counter += 1
+                self.sdf_tip_near_wall_steps_episode += 1
+                self.sdf_tip_near_wall_counter_max_episode = max(
+                    int(self.sdf_tip_near_wall_counter_max_episode),
+                    int(self.sdf_tip_near_wall_counter),
+                )
+            else:
+                self.sdf_tip_near_wall_counter = 0
             if self.current_sdf_penetrating:
                 self.sdf_wall_contact_steps_episode += 1
+                penetration_depth = max(0.0, -tip_surface_clearance)
+                self.sdf_penetration_this_episode = True
+                self.max_sdf_penetration_depth_this_episode = max(
+                    float(self.max_sdf_penetration_depth_this_episode),
+                    penetration_depth,
+                )
+                self.sdf_penetration_integral_this_episode += penetration_depth
 
     def _update_graph_branch_state(
         self,
@@ -1728,7 +2069,12 @@ class MCREnv(SofaEnv):
                     and centerline_dist >= float(self.out_of_vessel_fallback_distance)
                 )
 
-    def _get_vessel_section_features(self, tip_pos: np.ndarray) -> np.ndarray:
+    def _get_vessel_section_features(
+        self,
+        tip_pos: np.ndarray,
+        tip_frame: np.ndarray,
+        tip_forward_world: np.ndarray,
+    ) -> np.ndarray:
         self._update_vessel_safety_state(tip_pos)
         if np.isfinite(self.current_sdf_surface_clearance):
             clearance_feature = float(
@@ -1740,17 +2086,37 @@ class MCREnv(SofaEnv):
                 )
             )
             contact_feature = 1.0 if self.current_sdf_penetrating else 0.0
+            inward_local = self._world_vec_to_local(
+                self.current_sdf_inward_world,
+                tip_frame,
+            )
+            inward_norm = float(np.linalg.norm(inward_local))
+            if np.isfinite(inward_norm) and inward_norm > 1e-9:
+                inward_local = inward_local / inward_norm
+            else:
+                inward_local = np.zeros(3, dtype=np.float32)
+            forward_probe_features = self._get_sdf_forward_probe_features(
+                tip_pos=tip_pos,
+                tip_forward_world=tip_forward_world,
+            )
         else:
             clearance_feature = float(
                 np.clip(self.current_centerline_safety_margin, -2.0, 1.0)
             )
             contact_feature = 1.0 if self.current_centerline_safety_margin <= 0.0 else 0.0
+            inward_local = np.zeros(3, dtype=np.float32)
+            forward_probe_features = np.zeros(
+                len(self.sdf_forward_probe_distances),
+                dtype=np.float32,
+            )
         return np.array(
             [
                 np.clip(self.current_centerline_offset_N_over_radius, -3.0, 3.0),
                 np.clip(self.current_centerline_offset_B_over_radius, -3.0, 3.0),
                 np.clip(self.current_centerline_local_radius_norm, 0.0, 5.0),
                 clearance_feature,
+                *np.clip(inward_local, -1.0, 1.0).tolist(),
+                *np.clip(forward_probe_features, -2.0, 2.0).tolist(),
                 np.clip(self.current_off_target_branch_feature, 0.0, 1.0),
                 contact_feature,
             ],
@@ -2136,8 +2502,8 @@ class MCREnv(SofaEnv):
     def _apply_insert_safety_shield(self, raw_insert: float) -> float:
         """Apply only the configured action bounds.
 
-        Collision response and the 1.00 out-of-vessel termination provide the
-        safety constraint.  Avoid a hidden state-dependent 10x insertion scale
+        SOFA collision response and direct SDF safety feedback provide the
+        physical constraints.  Avoid a hidden state-dependent insertion scale
         change, which makes the SAC action meaning inconsistent near the wall.
         """
         raw_insert = float(np.clip(raw_insert, -1.0, 1.0))

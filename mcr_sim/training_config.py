@@ -40,15 +40,19 @@ MAX_ACTION_DELTA = 0.30
 OUT_OF_VESSEL_SAFETY_RATIO = 1.00
 OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
-# Multi-model vessel safety.  The VTI stores center-to-wall signed distance;
-# actor features and penalties use catheter-surface clearance.  A genuine
-# outside termination requires the catheter centre to remain at least 0.5 mm
-# outside for three consecutive environment steps, so ordinary wall contact
-# and a one-step collision-solver overshoot are not mislabeled as escape.
+# Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
+# Tip clearance drives dense safety features/rewards; whole-body samples are
+# containment-only so the flexible shaft can contact and slide along the wall.
+# A genuine outside termination requires any sampled catheter centre to remain
+# at least 0.5 mm outside for three consecutive environment steps.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
 SDF_NEAR_WALL_MARGIN_M = 0.001
 SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
+SDF_SAMPLE_STEP_FRACTION = 0.5
+SDF_FORWARD_PROBE_DISTANCES_M = (0.001, 0.002, 0.004)
+TIP_NEAR_WALL_GRACE_STEPS = 5
+TIP_NEAR_WALL_RAMP_STEPS = 20
 
 # On branching vessels, compare distance to the selected target route with
 # distance to the complete centerline graph.  A 2 mm preference for another
@@ -169,6 +173,17 @@ def validate_training_defaults() -> None:
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:
         raise ValueError("Invalid SDF outside confirmation settings.")
+    if not (0.0 < SDF_SAMPLE_STEP_FRACTION <= 1.0):
+        raise ValueError("SDF sample step fraction must be in (0, 1].")
+    if (
+        len(SDF_FORWARD_PROBE_DISTANCES_M) == 0
+        or any(distance <= 0.0 for distance in SDF_FORWARD_PROBE_DISTANCES_M)
+        or tuple(sorted(SDF_FORWARD_PROBE_DISTANCES_M))
+        != tuple(SDF_FORWARD_PROBE_DISTANCES_M)
+    ):
+        raise ValueError("SDF forward probe distances must be positive and ordered.")
+    if TIP_NEAR_WALL_GRACE_STEPS < 0 or TIP_NEAR_WALL_RAMP_STEPS < 1:
+        raise ValueError("Invalid tip near-wall persistence settings.")
     if WRONG_BRANCH_DISTANCE_MARGIN_M <= 0.0 or WRONG_BRANCH_CONFIRM_STEPS < 1:
         raise ValueError("Invalid wrong-branch confirmation settings.")
 

@@ -551,7 +551,14 @@ class InferenceController(Sofa.Core.Controller):
         gate_num = int(info.get("gate_num", 0))
         cl_dist = float(info.get("centerline_distance", np.nan))
         r_local = float(info.get("centerline_local_radius", np.nan))
-        safety_ratio = float(info.get("centerline_safety_ratio", np.nan))
+        sdf_clearance = float(info.get("sdf_surface_clearance", np.nan))
+        sdf_body_clearance = float(
+            info.get("sdf_body_min_surface_clearance", np.nan)
+        )
+        sdf_inserted_length = float(info.get("sdf_inserted_length", np.nan))
+        sdf_penetration_max = float(
+            info.get("sdf_penetration_depth_max_episode", np.nan)
+        )
         no_progress_counter = int(info.get("no_progress_counter", 0))
 
         # Current ordered waypoint diagnostics.
@@ -607,14 +614,20 @@ class InferenceController(Sofa.Core.Controller):
             f"noProg={no_progress_counter} "
             f"noProgIgnored={self._yesno(info.get('no_progress_failure_ignored', False))} | "
             f"CL_dist={cl_dist * 1000.0:.2f}mm R_local={r_local * 1000.0:.2f}mm "
-            f"ratio={safety_ratio:.3f} outV={self._yesno(info.get('out_of_vessel', False))} | "
+            f"SDF_clear={sdf_clearance * 1000.0:.2f}mm "
+            f"bodyClear={sdf_body_clearance * 1000.0:.2f}mm "
+            f"SDF_checked={sdf_inserted_length * 1000.0:.1f}mm "
+            f"penMax={sdf_penetration_max * 1000.0:.2f}mm "
+            f"outV={self._yesno(info.get('out_of_vessel', False))} | "
             f"rawIns={float(info.get('raw_insert', np.nan)):+.3f} "
             f"effIns={float(info.get('effective_insert', np.nan)):+.3f} "
             f"align={float(info.get('forward_alignment', np.nan)):+.3f} | "
             f"10mm={self._yesno(info.get('success_10mm', False))} "
             f"6mm={self._yesno(info.get('success_6mm', False))} "
             f"3mm={self._yesno(info.get('success_3mm', False))} "
-            f"2mm={self._yesno(info.get('success_2mm', False))}"
+            f"2mm={self._yesno(info.get('success_2mm', False))} "
+            f"safe={self._yesno(info.get('safe_success', False))} "
+            f"contactFree={self._yesno(info.get('contact_free_success', False))}"
         )
 
 

@@ -137,6 +137,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
         self.model_windows = defaultdict(lambda: deque(maxlen=self.window_size))
         self.total_episodes = 0
         self.total_success_target = 0
+        self.total_safe_success = 0
+        self.total_contact_free_success = 0
 
     @staticmethod
     def _safe_float(value, default=np.nan) -> float:
@@ -198,6 +200,10 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "sampling_model": str(info.get("sampling_model", info.get("chosen_model", "unknown"))),
             "success_target": bool(info.get("done_by_target", False)),
             "success_2mm": bool(info.get("success_2mm", False)),
+            "safe_success": bool(info.get("safe_success", False)),
+            "contact_free_success": bool(
+                info.get("contact_free_success", False)
+            ),
             "min_dist_m": self._safe_float(info.get("min_dist_to_goal", np.nan)),
             "final_dist_m": self._safe_float(info.get("final_dist_to_goal", np.nan)),
             "terminal_reason": str(info.get("terminal_reason", "unknown")),
@@ -212,10 +218,6 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "waypoint_reached_count": waypoint_reached_count,
             "waypoint_num": waypoint_num,
             "waypoint_distance_m": self._safe_float(info.get("waypoint_distance", np.nan)),
-            "centerline_safety_ratio": self._safe_float(info.get("centerline_safety_ratio", np.nan)),
-            "centerline_safety_ratio_max_episode": self._safe_float(info.get("centerline_safety_ratio_max_episode", np.nan)),
-            "centerline_safety_margin": self._safe_float(info.get("centerline_safety_margin", np.nan)),
-            "centerline_safety_margin_min_episode": self._safe_float(info.get("centerline_safety_margin_min_episode", np.nan)),
             "out_of_vessel": bool(info.get("out_of_vessel_this_episode", False)),
             "wrong_branch": bool(info.get("wrong_branch_this_episode", False)),
             "sdf_surface_clearance_m": self._safe_float(
@@ -224,8 +226,20 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "sdf_surface_clearance_min_m": self._safe_float(
                 info.get("sdf_surface_clearance_min_episode", np.nan)
             ),
+            "sdf_body_surface_clearance_min_m": self._safe_float(
+                info.get("sdf_body_surface_clearance_min_episode", np.nan)
+            ),
+            "sdf_tip_near_wall_steps": self._safe_float(
+                info.get("sdf_tip_near_wall_steps_episode", 0.0)
+            ),
             "sdf_wall_contact_steps": self._safe_float(
-                info.get("sdf_wall_contact_steps_episode", 0.0)
+                info.get("sdf_tip_penetration_steps_episode", 0.0)
+            ),
+            "sdf_penetration_depth_max_m": self._safe_float(
+                info.get("sdf_penetration_depth_max_episode", 0.0)
+            ),
+            "sdf_penetration_integral_m_steps": self._safe_float(
+                info.get("sdf_penetration_integral_episode", 0.0)
             ),
             "route_graph_distance_gap_m": self._safe_float(
                 info.get("route_graph_distance_gap", np.nan)
@@ -274,6 +288,10 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 self.total_episodes += 1
                 if ep["success_target"]:
                     self.total_success_target += 1
+                if ep["safe_success"]:
+                    self.total_safe_success += 1
+                if ep["contact_free_success"]:
+                    self.total_contact_free_success += 1
         return True
 
     def _log_window(self, prefix: str, window) -> None:
@@ -302,13 +320,15 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"terminal/out_of_vessel_rate_w{self.window_size}", self._rate(ep["done_by_out_of_vessel"] for ep in recent))
             self.logger.record(f"terminal/wrong_branch_rate_w{self.window_size}", self._rate(ep["done_by_wrong_branch"] for ep in recent))
             self.logger.record(f"terminal/non_finite_rate_w{self.window_size}", self._rate(ep["done_by_non_finite"] for ep in recent))
-            self.logger.record(f"rollout_recent/centerline_safety_ratio_mean_w{self.window_size}", self._mean(ep["centerline_safety_ratio"] for ep in recent), exclude="stdout")
-            self.logger.record(f"rollout_recent/centerline_safety_ratio_max_w{self.window_size}", self._max(ep["centerline_safety_ratio_max_episode"] for ep in recent), exclude="stdout")
-            self.logger.record(f"rollout_recent/centerline_safety_margin_mean_w{self.window_size}", self._mean(ep["centerline_safety_margin"] for ep in recent), exclude="stdout")
-            self.logger.record(f"rollout_recent/centerline_safety_margin_min_w{self.window_size}", self._mean(ep["centerline_safety_margin_min_episode"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/safe_success_rate_w{self.window_size}", self._rate(ep["safe_success"] for ep in recent))
+            self.logger.record(f"rollout_recent/contact_free_success_rate_w{self.window_size}", self._rate(ep["contact_free_success"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_clearance_min_mm_w{self.window_size}", self._mean(ep["sdf_surface_clearance_min_m"] * 1000.0 for ep in recent), exclude="stdout")
-            self.logger.record(f"rollout_recent/sdf_wall_contact_steps_w{self.window_size}", self._mean(ep["sdf_wall_contact_steps"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_body_clearance_min_mm_w{self.window_size}", self._mean(ep["sdf_body_surface_clearance_min_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_tip_near_wall_steps_w{self.window_size}", self._mean(ep["sdf_tip_near_wall_steps"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_tip_penetration_steps_w{self.window_size}", self._mean(ep["sdf_wall_contact_steps"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_penetration_max_mm_w{self.window_size}", self._mean(ep["sdf_penetration_depth_max_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_penetration_integral_mm_steps_w{self.window_size}", self._mean(ep["sdf_penetration_integral_m_steps"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/route_graph_gap_mm_w{self.window_size}", self._mean(ep["route_graph_distance_gap_m"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/progress_w{self.window_size}", self._mean(ep["reward_progress"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/waypoints_w{self.window_size}", self._mean(ep["reward_waypoints"] for ep in recent), exclude="stdout")
@@ -318,6 +338,16 @@ class ExtraRolloutMetricsCallback(BaseCallback):
 
         if self.total_episodes > 0:
             self.logger.record(f"rollout_cumulative/success_{self.success_label}", float(self.total_success_target / self.total_episodes))
+            self.logger.record(
+                "rollout_cumulative/safe_success",
+                float(self.total_safe_success / self.total_episodes),
+                exclude="stdout",
+            )
+            self.logger.record(
+                "rollout_cumulative/contact_free_success",
+                float(self.total_contact_free_success / self.total_episodes),
+                exclude="stdout",
+            )
             self.logger.record("rollout_cumulative/episodes", float(self.total_episodes))
 
         # Per-vessel diagnostics for mixed-vessel training. These metrics do not
@@ -338,8 +368,10 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             final_dist_mm = self._mean(ep["final_dist_m"] * 1000.0 for ep in task_window)
             min_dist_mm = self._mean(ep["min_dist_m"] * 1000.0 for ep in task_window)
             waypoint_ratio = self._mean(ep["waypoint_reached_ratio"] for ep in task_window)
-            safety_ratio_max = self._max(ep["centerline_safety_ratio_max_episode"] for ep in task_window)
-            safety_margin_min = self._mean(ep["centerline_safety_margin_min_episode"] for ep in task_window)
+            safe_success_rate = self._rate(ep["safe_success"] for ep in task_window)
+            contact_free_success_rate = self._rate(
+                ep["contact_free_success"] for ep in task_window
+            )
             sdf_clearance_min_mm = self._mean(
                 ep["sdf_surface_clearance_min_m"] * 1000.0
                 for ep in task_window
@@ -354,8 +386,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"{prefix}/final_dist_mm_w{self.window_size}", final_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/min_dist_mm_w{self.window_size}", min_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/waypoint_reached_ratio_w{self.window_size}", waypoint_ratio, exclude="stdout")
-            self.logger.record(f"{prefix}/centerline_safety_ratio_max_w{self.window_size}", safety_ratio_max, exclude="stdout")
-            self.logger.record(f"{prefix}/centerline_safety_margin_min_w{self.window_size}", safety_margin_min, exclude="stdout")
+            self.logger.record(f"{prefix}/safe_success_rate_w{self.window_size}", safe_success_rate, exclude="stdout")
+            self.logger.record(f"{prefix}/contact_free_success_rate_w{self.window_size}", contact_free_success_rate, exclude="stdout")
             self.logger.record(f"{prefix}/sdf_clearance_min_mm_w{self.window_size}", sdf_clearance_min_mm, exclude="stdout")
             self.logger.record(f"{prefix}/episodes_w{self.window_size}", float(len(task_window)), exclude="stdout")
 

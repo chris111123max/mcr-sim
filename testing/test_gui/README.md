@@ -32,10 +32,13 @@ literal one-step-per-frame playback.
 
 The top status bar distinguishes running, manual pause, success, true SDF
 out-of-vessel termination, wrong-target-branch termination, timeout, and
-non-finite failure. It displays target distance, catheter-surface SDF clearance,
-selected-route versus full-graph distance gap, and the legacy centerline safety
-ratio. A terminated episode cannot be resumed with Play; use **Reset Episode**
-first.
+non-finite failure. It displays target distance, tip SDF clearance, whole-body
+minimum clearance, selected-route versus full-graph distance gap, and the length
+covered by SDF checks. Body-wall contact is allowed and receives no dense wall
+penalty; the whole-body SDF is used for true escape detection. Successful episodes
+also report current tip-safe success and whether the tip remained penetration-free.
+A terminated episode cannot be
+resumed with Play; use **Reset Episode** first.
 
 On the Ascend worker, stop any previous server using port 8765 and run:
 
