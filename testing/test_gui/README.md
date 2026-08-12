@@ -30,10 +30,12 @@ limit and collision solve. Hold W/S (or hold the pointer button); a quick click
 can be released between simulation updates. Use `--sim-steps-per-frame 1` for
 literal one-step-per-frame playback.
 
-The top status bar distinguishes running, manual pause, success,
-out-of-vessel termination, timeout, and non-finite failure. It also displays
-current target distance and centerline safety ratio. A terminated episode cannot
-be resumed with Play; use **Reset Episode** first.
+The top status bar distinguishes running, manual pause, success, true SDF
+out-of-vessel termination, wrong-target-branch termination, timeout, and
+non-finite failure. It displays target distance, catheter-surface SDF clearance,
+selected-route versus full-graph distance gap, and the legacy centerline safety
+ratio. A terminated episode cannot be resumed with Play; use **Reset Episode**
+first.
 
 On the Ascend worker, stop any previous server using port 8765 and run:
 

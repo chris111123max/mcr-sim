@@ -11,6 +11,7 @@ from scipy.spatial.transform import Rotation as R
 from .mcr_controller_sofa import ControllerSofa
 from .paths import SCENE_DIR
 from .rl_core.base import SofaEnv, RenderMode, RenderFramework
+from .vessel_assets import load_signed_distance_grid, load_vessel_metadata
 from .training_config import (
     ACTOR_HISTORY_STEPS,
     CATHETER_RADIUS_M,
@@ -25,15 +26,23 @@ from .training_config import (
     PRE_TARGET_WAYPOINT_OFFSET_M,
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
+    REWARD_OFF_TARGET_BRANCH,
     REWARD_PROGRESS_NORMALIZATION_M,
     REWARD_STEP,
     REWARD_SUCCESS,
     REWARD_TARGET_APPROACH,
     REWARD_TIMEOUT,
+    REWARD_WALL_PENETRATION,
+    REWARD_WALL_PROXIMITY,
     REWARD_WAYPOINT_APPROACH,
     REWARD_WAYPOINT_REACHED,
+    REWARD_WRONG_BRANCH,
     SETTLE_STEPS,
     SOFA_TIME_STEP_S,
+    SDF_CLEARANCE_OBSERVATION_SCALE_M,
+    SDF_NEAR_WALL_MARGIN_M,
+    SDF_OUTSIDE_CENTER_TOLERANCE_M,
+    SDF_OUTSIDE_CONFIRM_STEPS,
     START_WINDOW_DISTANCE_M,
     TARGET_THRESHOLD_M,
     TARGET_WINDOW_DISTANCE_M,
@@ -43,6 +52,9 @@ from .training_config import (
     WAYPOINT_PROGRESS_CLIP_M,
     WAYPOINT_REACH_THRESHOLD_M,
     WAYPOINT_SPACING_M,
+    WRONG_BRANCH_CONFIRM_STEPS,
+    WRONG_BRANCH_DISTANCE_MARGIN_M,
+    WRONG_BRANCH_OBSERVATION_SCALE_M,
 )
 
 MCR_SIM_DIR = Path(__file__).resolve().parent
@@ -72,15 +84,15 @@ class EnvType(Enum):
 
 
 class MCREnv(SofaEnv):
-    """Minimal waypoint-based mCR RL environment.
+    """Multi-asset waypoint-based mCR RL environment.
 
     Training logic kept in this file:
-      1. Sequential Euclidean waypoints sampled from the centerline.
-      2. Continuous distance-progress shaping for intermediate and final targets.
-      3. One-shot intermediate-waypoint bonus, final target success bonus, out-of-vessel terminal penalty.
-      4. Timeout terminal penalty when max_episode_steps is reached.
-      5. Actor and critic use the same tip-local observation.
-      6. Body multi-point safety is intentionally not included in this version.
+      1. The selected target centerline supplies progress, waypoints, and local radius.
+      2. The VTI SDF supplies catheter-surface clearance and true lumen escape.
+      3. The complete branching graph separates a wrong route from vessel escape.
+      4. Collision remains a SOFA Triangle versus catheter Line/Point solve.
+      5. Metadata validates that the runtime asset bundle is self-consistent.
+      6. Actor and critic use the same tip-local observation and short history.
     """
 
     def __init__(
@@ -104,11 +116,16 @@ class MCREnv(SofaEnv):
         if not isinstance(create_scene_kwargs, dict):
             create_scene_kwargs = {}
         create_scene_kwargs["image_shape"] = image_shape
+        self.scene_verbose = bool(create_scene_kwargs.get("verbose_scene", False))
         if reward_amount_dict is None:
             reward_amount_dict = {
                 "waypoint_approach": REWARD_WAYPOINT_APPROACH,
                 "waypoint_reached": REWARD_WAYPOINT_REACHED,
                 "target_approach": REWARD_TARGET_APPROACH,
+                "wall_proximity_penalty": REWARD_WALL_PROXIMITY,
+                "wall_penetration_penalty": REWARD_WALL_PENETRATION,
+                "off_target_branch_penalty": REWARD_OFF_TARGET_BRANCH,
+                "wrong_branch_penalty": REWARD_WRONG_BRANCH,
                 "successful_task": REWARD_SUCCESS,
                 "out_of_vessel_penalty": REWARD_OUT_OF_VESSEL,
                 "timeout_penalty": REWARD_TIMEOUT,
@@ -151,6 +168,51 @@ class MCREnv(SofaEnv):
         self.out_of_vessel_safety_ratio = float(create_scene_kwargs.get("out_of_vessel_safety_ratio", OUT_OF_VESSEL_SAFETY_RATIO))
         self.out_of_vessel_fallback_distance = float(create_scene_kwargs.get("out_of_vessel_fallback_distance", OUT_OF_VESSEL_FALLBACK_DISTANCE_M))
         self.local_field_action_angle = float(create_scene_kwargs.get("local_field_action_angle", LOCAL_FIELD_ACTION_ANGLE_RAD))
+        self.sdf_clearance_observation_scale = float(
+            create_scene_kwargs.get(
+                "sdf_clearance_observation_scale",
+                SDF_CLEARANCE_OBSERVATION_SCALE_M,
+            )
+        )
+        self.sdf_near_wall_margin = float(
+            create_scene_kwargs.get("sdf_near_wall_margin", SDF_NEAR_WALL_MARGIN_M)
+        )
+        self.sdf_outside_center_tolerance = float(
+            create_scene_kwargs.get(
+                "sdf_outside_center_tolerance",
+                SDF_OUTSIDE_CENTER_TOLERANCE_M,
+            )
+        )
+        self.sdf_outside_confirm_steps = max(
+            1,
+            int(
+                create_scene_kwargs.get(
+                    "sdf_outside_confirm_steps",
+                    SDF_OUTSIDE_CONFIRM_STEPS,
+                )
+            ),
+        )
+        self.wrong_branch_distance_margin = float(
+            create_scene_kwargs.get(
+                "wrong_branch_distance_margin",
+                WRONG_BRANCH_DISTANCE_MARGIN_M,
+            )
+        )
+        self.wrong_branch_observation_scale = float(
+            create_scene_kwargs.get(
+                "wrong_branch_observation_scale",
+                WRONG_BRANCH_OBSERVATION_SCALE_M,
+            )
+        )
+        self.wrong_branch_confirm_steps = max(
+            1,
+            int(
+                create_scene_kwargs.get(
+                    "wrong_branch_confirm_steps",
+                    WRONG_BRANCH_CONFIRM_STEPS,
+                )
+            ),
+        )
 
         # Insertion safety shield is disabled in this version.
         # The third action component is passed through directly after clipping
@@ -187,9 +249,11 @@ class MCREnv(SofaEnv):
             int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
         )
 
-        # Actor observation: 24-D current geometry + 4 * 7-D action-response history = 52-D.
-        self.vessel_section_feature_dim = 4
-        self.actor_current_geometry_dim = 24
+        # Actor observation: 26-D current geometry + 4 * 7-D action-response history = 54-D.
+        # The six vessel features combine selected-route geometry, VTI wall
+        # clearance, and complete-graph branch deviation.
+        self.vessel_section_feature_dim = 6
+        self.actor_current_geometry_dim = 26
         self.actor_dynamic_step_dim = 7
         self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", ACTOR_HISTORY_STEPS)))
         self.actor_dynamic_history_dim = self.actor_dynamic_step_dim * self.actor_history_steps
@@ -229,6 +293,9 @@ class MCREnv(SofaEnv):
         self.centerline_points = None
         self.centerline_cumlength = None
         self.centerline_radius = None
+        self.centerline_graph_points = None
+        self.centerline_graph_edges = None
+        self.centerline_graph_radius = None
         self.centerline_reversed_for_progress = False
         self.waypoint_points = None
         self.waypoint_progress = None
@@ -264,6 +331,30 @@ class MCREnv(SofaEnv):
         self.out_of_vessel_failure = False
         self.max_safety_ratio_this_episode = 0.0
         self.min_safety_margin_this_episode = np.inf
+        self.current_sdf_tip_signed_distance = np.nan
+        self.current_sdf_max_signed_distance = np.nan
+        self.current_sdf_surface_clearance = np.nan
+        self.current_sdf_near_wall = False
+        self.current_sdf_penetrating = False
+        self.current_sdf_sample_count = 0
+        self.sdf_outside_counter = 0
+        self.sdf_outside_confirmed = False
+        self.min_sdf_surface_clearance_this_episode = np.inf
+        self.max_sdf_signed_distance_this_episode = -np.inf
+        self.sdf_wall_contact_steps_episode = 0
+        self.current_graph_distance = np.nan
+        self.current_route_graph_distance_gap = 0.0
+        self.current_off_target_branch_feature = 0.0
+        self.current_wrong_branch = False
+        self.wrong_branch_counter = 0
+        self.wrong_branch_failure = False
+        self.wrong_branch_this_episode = False
+        self.sdf_grid = None
+        self.vessel_metadata = None
+        self.collision_triangle_count = 0
+        self.asset_source_to_sim_scale = np.nan
+        self.asset_T_env_sim = None
+        self.asset_offset_sim = np.zeros(3, dtype=np.float64)
 
         # Episode state.
         self.episode_success = False
@@ -562,13 +653,14 @@ class MCREnv(SofaEnv):
             ))
             target_idx = n_pts - 1
 
-            print(
-                "[AORTA6_SOFT_MIDPOINT_START]",
-                "start_fraction=", start_fraction,
-                "start_idx=", start_idx,
-                "target_idx=", target_idx,
-                "num_points=", n_pts,
-            )
+            if self.scene_verbose:
+                print(
+                    "[AORTA6_SOFT_MIDPOINT_START]",
+                    "start_fraction=", start_fraction,
+                    "start_idx=", start_idx,
+                    "target_idx=", target_idx,
+                    "num_points=", n_pts,
+                )
 
         elif randomize_start_target:
             segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
@@ -680,6 +772,24 @@ class MCREnv(SofaEnv):
         self.out_of_vessel_failure = False
         self.max_safety_ratio_this_episode = 0.0
         self.min_safety_margin_this_episode = np.inf
+        self.current_sdf_tip_signed_distance = np.nan
+        self.current_sdf_max_signed_distance = np.nan
+        self.current_sdf_surface_clearance = np.nan
+        self.current_sdf_near_wall = False
+        self.current_sdf_penetrating = False
+        self.current_sdf_sample_count = 0
+        self.sdf_outside_counter = 0
+        self.sdf_outside_confirmed = False
+        self.min_sdf_surface_clearance_this_episode = np.inf
+        self.max_sdf_signed_distance_this_episode = -np.inf
+        self.sdf_wall_contact_steps_episode = 0
+        self.current_graph_distance = np.nan
+        self.current_route_graph_distance_gap = 0.0
+        self.current_off_target_branch_feature = 0.0
+        self.current_wrong_branch = False
+        self.wrong_branch_counter = 0
+        self.wrong_branch_failure = False
+        self.wrong_branch_this_episode = False
         self.current_centerline_radial_offset = np.nan
         self.current_tip_centerline_offset_norm = np.nan
         self.previous_tip_centerline_radial_offset = None
@@ -713,19 +823,20 @@ class MCREnv(SofaEnv):
 
         self.sofa_simulation.animate(self._sofa_root_node, 0.05)
 
-        try:
-            tip_pose = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip(), dtype=np.float64)
-            tip_pos = tip_pose[:3]
-            scene_start = getattr(self, "current_scene_start_position", None)
-            if scene_start is not None:
-                scene_start = np.asarray(scene_start, dtype=np.float64).reshape(3)
-                print("[REAL_TIP_AFTER_RESET_CHECK]")
-                print("  task_id             =", getattr(self, "task_id", "unknown"))
-                print("  scene_start_position=", scene_start)
-                print("  real_tip_after_reset=", tip_pos)
-                print("  tip_start_error_mm  =", float(np.linalg.norm(tip_pos - scene_start) * 1000.0))
-        except Exception as e:
-            print("[REAL_TIP_AFTER_RESET_CHECK][WARN]", e)
+        if self.scene_verbose:
+            try:
+                tip_pose = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip(), dtype=np.float64)
+                tip_pos = tip_pose[:3]
+                scene_start = getattr(self, "current_scene_start_position", None)
+                if scene_start is not None:
+                    scene_start = np.asarray(scene_start, dtype=np.float64).reshape(3)
+                    print("[REAL_TIP_AFTER_RESET_CHECK]")
+                    print("  task_id             =", getattr(self, "task_id", "unknown"))
+                    print("  scene_start_position=", scene_start)
+                    print("  real_tip_after_reset=", tip_pos)
+                    print("  tip_start_error_mm  =", float(np.linalg.norm(tip_pos - scene_start) * 1000.0))
+            except Exception as e:
+                print("[REAL_TIP_AFTER_RESET_CHECK][WARN]", e)
 
         self._initialize_waypoint_progress_from_current_tip()
         return self._get_observation(image_observation=self._maybe_update_rgb_buffer()), {}
@@ -778,7 +889,12 @@ class MCREnv(SofaEnv):
         if non_finite_failure:
             self.non_finite_failure = True
 
-        terminated = bool(self.episode_success or self.out_of_vessel_failure or self.non_finite_failure)
+        terminated = bool(
+            self.episode_success
+            or self.out_of_vessel_failure
+            or self.wrong_branch_failure
+            or self.non_finite_failure
+        )
         truncated = (self._elapsed_steps >= self.max_episode_steps) and (not terminated)
 
         if truncated:
@@ -950,8 +1066,21 @@ class MCREnv(SofaEnv):
         except Exception:
             tip_pos = np.zeros(3, dtype=np.float32)
 
-        self._update_vessel_safety_state(tip_pos)
-        valid_inside_vessel = not bool(self.current_out_of_vessel)
+        self._update_vessel_safety_state(
+            tip_pos,
+            advance_failure_counters=True,
+        )
+        sdf_center_outside = bool(
+            self.sdf_grid is not None
+            and np.isfinite(self.current_sdf_max_signed_distance)
+            and self.current_sdf_max_signed_distance
+            > float(self.sdf_outside_center_tolerance)
+        )
+        valid_inside_vessel = not bool(
+            self.current_out_of_vessel
+            or self.current_wrong_branch
+            or sdf_center_outside
+        )
         reached = self._update_waypoint_progress(tip_pos, valid_inside_vessel=valid_inside_vessel)
 
         wp_points = getattr(self, "waypoint_points", None)
@@ -982,10 +1111,37 @@ class MCREnv(SofaEnv):
             )
         )
 
+        if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
+            clearance = float(self.current_sdf_surface_clearance)
+            near_wall_feature = float(
+                np.clip(
+                    (float(self.sdf_near_wall_margin) - max(clearance, 0.0))
+                    / max(float(self.sdf_near_wall_margin), 1e-9),
+                    0.0,
+                    1.0,
+                )
+            )
+            penetration_feature = float(
+                np.clip(
+                    max(-clearance, 0.0) / max(float(self.catheter_radius), 1e-9),
+                    0.0,
+                    1.0,
+                )
+            )
+        else:
+            # Legacy vessels without VTI keep navigation rewards but do not
+            # invent a dense SDF wall term from the selected route centreline.
+            near_wall_feature = 0.0
+            penetration_feature = 0.0
+
         reward_features = {
             "waypoint_approach": 0.0 if in_final_target_phase else approach_feature,
             "waypoint_reached": 1.0 if reached else 0.0,
             "target_approach": approach_feature if in_final_target_phase else 0.0,
+            "wall_proximity_penalty": near_wall_feature,
+            "wall_penetration_penalty": penetration_feature,
+            "off_target_branch_penalty": float(self.current_off_target_branch_feature),
+            "wrong_branch_penalty": 1.0 if self.current_wrong_branch else 0.0,
             "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
             "timeout_penalty": 0.0,
             "step_penalty": 1.0,
@@ -995,6 +1151,9 @@ class MCREnv(SofaEnv):
         if self.current_out_of_vessel:
             self.out_of_vessel_this_episode = True
             self.out_of_vessel_failure = True
+        if self.current_wrong_branch:
+            self.wrong_branch_this_episode = True
+            self.wrong_branch_failure = True
 
         final_close = bool(current_final_dist <= float(self.target_distance_threshold))
         self.current_target_reached_this_step = bool(valid_inside_vessel and in_final_target_phase and final_close)
@@ -1028,21 +1187,43 @@ class MCREnv(SofaEnv):
         return bool(
             getattr(self, "episode_success", False)
             or getattr(self, "out_of_vessel_failure", False)
+            or getattr(self, "wrong_branch_failure", False)
             or getattr(self, "non_finite_failure", False)
         )
 
     def _get_info(self, terminated: bool = False, truncated: bool = False) -> dict:
         current_dist = float(self._get_distance_tip_to_dest())
-        terminal_reason = "target" if self.episode_success else "timeout" if truncated else "out_of_vessel" if self.out_of_vessel_failure else "non_finite" if self.non_finite_failure else "other" if terminated else "not_done"
+        terminal_reason = (
+            "target"
+            if self.episode_success
+            else "timeout"
+            if truncated
+            else "out_of_vessel"
+            if self.out_of_vessel_failure
+            else "wrong_branch"
+            if self.wrong_branch_failure
+            else "non_finite"
+            if self.non_finite_failure
+            else "other"
+            if terminated
+            else "not_done"
+        )
         chosen_model = str(getattr(self, "chosen_model", "unknown"))
         info = {
             "task_id": str(getattr(self, "task_id", "unknown")),
             "chosen_model": chosen_model,
             "sampling_model": str(getattr(self, "current_sampling_model", chosen_model)),
+            "vessel_family": str(getattr(self, "asset_model_family", "unknown")),
+            "vessel_difficulty": str(getattr(self, "asset_difficulty", "unknown")),
+            "collision_triangle_count": int(
+                getattr(self, "collision_triangle_count", 0)
+            ),
+            "centerline_vtk": str(getattr(self, "centerline_vtk", "unknown")),
             "success_2mm": bool(self.episode_success_2mm),
             "done_by_target": bool(self.episode_success),
             "done_by_timeout": bool(truncated),
             "done_by_out_of_vessel": bool(self.out_of_vessel_failure),
+            "done_by_wrong_branch": bool(self.wrong_branch_failure),
             "done_by_non_finite": bool(self.non_finite_failure),
             "terminal_reason": terminal_reason,
             "min_dist_to_goal": float(self.min_dist_this_episode),
@@ -1087,6 +1268,54 @@ class MCREnv(SofaEnv):
             "centerline_progress": float(self.current_centerline_progress),
             "centerline_safety_ratio_max_episode": float(self.max_safety_ratio_this_episode),
             "centerline_safety_margin_min_episode": float(self.min_safety_margin_this_episode),
+            "sdf_available": bool(self.sdf_grid is not None),
+            "sdf_tip_signed_distance": float(self.current_sdf_tip_signed_distance)
+            if np.isfinite(self.current_sdf_tip_signed_distance)
+            else np.nan,
+            "sdf_max_signed_distance": float(self.current_sdf_max_signed_distance)
+            if np.isfinite(self.current_sdf_max_signed_distance)
+            else np.nan,
+            "sdf_surface_clearance": float(self.current_sdf_surface_clearance)
+            if np.isfinite(self.current_sdf_surface_clearance)
+            else np.nan,
+            "sdf_surface_clearance_min_episode": float(
+                self.min_sdf_surface_clearance_this_episode
+            )
+            if np.isfinite(self.min_sdf_surface_clearance_this_episode)
+            else np.nan,
+            "sdf_signed_distance_max_episode": float(
+                self.max_sdf_signed_distance_this_episode
+            )
+            if np.isfinite(self.max_sdf_signed_distance_this_episode)
+            else np.nan,
+            "sdf_near_wall": bool(self.current_sdf_near_wall),
+            "sdf_penetrating": bool(self.current_sdf_penetrating),
+            "sdf_center_outside_candidate": bool(
+                self.sdf_grid is not None
+                and np.isfinite(self.current_sdf_max_signed_distance)
+                and self.current_sdf_max_signed_distance
+                > float(self.sdf_outside_center_tolerance)
+            ),
+            "sdf_sample_count": int(self.current_sdf_sample_count),
+            "sdf_outside_counter": int(self.sdf_outside_counter),
+            "sdf_outside_confirm_steps": int(self.sdf_outside_confirm_steps),
+            "sdf_wall_contact_steps_episode": int(
+                self.sdf_wall_contact_steps_episode
+            ),
+            "centerline_graph_available": bool(
+                self.centerline_graph_points is not None
+            ),
+            "graph_distance": float(self.current_graph_distance),
+            "route_graph_distance_gap": float(
+                self.current_route_graph_distance_gap
+            ),
+            "off_target_branch_feature": float(
+                self.current_off_target_branch_feature
+            ),
+            "wrong_branch": bool(self.current_wrong_branch),
+            "wrong_branch_this_episode": bool(self.wrong_branch_this_episode),
+            "wrong_branch_counter": int(self.wrong_branch_counter),
+            "wrong_branch_confirm_steps": int(self.wrong_branch_confirm_steps),
             "raw_insert": float(self.current_raw_insert),
             "effective_insert": float(self.current_effective_insert),
             "insert_negative_limit": float(getattr(self, "insert_negative_limit", -1.0)),
@@ -1191,19 +1420,230 @@ class MCREnv(SofaEnv):
         progress, idx, dist, _, _ = self._get_centerline_projection_state(point)
         return progress, idx, dist
 
-    def _get_current_local_radius(self, centerline_seg_idx: int):
-        if self.centerline_radius is None or self.centerline_points is None:
+    def _get_current_local_radius(self, centerline_progress: float):
+        if (
+            self.centerline_radius is None
+            or self.centerline_points is None
+            or self.centerline_cumlength is None
+        ):
             return None
         radius = np.asarray(self.centerline_radius, dtype=np.float32).reshape(-1)
-        if len(radius) == 0:
+        cumulative = np.asarray(self.centerline_cumlength, dtype=np.float32).reshape(-1)
+        if len(radius) == 0 or len(radius) != len(cumulative):
             return None
-        idx = int(np.clip(centerline_seg_idx, 0, len(radius) - 1))
-        local_radius = float(radius[idx])
+        local_radius = float(
+            np.interp(
+                float(centerline_progress),
+                cumulative,
+                radius,
+            )
+        )
         return local_radius if np.isfinite(local_radius) and local_radius > 1e-6 else None
 
-    def _update_vessel_safety_state(self, tip_pos: np.ndarray) -> None:
+    def _get_graph_projection_distance(self, point: np.ndarray) -> float:
+        points = getattr(self, "centerline_graph_points", None)
+        edges = getattr(self, "centerline_graph_edges", None)
+        if points is None or edges is None:
+            return np.nan
+        points = np.asarray(points, dtype=np.float32)
+        edges = np.asarray(edges, dtype=np.int64)
+        if (
+            points.ndim != 2
+            or points.shape[1] != 3
+            or edges.ndim != 2
+            or edges.shape[1] != 2
+            or len(edges) == 0
+        ):
+            return np.nan
+        valid = np.all((edges >= 0) & (edges < len(points)), axis=1)
+        if not np.any(valid):
+            return np.nan
+        edges = edges[valid]
+        start = points[edges[:, 0]]
+        end = points[edges[:, 1]]
+        vec = end - start
+        length_sq = np.maximum(np.sum(vec * vec, axis=1), 1e-12)
+        point = np.asarray(point, dtype=np.float32).reshape(3)
+        t = np.clip(np.sum((point[None, :] - start) * vec, axis=1) / length_sq, 0.0, 1.0)
+        projection = start + t[:, None] * vec
+        return float(np.min(np.linalg.norm(projection - point[None, :], axis=1)))
+
+    def _get_sdf_sample_points(self, tip_pos: np.ndarray) -> np.ndarray:
+        """Return dense samples along the magnetic tip's Line primitives.
+
+        SOFA collision uses both Point and Line primitives.  Sampling only the
+        node centres can miss a wall crossing between adjacent nodes, so each
+        of the final tip segments is subdivided at no more than half a VTI cell.
+        The uninserted catheter tail is intentionally excluded.
+        """
+
+        try:
+            positions = np.asarray(
+                self.mcr_controller_sofa.instrument.MO.position.array(),
+                dtype=np.float64,
+            )
+            if positions.ndim == 2 and positions.shape[1] >= 3 and len(positions) > 0:
+                sample_count = int(
+                    np.clip(
+                        max(1, self.num_catheter_tracking_points),
+                        1,
+                        len(positions),
+                    )
+                )
+                tip_nodes = positions[-sample_count:, :3].copy()
+                if len(tip_nodes) < 2 or self.sdf_grid is None:
+                    return tip_nodes
+                sdf_cell_sim = float(
+                    np.min(self.sdf_grid.spacing)
+                    * float(self.asset_source_to_sim_scale)
+                )
+                max_sample_step = max(1e-6, 0.5 * sdf_cell_sim)
+                dense_points = [tip_nodes[0]]
+                for start, end in zip(tip_nodes[:-1], tip_nodes[1:]):
+                    segment_length = float(np.linalg.norm(end - start))
+                    subdivisions = max(
+                        1,
+                        int(np.ceil(segment_length / max_sample_step)),
+                    )
+                    for index in range(1, subdivisions + 1):
+                        dense_points.append(
+                            start
+                            + (end - start)
+                            * (float(index) / float(subdivisions))
+                        )
+                return np.asarray(dense_points, dtype=np.float64)
+        except Exception:
+            pass
+        return np.asarray(tip_pos, dtype=np.float64).reshape((1, 3))
+
+    def _sim_points_to_asset_source(self, points_sim: np.ndarray) -> np.ndarray:
+        points = np.asarray(points_sim, dtype=np.float64).reshape((-1, 3))
+        transform = np.asarray(self.asset_T_env_sim, dtype=np.float64).reshape(7)
+        translation = transform[:3] + np.asarray(self.asset_offset_sim, dtype=np.float64).reshape(3)
+        scale = float(self.asset_source_to_sim_scale)
+        if not np.isfinite(scale) or scale <= 0.0:
+            raise ValueError(f"Invalid asset_source_to_sim_scale={scale}")
+        rotation = R.from_quat(transform[3:7])
+        return rotation.inv().apply(points - translation[None, :]) / scale
+
+    def _update_sdf_safety_state(
+        self,
+        tip_pos: np.ndarray,
+        advance_failure_counters: bool,
+    ) -> None:
+        grid = getattr(self, "sdf_grid", None)
+        if grid is None:
+            self.current_sdf_tip_signed_distance = np.nan
+            self.current_sdf_max_signed_distance = np.nan
+            self.current_sdf_surface_clearance = np.nan
+            self.current_sdf_near_wall = False
+            self.current_sdf_penetrating = False
+            self.current_sdf_sample_count = 0
+            return
+
+        sample_points = self._get_sdf_sample_points(tip_pos)
+        source_points = self._sim_points_to_asset_source(sample_points)
+        signed_source = np.asarray(grid.sample(source_points), dtype=np.float64).reshape(-1)
+        tip_source = self._sim_points_to_asset_source(
+            np.asarray(tip_pos, dtype=np.float64).reshape((1, 3))
+        )
+        tip_signed_source = float(grid.sample(tip_source)[0])
+        scale = float(self.asset_source_to_sim_scale)
+        signed_sim = signed_source * scale
+        tip_signed_sim = tip_signed_source * scale
+
+        # The grid has a source-space margin.  Leaving its extent is therefore
+        # unambiguously outside; replace +inf with a finite diagnostic sentinel.
+        outside_sentinel = max(0.05, 2.0 * float(self.sdf_outside_center_tolerance))
+        signed_sim = np.where(np.isfinite(signed_sim), signed_sim, outside_sentinel)
+        if not np.isfinite(tip_signed_sim):
+            tip_signed_sim = outside_sentinel
+
+        max_signed = float(np.max(signed_sim))
+        surface_clearance = float(-max_signed - float(self.catheter_radius))
+        self.current_sdf_tip_signed_distance = float(tip_signed_sim)
+        self.current_sdf_max_signed_distance = max_signed
+        self.current_sdf_surface_clearance = surface_clearance
+        self.current_sdf_near_wall = bool(
+            surface_clearance < float(self.sdf_near_wall_margin)
+        )
+        self.current_sdf_penetrating = bool(surface_clearance < 0.0)
+        self.current_sdf_sample_count = int(len(signed_sim))
+
+        outside_candidate = bool(
+            max_signed > float(self.sdf_outside_center_tolerance)
+        )
+        if advance_failure_counters:
+            self.sdf_outside_counter = (
+                int(self.sdf_outside_counter) + 1 if outside_candidate else 0
+            )
+            self.sdf_outside_confirmed = bool(
+                self.sdf_outside_counter >= int(self.sdf_outside_confirm_steps)
+            )
+            self.min_sdf_surface_clearance_this_episode = min(
+                float(self.min_sdf_surface_clearance_this_episode),
+                surface_clearance,
+            )
+            self.max_sdf_signed_distance_this_episode = max(
+                float(self.max_sdf_signed_distance_this_episode),
+                max_signed,
+            )
+            if self.current_sdf_penetrating:
+                self.sdf_wall_contact_steps_episode += 1
+
+    def _update_graph_branch_state(
+        self,
+        tip_pos: np.ndarray,
+        selected_route_distance: float,
+        advance_failure_counters: bool,
+    ) -> None:
+        graph_distance = self._get_graph_projection_distance(tip_pos)
+        self.current_graph_distance = graph_distance
+        if not np.isfinite(graph_distance):
+            self.current_route_graph_distance_gap = 0.0
+            self.current_off_target_branch_feature = 0.0
+            self.current_wrong_branch = False
+            if advance_failure_counters:
+                self.wrong_branch_counter = 0
+            return
+
+        gap = max(0.0, float(selected_route_distance) - float(graph_distance))
+        excess = max(0.0, gap - float(self.wrong_branch_distance_margin))
+        self.current_route_graph_distance_gap = gap
+        self.current_off_target_branch_feature = float(
+            np.clip(
+                excess / max(float(self.wrong_branch_observation_scale), 1e-9),
+                0.0,
+                1.0,
+            )
+        )
+        sdf_inside = bool(
+            not np.isfinite(self.current_sdf_max_signed_distance)
+            or self.current_sdf_max_signed_distance
+            <= float(self.sdf_outside_center_tolerance)
+        )
+        wrong_candidate = bool(excess > 0.0 and sdf_inside)
+        if advance_failure_counters:
+            self.wrong_branch_counter = (
+                int(self.wrong_branch_counter) + 1 if wrong_candidate else 0
+            )
+            self.current_wrong_branch = bool(
+                self.wrong_branch_counter >= int(self.wrong_branch_confirm_steps)
+            )
+            if self.current_wrong_branch:
+                self.wrong_branch_this_episode = True
+        else:
+            self.current_wrong_branch = bool(
+                self.wrong_branch_counter >= int(self.wrong_branch_confirm_steps)
+            )
+
+    def _update_vessel_safety_state(
+        self,
+        tip_pos: np.ndarray,
+        advance_failure_counters: bool = False,
+    ) -> None:
         progress, seg_idx, centerline_dist, centerline_proj, tangent = self._get_centerline_projection_state(tip_pos)
-        local_radius = self._get_current_local_radius(seg_idx)
+        local_radius = self._get_current_local_radius(progress)
         if local_radius is None:
             local_radius = float(self.default_local_radius)
         local_radius = max(float(local_radius), 1e-9)
@@ -1265,18 +1705,54 @@ class MCREnv(SofaEnv):
         self.current_centerline_local_radius_norm = float(local_radius / max(float(self.radius_observation_scale), 1e-9))
         self.max_safety_ratio_this_episode = max(float(self.max_safety_ratio_this_episode), safety_ratio)
         self.min_safety_margin_this_episode = min(float(self.min_safety_margin_this_episode), safety_margin)
-        self.current_out_of_vessel = bool(safety_ratio >= float(self.out_of_vessel_safety_ratio))
-        if not np.isfinite(safety_ratio):
-            self.current_out_of_vessel = bool(np.isfinite(centerline_dist) and centerline_dist >= float(self.out_of_vessel_fallback_distance))
+        self._update_sdf_safety_state(
+            tip_pos=tip_pos,
+            advance_failure_counters=advance_failure_counters,
+        )
+        self._update_graph_branch_state(
+            tip_pos=tip_pos,
+            selected_route_distance=float(centerline_dist),
+            advance_failure_counters=advance_failure_counters,
+        )
+
+        if self.sdf_grid is not None:
+            self.current_out_of_vessel = bool(self.sdf_outside_confirmed)
+        else:
+            # Compatibility fallback for legacy real-vessel assets without VTI.
+            self.current_out_of_vessel = bool(
+                safety_ratio >= float(self.out_of_vessel_safety_ratio)
+            )
+            if not np.isfinite(safety_ratio):
+                self.current_out_of_vessel = bool(
+                    np.isfinite(centerline_dist)
+                    and centerline_dist >= float(self.out_of_vessel_fallback_distance)
+                )
 
     def _get_vessel_section_features(self, tip_pos: np.ndarray) -> np.ndarray:
         self._update_vessel_safety_state(tip_pos)
+        if np.isfinite(self.current_sdf_surface_clearance):
+            clearance_feature = float(
+                np.clip(
+                    self.current_sdf_surface_clearance
+                    / max(float(self.sdf_clearance_observation_scale), 1e-9),
+                    -2.0,
+                    2.0,
+                )
+            )
+            contact_feature = 1.0 if self.current_sdf_penetrating else 0.0
+        else:
+            clearance_feature = float(
+                np.clip(self.current_centerline_safety_margin, -2.0, 1.0)
+            )
+            contact_feature = 1.0 if self.current_centerline_safety_margin <= 0.0 else 0.0
         return np.array(
             [
                 np.clip(self.current_centerline_offset_N_over_radius, -3.0, 3.0),
                 np.clip(self.current_centerline_offset_B_over_radius, -3.0, 3.0),
                 np.clip(self.current_centerline_local_radius_norm, 0.0, 5.0),
-                np.clip(self.current_centerline_safety_margin, -3.0, 1.0),
+                clearance_feature,
+                np.clip(self.current_off_target_branch_feature, 0.0, 1.0),
+                contact_feature,
             ],
             dtype=np.float32,
         )
@@ -1340,7 +1816,7 @@ class MCREnv(SofaEnv):
         # For aorta6, exclude the physical start itself and make the first
         # waypoint one waypoint-spacing farther toward the target.
         waypoint_generation_start = float(start_progress)
-        if is_aorta6:
+        if is_aorta6 and self.scene_verbose:
             waypoint_generation_start = float(
                 min(start_progress + spacing, target_progress)
             )
@@ -1726,6 +2202,175 @@ class MCREnv(SofaEnv):
         self.vessel_scale_factor = float(
             self.scene_creation_result.get("vessel_scale_factor", 1.0)
         )
+        self.centerline_graph_points = self.scene_creation_result.get(
+            "centerline_graph_points", None
+        )
+        self.centerline_graph_edges = self.scene_creation_result.get(
+            "centerline_graph_edges", None
+        )
+        self.centerline_graph_radius = self.scene_creation_result.get(
+            "centerline_graph_radius", None
+        )
+        if self.centerline_graph_points is not None:
+            self.centerline_graph_points = np.asarray(
+                self.centerline_graph_points, dtype=np.float32
+            )
+        if self.centerline_graph_edges is not None:
+            self.centerline_graph_edges = np.asarray(
+                self.centerline_graph_edges, dtype=np.int64
+            )
+        if self.centerline_graph_radius is not None:
+            self.centerline_graph_radius = np.asarray(
+                self.centerline_graph_radius, dtype=np.float32
+            )
+
+        self.asset_source_to_sim_scale = float(
+            self.scene_creation_result.get("asset_source_to_sim_scale", np.nan)
+        )
+        self.asset_T_env_sim = self.scene_creation_result.get(
+            "asset_T_env_sim", None
+        )
+        self.asset_offset_sim = np.asarray(
+            self.scene_creation_result.get("asset_offset_sim", [0.0, 0.0, 0.0]),
+            dtype=np.float64,
+        ).reshape(3)
+        self.sdf_grid = None
+        self.vessel_metadata = None
+        self.collision_triangle_count = 0
+        self.asset_model_family = "unknown"
+        self.asset_difficulty = "unknown"
+        sdf_vti = self.scene_creation_result.get("sdf_vti", None)
+        metadata_json = self.scene_creation_result.get("metadata_json", None)
+        is_artificial_model = bool(
+            self.scene_creation_result.get("is_artificial_model", False)
+        )
+        if metadata_json:
+            self.vessel_metadata = load_vessel_metadata(metadata_json)
+            metadata_model = str(self.vessel_metadata.get("model_id", ""))
+            if metadata_model and metadata_model != str(self.chosen_model):
+                raise ValueError(
+                    "Vessel metadata/model mismatch: "
+                    f"metadata={metadata_model} chosen={self.chosen_model}"
+                )
+            source_units = str(self.vessel_metadata.get("source_units", ""))
+            if source_units and source_units != "mm":
+                raise ValueError(
+                    f"Unsupported generated vessel source_units={source_units}; expected mm"
+                )
+            self.asset_model_family = str(
+                self.vessel_metadata.get("family", "unknown")
+            )
+            self.asset_difficulty = str(
+                self.vessel_metadata.get("difficulty", "unknown")
+            )
+            metadata_sofa_scale = float(
+                self.vessel_metadata.get("sofa_scale", np.nan)
+            )
+            runtime_base_scale = float(
+                self.asset_source_to_sim_scale
+                / max(float(self.vessel_scale_factor), 1e-12)
+            )
+            if (
+                np.isfinite(metadata_sofa_scale)
+                and not np.isclose(
+                    runtime_base_scale,
+                    metadata_sofa_scale,
+                    rtol=1e-6,
+                    atol=1e-12,
+                )
+            ):
+                raise ValueError(
+                    "Vessel metadata/runtime scale mismatch: "
+                    f"metadata={metadata_sofa_scale} runtime={runtime_base_scale}"
+                )
+            collision_validation = self.vessel_metadata.get(
+                "collision_validation", {}
+            )
+            if isinstance(collision_validation, dict):
+                self.collision_triangle_count = int(
+                    collision_validation.get("triangle_count", 0)
+                )
+                degenerate_triangles = int(
+                    collision_validation.get("degenerate_triangles", 0)
+                )
+                if self.collision_triangle_count <= 0 or degenerate_triangles != 0:
+                    raise ValueError(
+                        "Invalid generated collision mesh metadata: "
+                        f"triangles={self.collision_triangle_count} "
+                        f"degenerate={degenerate_triangles}"
+                    )
+            sdf_metadata = self.vessel_metadata.get("sdf", {})
+            if isinstance(sdf_metadata, dict):
+                convention = str(sdf_metadata.get("convention", ""))
+                if convention and convention != "negative_inside_positive_outside":
+                    raise ValueError(
+                        f"Unsupported SDF sign convention: {convention}"
+                    )
+        if sdf_vti:
+            if self.asset_T_env_sim is None:
+                raise ValueError("SDF asset requires asset_T_env_sim from the scene.")
+            self.sdf_grid = load_signed_distance_grid(sdf_vti)
+            sdf_metadata = (
+                self.vessel_metadata.get("sdf", {})
+                if isinstance(self.vessel_metadata, dict)
+                else {}
+            )
+            if isinstance(sdf_metadata, dict):
+                metadata_dims = tuple(
+                    int(value)
+                    for value in sdf_metadata.get("dimensions_xyz", [])
+                )
+                runtime_dims = tuple(
+                    int(value) for value in self.sdf_grid.values.shape[::-1]
+                )
+                if metadata_dims and metadata_dims != runtime_dims:
+                    raise ValueError(
+                        "Vessel metadata/VTI dimensions mismatch: "
+                        f"metadata={metadata_dims} runtime={runtime_dims}"
+                    )
+                metadata_spacing = float(
+                    sdf_metadata.get("spacing_mm", np.nan)
+                )
+                if (
+                    np.isfinite(metadata_spacing)
+                    and not np.allclose(
+                        self.sdf_grid.spacing,
+                        metadata_spacing,
+                        rtol=1e-6,
+                        atol=1e-9,
+                    )
+                ):
+                    raise ValueError(
+                        "Vessel metadata/VTI spacing mismatch: "
+                        f"metadata={metadata_spacing} "
+                        f"runtime={self.sdf_grid.spacing.tolist()}"
+                    )
+        if is_artificial_model and (self.sdf_grid is None or self.vessel_metadata is None):
+            raise RuntimeError(
+                f"Artificial model {self.chosen_model} requires VTI SDF and metadata."
+            )
+        if (
+            is_artificial_model
+            and str(self.chosen_model).upper().startswith("B")
+            and (
+                self.centerline_graph_points is None
+                or self.centerline_graph_edges is None
+            )
+        ):
+            raise RuntimeError(
+                f"Branching model {self.chosen_model} requires centerline_graph.vtk."
+            )
+        if self.scene_verbose:
+            print(
+                "[VESSEL_ASSET_BUNDLE]",
+                "model=", self.chosen_model,
+                "family=", self.asset_model_family,
+                "difficulty=", self.asset_difficulty,
+                "sdf=", bool(self.sdf_grid is not None),
+                "graph=", bool(self.centerline_graph_points is not None),
+                "collision_triangles=", self.collision_triangle_count,
+                "source_to_sim_scale=", self.asset_source_to_sim_scale,
+            )
 
         raw_centerline = self.scene_creation_result.get("centerline_points", None)
         raw_centerline_radius = self.scene_creation_result.get("centerline_radius", None)

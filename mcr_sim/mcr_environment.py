@@ -39,6 +39,7 @@ class Environment(Sofa.Core.Controller):
         triangle_collision_proximity=None,
         line_point_collision_proximity=None,
         use_line_point_collision=False,
+        verbose=True,
         *args, **kwargs):
 
         # These are needed (and the normal way to override from a python class)
@@ -65,13 +66,15 @@ class Environment(Sofa.Core.Controller):
             else float(line_point_collision_proximity)
         )
         self.use_line_point_collision = bool(use_line_point_collision)
-        print(
-            "[VESSEL_COLLISION_ENV]",
-            "base_proximity=", self.collision_proximity,
-            "triangle_proximity=", self.triangle_collision_proximity,
-            "line_point_proximity=", self.line_point_collision_proximity,
-            "use_line_point_collision=", self.use_line_point_collision,
-        )
+        self.verbose = bool(verbose)
+        if self.verbose:
+            print(
+                "[VESSEL_COLLISION_ENV]",
+                "base_proximity=", self.collision_proximity,
+                "triangle_proximity=", self.triangle_collision_proximity,
+                "line_point_proximity=", self.line_point_collision_proximity,
+                "use_line_point_collision=", self.use_line_point_collision,
+            )
 
         self.T_env_sim = T_env_sim
         r = R.from_quat(self.T_env_sim[3:7])

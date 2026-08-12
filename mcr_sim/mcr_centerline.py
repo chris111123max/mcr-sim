@@ -934,10 +934,12 @@ def load_centerline_data(
         T_env_sim=None,
         point_frame='env',
         scale=1.0,
-        offset_sim=(0.0, 0.0, 0.0)):
+        offset_sim=(0.0, 0.0, 0.0),
+        verbose=True):
 	points_raw, edges, point_arrays = _read_centerline_polydata(vtk_path)
-	print(f"[CENTERLINE_LOAD] vtk_path = {vtk_path}")
-	print(f"[CENTERLINE_LOAD] point_arrays keys = {sorted((point_arrays or {}).keys())}")
+	if verbose:
+		print(f"[CENTERLINE_LOAD] vtk_path = {vtk_path}")
+		print(f"[CENTERLINE_LOAD] point_arrays keys = {sorted((point_arrays or {}).keys())}")
 	points_sim = _transform_points_to_sim(
 		points=points_raw,
 		T_env_sim=T_env_sim,
@@ -973,28 +975,31 @@ def load_centerline_data(
 		if candidate is None:
 			continue
 		if len(candidate) != len(points_raw):
-			print(
-				f"[CENTERLINE_LOAD] {radius_name} length mismatch: "
-				f"{len(candidate)} vs {len(points_raw)}"
-			)
+			if verbose:
+				print(
+					f"[CENTERLINE_LOAD] {radius_name} length mismatch: "
+					f"{len(candidate)} vs {len(points_raw)}"
+				)
 			continue
 		radius_raw = candidate
 		selected_radius_name = radius_name
 		break
 
 	if radius_raw is None:
-		print("[CENTERLINE_LOAD] No Radius-like array found in VTK.")
+		if verbose:
+			print("[CENTERLINE_LOAD] No Radius-like array found in VTK.")
 	else:
-		print(f"[CENTERLINE_LOAD] selected radius array = {selected_radius_name}")
+		if verbose:
+			print(f"[CENTERLINE_LOAD] selected radius array = {selected_radius_name}")
 		raw_stats = _safe_stats(radius_raw)
-		if raw_stats is not None:
+		if raw_stats is not None and verbose:
 			print(
 				"[CENTERLINE_LOAD] radius_raw min/mean/max =",
 				float(raw_stats[0]),
 				float(raw_stats[1]),
 				float(raw_stats[2]),
 			)
-		else:
+		elif verbose:
 			print("[CENTERLINE_LOAD] radius_raw min/mean/max = nan nan nan")
 
 	radius_sim = None
@@ -1004,7 +1009,7 @@ def load_centerline_data(
 		except Exception:
 			radius_sim = None
 
-	if radius_sim is not None:
+	if radius_sim is not None and verbose:
 		sim_stats = _safe_stats(radius_sim)
 		if sim_stats is not None:
 			print(

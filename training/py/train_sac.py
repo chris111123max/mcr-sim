@@ -1,7 +1,6 @@
 import argparse
 import math
 import os
-import platform
 import random
 import sys
 from datetime import datetime
@@ -36,16 +35,18 @@ from mcr_sim.training_config import (
     FRAME_SKIP,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
     MAX_EPISODE_STEPS,
-    OUT_OF_VESSEL_SAFETY_RATIO,
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
-    REWARD_PROGRESS_NORMALIZATION_M,
+    REWARD_OFF_TARGET_BRANCH,
     REWARD_STEP,
     REWARD_SUCCESS,
     REWARD_TARGET_APPROACH,
     REWARD_TIMEOUT,
+    REWARD_WALL_PENETRATION,
+    REWARD_WALL_PROXIMITY,
     REWARD_WAYPOINT_APPROACH,
     REWARD_WAYPOINT_REACHED,
+    REWARD_WRONG_BRANCH,
     SAC_BATCH_SIZE,
     SAC_BUFFER_SIZE,
     SAC_EPOCHS,
@@ -58,12 +59,16 @@ from mcr_sim.training_config import (
     SAC_TAU,
     SAC_TRAIN_FREQ,
     SETTLE_STEPS,
+    SDF_OUTSIDE_CENTER_TOLERANCE_M,
+    SDF_OUTSIDE_CONFIRM_STEPS,
     SOFA_TIME_STEP_S,
     START_WINDOW_DISTANCE_M,
     TARGET_THRESHOLD_M,
     TARGET_WINDOW_DISTANCE_M,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
+    WRONG_BRANCH_CONFIRM_STEPS,
+    WRONG_BRANCH_DISTANCE_MARGIN_M,
 )
 
 DEFAULT_LOG_ROOT = TRAINING_RUNS_DIR
@@ -199,6 +204,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "done_by_target": bool(info.get("done_by_target", False)),
             "done_by_timeout": bool(info.get("done_by_timeout", False)),
             "done_by_out_of_vessel": bool(info.get("done_by_out_of_vessel", False)),
+            "done_by_wrong_branch": bool(info.get("done_by_wrong_branch", False)),
             "done_by_non_finite": bool(info.get("done_by_non_finite", False)),
             "ep_len": self._safe_float(episode_info.get("l", np.nan)),
             "ep_reward": self._safe_float(episode_info.get("r", np.nan)),
@@ -211,6 +217,19 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "centerline_safety_margin": self._safe_float(info.get("centerline_safety_margin", np.nan)),
             "centerline_safety_margin_min_episode": self._safe_float(info.get("centerline_safety_margin_min_episode", np.nan)),
             "out_of_vessel": bool(info.get("out_of_vessel_this_episode", False)),
+            "wrong_branch": bool(info.get("wrong_branch_this_episode", False)),
+            "sdf_surface_clearance_m": self._safe_float(
+                info.get("sdf_surface_clearance", np.nan)
+            ),
+            "sdf_surface_clearance_min_m": self._safe_float(
+                info.get("sdf_surface_clearance_min_episode", np.nan)
+            ),
+            "sdf_wall_contact_steps": self._safe_float(
+                info.get("sdf_wall_contact_steps_episode", 0.0)
+            ),
+            "route_graph_distance_gap_m": self._safe_float(
+                info.get("route_graph_distance_gap", np.nan)
+            ),
             "vessel_scale_factor": self._safe_float(info.get("vessel_scale_factor", np.nan)),
             "reward_progress": self._safe_float(
                 info.get("episode_reward_waypoint_approach", 0.0)
@@ -223,7 +242,17 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 info.get("episode_reward_successful_task", 0.0)
             )
             + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
+            + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0)),
+            "reward_safety": self._safe_float(
+                info.get("episode_reward_wall_proximity_penalty", 0.0)
+            )
+            + self._safe_float(
+                info.get("episode_reward_wall_penetration_penalty", 0.0)
+            )
+            + self._safe_float(
+                info.get("episode_reward_off_target_branch_penalty", 0.0)
+            ),
             "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0)),
         }
 
@@ -271,15 +300,20 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"terminal/target_rate_w{self.window_size}", self._rate(ep["done_by_target"] for ep in recent))
             self.logger.record(f"terminal/timeout_rate_w{self.window_size}", self._rate(ep["done_by_timeout"] for ep in recent))
             self.logger.record(f"terminal/out_of_vessel_rate_w{self.window_size}", self._rate(ep["done_by_out_of_vessel"] for ep in recent))
+            self.logger.record(f"terminal/wrong_branch_rate_w{self.window_size}", self._rate(ep["done_by_wrong_branch"] for ep in recent))
             self.logger.record(f"terminal/non_finite_rate_w{self.window_size}", self._rate(ep["done_by_non_finite"] for ep in recent))
             self.logger.record(f"rollout_recent/centerline_safety_ratio_mean_w{self.window_size}", self._mean(ep["centerline_safety_ratio"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/centerline_safety_ratio_max_w{self.window_size}", self._max(ep["centerline_safety_ratio_max_episode"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/centerline_safety_margin_mean_w{self.window_size}", self._mean(ep["centerline_safety_margin"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/centerline_safety_margin_min_w{self.window_size}", self._mean(ep["centerline_safety_margin_min_episode"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_clearance_min_mm_w{self.window_size}", self._mean(ep["sdf_surface_clearance_min_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/sdf_wall_contact_steps_w{self.window_size}", self._mean(ep["sdf_wall_contact_steps"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/route_graph_gap_mm_w{self.window_size}", self._mean(ep["route_graph_distance_gap_m"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/progress_w{self.window_size}", self._mean(ep["reward_progress"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/waypoints_w{self.window_size}", self._mean(ep["reward_waypoints"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
 
         if self.total_episodes > 0:
@@ -299,23 +333,30 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             success_rate = self._rate(ep["success_target"] for ep in task_window)
             timeout_rate = self._rate(ep["done_by_timeout"] for ep in task_window)
             out_rate = self._rate(ep["done_by_out_of_vessel"] for ep in task_window)
+            wrong_branch_rate = self._rate(ep["done_by_wrong_branch"] for ep in task_window)
             non_finite_rate = self._rate(ep["done_by_non_finite"] for ep in task_window)
             final_dist_mm = self._mean(ep["final_dist_m"] * 1000.0 for ep in task_window)
             min_dist_mm = self._mean(ep["min_dist_m"] * 1000.0 for ep in task_window)
             waypoint_ratio = self._mean(ep["waypoint_reached_ratio"] for ep in task_window)
             safety_ratio_max = self._max(ep["centerline_safety_ratio_max_episode"] for ep in task_window)
             safety_margin_min = self._mean(ep["centerline_safety_margin_min_episode"] for ep in task_window)
+            sdf_clearance_min_mm = self._mean(
+                ep["sdf_surface_clearance_min_m"] * 1000.0
+                for ep in task_window
+            )
 
             self.logger.record(f"{prefix}/success_{self.success_label}_w{self.window_size}", success_rate, exclude="stdout")
             self.logger.record(f"{prefix}/target_rate_w{self.window_size}", success_rate, exclude="stdout")
             self.logger.record(f"{prefix}/timeout_rate_w{self.window_size}", timeout_rate, exclude="stdout")
             self.logger.record(f"{prefix}/out_of_vessel_rate_w{self.window_size}", out_rate, exclude="stdout")
+            self.logger.record(f"{prefix}/wrong_branch_rate_w{self.window_size}", wrong_branch_rate, exclude="stdout")
             self.logger.record(f"{prefix}/non_finite_rate_w{self.window_size}", non_finite_rate, exclude="stdout")
             self.logger.record(f"{prefix}/final_dist_mm_w{self.window_size}", final_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/min_dist_mm_w{self.window_size}", min_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/waypoint_reached_ratio_w{self.window_size}", waypoint_ratio, exclude="stdout")
             self.logger.record(f"{prefix}/centerline_safety_ratio_max_w{self.window_size}", safety_ratio_max, exclude="stdout")
             self.logger.record(f"{prefix}/centerline_safety_margin_min_w{self.window_size}", safety_margin_min, exclude="stdout")
+            self.logger.record(f"{prefix}/sdf_clearance_min_mm_w{self.window_size}", sdf_clearance_min_mm, exclude="stdout")
             self.logger.record(f"{prefix}/episodes_w{self.window_size}", float(len(task_window)), exclude="stdout")
 
             if np.isfinite(success_rate):
@@ -324,6 +365,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                     "success_rate": float(success_rate),
                     "timeout_rate": float(timeout_rate),
                     "out_of_vessel_rate": float(out_rate),
+                    "wrong_branch_rate": float(wrong_branch_rate),
                     "final_dist_mm": float(final_dist_mm),
                     "waypoint_ratio": float(waypoint_ratio),
                 })
@@ -774,6 +816,14 @@ def parse_args():
         choices=[0, 1, 2],
         help="Stable-Baselines3 verbosity. Use 0 for quieter long training.",
     )
+    parser.add_argument(
+        "--scene-verbose",
+        action="store_true",
+        help=(
+            "Print detailed SOFA scene, pose, centerline, and collision "
+            "diagnostics. Default is off for clean training logs."
+        ),
+    )
 
     # Scene/env sampling is uniform over the active training vessels. No priority sampling.
 
@@ -839,6 +889,7 @@ def build_env(args):
                 "soft_randomize_single_vessel": bool(args.soft_randomize_single_vessel),
                 "vessel_scale_min": float(args.vessel_scale_min),
                 "vessel_scale_max": float(args.vessel_scale_max),
+                "verbose_scene": bool(args.scene_verbose),
             }
             # If running with GUI (human), enable debug_rendering so the scene
             # creates the visual OglModel and ensure vessels are sufficiently
@@ -1031,12 +1082,8 @@ def main():
 
             if context.is_main:
                 print(
-                    f"Resume hyperparams: batch_size={model.batch_size}, "
-                    f"buffer_size={model.buffer_size}"
-                )
-                print(
-                    f"Resume hyperparams: local_batch_size={model.batch_size}, "
-                    f"buffer_size_per_rank={model.buffer_size}"
+                    f"[MCR TRAIN] resume local_batch={model.batch_size} "
+                    f"buffer_per_rank={model.buffer_size}"
                 )
         else:
             model_kwargs = dict(
@@ -1063,11 +1110,8 @@ def main():
             reset_num_timesteps = True
             if context.is_main:
                 print(
-                    f"New SAC model: ent_coef={args.ent_coef}, lr={args.learning_rate:g}, "
-                    f"batch={args.batch_size}, buffer={args.buffer_size}"
-                )
-                print(
-                    f"New SAC model: ent_coef={args.ent_coef}, lr={args.learning_rate:g}, "
+                    f"[MCR TRAIN] new SAC ent_coef={args.ent_coef} "
+                    f"lr={args.learning_rate:g} "
                     f"global_batch={global_batch_size}, local_batch={local_batch_size}, "
                     f"buffer_per_rank={args.buffer_size}"
                 )
@@ -1077,77 +1121,49 @@ def main():
             model.synchronize_parameters()
 
         if context.is_main:
-            print("[HARDWARE TARGET]")
-            print(f"  architecture             = {platform.machine()}")
-            print(f"  cpu_count                = {os.cpu_count()}")
-            print(f"  accelerator              = {context.device.accelerator}")
-            print("[DISTRIBUTED]")
-            print(f"  enabled                  = {context.enabled}")
-            print(f"  backend                  = {context.backend}")
-            print(f"  world_size               = {context.world_size}")
-            print("[ENV PARALLELISM]")
-            print(f"  total_n_envs             = {total_n_envs}")
-            print(f"  envs_per_rank            = {args.local_n_envs}")
-            print(f"  vec_env                  = {'SubprocVecEnv' if args.local_n_envs > 1 else 'DummyVecEnv'}")
-            print("  SOFA backend             = CPU")
-            print("[SAC]")
-            print(f"  accelerator backend      = {context.device.resolved}")
-            print(f"  global_batch_size        = {global_batch_size}")
-            print(f"  local_batch_size         = {local_batch_size}")
-            print(f"  replay_buffer            = CPU RAM ({args.buffer_size} transitions/rank)")
             print(
-                f"  gradient_sync            = "
-                f"{context.backend + ' all-reduce' if context.enabled else 'disabled'}"
-            )
-
-            print("[RUN]")
-            print(
-                f"  stage={threshold_tag}  env={args.env_type}  "
-                f"force_model={args.force_model or 'uniform/all'}"
-            )
-            print(f"  obs={env.observation_space}  action={env.action_space}")
-            print("  algorithm=standard SAC: actor and critic use the same 52-D waypoint observation")
-            print(
-                f"  epochs={args.epochs}  steps_per_epoch={args.steps_per_epoch}  "
-                f"timesteps={args.timesteps}  n_envs={int(args.n_envs)}  "
-                f"lr={args.learning_rate:g}  batch={args.batch_size}  "
-                f"buffer={args.buffer_size}  ent_coef={args.ent_coef}"
-            )
-            print("  algorithm=standard SAC math with synchronized actor/critic/entropy gradients")
-            print(
-                f"  global_timesteps={args.timesteps}  local_timesteps/rank={local_total_timesteps}  "
-                f"total_n_envs={total_n_envs}  lr={args.learning_rate:g}  "
-                f"global_batch={global_batch_size}  local_batch={local_batch_size}  "
-                f"buffer_per_rank={args.buffer_size}  ent_coef={args.ent_coef}"
+                f"[MCR TRAIN] device={context.device.resolved} "
+                f"distributed={context.enabled} backend={context.backend} "
+                f"world={context.world_size} envs={total_n_envs} "
+                f"envs_per_rank={args.local_n_envs}"
             )
             print(
-                f"  max_steps={args.max_episode_steps}  "
-                f"effective_epochs={float(args.timesteps) / float(args.steps_per_epoch):.3f}  "
-                f"checkpoint_every={args.save_freq} global transitions"
+                f"[MCR TRAIN] task={args.env_type} "
+                f"model={args.force_model or 'uniform(B01-B05,C01-C05)'} "
+                f"obs={env.observation_space.shape} action={env.action_space.shape}"
             )
             print(
-                f"  radius_obs_scale={float(args.radius_observation_scale)*1000.0:.2f}mm"
+                f"[MCR TRAIN] epochs={args.epochs} steps_per_epoch={args.steps_per_epoch} "
+                f"global_steps={args.timesteps} local_steps={local_total_timesteps} "
+                f"max_episode_steps={args.max_episode_steps} checkpoint={args.save_freq}"
             )
             print(
-                f"  out_of_vessel_ratio={OUT_OF_VESSEL_SAFETY_RATIO:.2f}  "
-                f"progress_unit={REWARD_PROGRESS_NORMALIZATION_M*1000.0:.1f}mm  "
-                f"reward_progress=[{REWARD_WAYPOINT_APPROACH:g},"
-                f"{REWARD_TARGET_APPROACH:g}]  waypoint={REWARD_WAYPOINT_REACHED:g}  "
-                f"success={REWARD_SUCCESS:g}  out={REWARD_OUT_OF_VESSEL:g}  "
-                f"timeout={REWARD_TIMEOUT:g}  step={REWARD_STEP:g}"
+                f"[MCR TRAIN] SAC lr={args.learning_rate:g} "
+                f"batch={global_batch_size}/{local_batch_size} "
+                f"buffer_per_rank={args.buffer_size} ent_coef={args.ent_coef}"
             )
             print(
-                f"  active_train_models={','.join(ARTIFICIAL_MODEL_IDS)}  "
-                f"randomize_start_target={bool(args.randomize_start_target)} "
-                f"start_window={float(args.start_window_mm):.1f}mm "
-                f"target_window={float(args.target_window_mm):.1f}mm  "
-                f"randomize_initial_orientation={bool(args.randomize_initial_orientation)} "
-                f"max_angle={float(args.initial_orientation_max_angle_deg):.1f}deg  "
-                f"vessel_scale=[{float(args.vessel_scale_min):.2f},"
-                f"{float(args.vessel_scale_max):.2f}]  "
-                f"soft_randomize_single_vessel={bool(args.soft_randomize_single_vessel)}"
+                f"[MCR TRAIN] reward progress={REWARD_WAYPOINT_APPROACH:g}/"
+                f"{REWARD_TARGET_APPROACH:g} waypoint={REWARD_WAYPOINT_REACHED:g} "
+                f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
+                f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
+                f"success={REWARD_SUCCESS:g} out={REWARD_OUT_OF_VESSEL:g} "
+                f"timeout={REWARD_TIMEOUT:g} step={REWARD_STEP:g}"
             )
-            print(f"  run_dir={run_dir}")
+            print(
+                f"[MCR TRAIN] terminal SDF>{SDF_OUTSIDE_CENTER_TOLERANCE_M*1000.0:.1f}mm "
+                f"x{SDF_OUTSIDE_CONFIRM_STEPS}; wrong_branch>"
+                f"{WRONG_BRANCH_DISTANCE_MARGIN_M*1000.0:.1f}mm "
+                f"x{WRONG_BRANCH_CONFIRM_STEPS}; target={args.target_threshold*1000.0:.1f}mm"
+            )
+            print(
+                f"[MCR TRAIN] randomization start/target="
+                f"{float(args.start_window_mm):.1f}/{float(args.target_window_mm):.1f}mm "
+                f"orientation={float(args.initial_orientation_max_angle_deg):.1f}deg "
+                f"vessel_scale={float(args.vessel_scale_min):.2f}-"
+                f"{float(args.vessel_scale_max):.2f} scene_verbose={args.scene_verbose}"
+            )
+            print(f"[MCR TRAIN] output={run_dir}")
 
         model.learn(
             total_timesteps=local_total_timesteps,

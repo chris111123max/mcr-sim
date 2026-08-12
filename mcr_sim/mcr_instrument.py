@@ -60,6 +60,7 @@ class Instrument(Sofa.Core.Controller):
             T_start_sim=[0., 0., 0., 0., 0., 0., 1.],
             fixed_directions=[0, 0, 0, 0, 0, 0],
             color=[0.2, .8, 1., 1.],
+            verbose=True,
             *args, **kwargs):
 
 
@@ -74,6 +75,7 @@ class Instrument(Sofa.Core.Controller):
         self.inner_diam = inner_diam
         self.num_elem_body = num_elem_body
         self.num_elem_tip = num_elem_tip
+        self.verbose = bool(verbose)
 
         self.color = color
 
@@ -92,11 +94,12 @@ class Instrument(Sofa.Core.Controller):
 
         num_edges_collis_body = int(os.environ.get("MCR_NUM_EDGES_COLLIS_BODY", str(self.num_elem_body)))
         num_edges_collis_tip = int(os.environ.get("MCR_NUM_EDGES_COLLIS_TIP", str(self.num_elem_tip)))
-        print(
-            "[CATHETER_COLLISION_EDGES]",
-            "body=", num_edges_collis_body,
-            "tip=", num_edges_collis_tip,
-        )
+        if self.verbose:
+            print(
+                "[CATHETER_COLLISION_EDGES]",
+                "body=", num_edges_collis_body,
+                "tip=", num_edges_collis_tip,
+            )
 
         topoLines_guide = self.root_node.addChild(name+'_topo_lines')
         topoLines_guide.addObject(
@@ -254,7 +257,8 @@ class Instrument(Sofa.Core.Controller):
                 str(CATHETER_COLLISION_PROXIMITY_M),
             )
         )
-        print("[CATHETER_COLLISION] proximity =", catheter_collision_proximity)
+        if self.verbose:
+            print("[CATHETER_COLLISION] proximity =", catheter_collision_proximity)
 
         Collis.addObject(
             'LineCollisionModel',

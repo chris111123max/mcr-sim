@@ -520,11 +520,38 @@ def resolve_training_task(kwargs):
     visual_stl_path = Path(environment_stl).parent / "visual_wall.stl"
     visual_stl = str(visual_stl_path) if visual_stl_path.is_file() else None
 
+    asset_dir = Path(environment_stl).parent
+    sdf_vti_path = asset_dir / "vessel_sdf.vti"
+    metadata_json_path = asset_dir / "metadata.json"
+    centerline_graph_path = asset_dir / "centerline_graph.vtk"
+    is_generated_artificial = (
+        len(str(chosen_model)) == 3
+        and str(chosen_model)[0].upper() in ("B", "C")
+        and str(chosen_model)[1:].isdigit()
+    )
+    if is_generated_artificial:
+        required_assets = [sdf_vti_path, metadata_json_path]
+        if str(chosen_model).upper().startswith("B"):
+            required_assets.append(centerline_graph_path)
+        missing_assets = [str(path) for path in required_assets if not path.is_file()]
+        if missing_assets:
+            raise FileNotFoundError(
+                "Generated vessel is missing required multi-model assets: "
+                + ", ".join(missing_assets)
+            )
+
     return {
         "chosen_model": chosen_model,
         "environment_stl": str(environment_stl),
         "visual_stl": visual_stl,
         "centerline_vtk": str(centerline_vtk),
+        "centerline_graph_vtk": (
+            str(centerline_graph_path) if centerline_graph_path.is_file() else None
+        ),
+        "sdf_vti": str(sdf_vti_path) if sdf_vti_path.is_file() else None,
+        "metadata_json": (
+            str(metadata_json_path) if metadata_json_path.is_file() else None
+        ),
         "task_id": task_id,
     }
 
@@ -912,11 +939,26 @@ def _compute_entry_tangent_from_centerline(centerline_data, start_point_sim, tan
 def createScene(root_node, image_shape=None, debug_rendering=True, positioning_camera=False, **kwargs):
     """Build SOFA scene using non-ROS modules with ROS-version initial pose."""
 
+    # Scene construction used to print large pose arrays and mesh diagnostics
+    # on every reset.  Keep those diagnostics available for GUI/preflight work,
+    # while headless training stays quiet unless explicitly requested.
+    import builtins
+    scene_verbose = bool(
+        kwargs.get("verbose_scene", bool(debug_rendering or positioning_camera))
+    )
+
+    def print(*values, **print_kwargs):
+        if scene_verbose:
+            builtins.print(*values, **print_kwargs)
+
     task_cfg = resolve_training_task(kwargs)
     chosen_model = task_cfg["chosen_model"]
     environment_stl = task_cfg["environment_stl"]
     visual_stl = task_cfg.get("visual_stl")
     centerline_vtk = task_cfg["centerline_vtk"]
+    centerline_graph_vtk = task_cfg.get("centerline_graph_vtk")
+    sdf_vti = task_cfg.get("sdf_vti")
+    metadata_json = task_cfg.get("metadata_json")
     task_id = task_cfg["task_id"]
 
     print("[example_aortic_arch_nonros] chosen_model    =", chosen_model)
@@ -924,6 +966,9 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     print("[example_aortic_arch_nonros] environment_stl =", environment_stl)
     print("[example_aortic_arch_nonros] visual_stl      =", visual_stl)
     print("[example_aortic_arch_nonros] centerline_vtk  =", centerline_vtk)
+    print("[example_aortic_arch_nonros] centerline_graph=", centerline_graph_vtk)
+    print("[example_aortic_arch_nonros] vessel_sdf.vti  =", sdf_vti)
+    print("[example_aortic_arch_nonros] metadata.json   =", metadata_json)
 
     if not Path(environment_stl).is_file():
         raise FileNotFoundError(f"Vessel STL not found: {environment_stl}")
@@ -1055,7 +1100,11 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     sim_friction_coef = float(
         os.environ.get("MCR_FRICTION_COEF", str(FRICTION_COEFFICIENT))
     )
-    mcr_simulator.Simulator(root_node=root_node, friction_coef=sim_friction_coef)
+    mcr_simulator.Simulator(
+        root_node=root_node,
+        friction_coef=sim_friction_coef,
+        verbose=scene_verbose,
+    )
     print("[SIM_FRICTION] friction_coef =", sim_friction_coef)
 
     # SOFA dt for training/testing.
@@ -1144,12 +1193,14 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         triangle_collision_proximity=vessel_triangle_collision_proximity,
         line_point_collision_proximity=vessel_line_point_collision_proximity,
         use_line_point_collision=use_vessel_line_point_collision,
+        verbose=scene_verbose,
     )
     
     t_start_env_runtime = list(T_start_env)
     t_start_sim_runtime = build_t_start_sim_from_env(t_start_env_runtime)
     target_point_sim = None
     centerline_data = None
+    centerline_graph_data = None
 
     try:
         centerline_data = mcr_centerline.load_centerline_data(
@@ -1158,7 +1209,18 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
             point_frame=centerline_point_frame,
             scale=centerline_scale,
             offset_sim=centerline_offset_sim,
+            verbose=scene_verbose,
         )
+
+        if centerline_graph_vtk:
+            centerline_graph_data = mcr_centerline.load_centerline_data(
+                vtk_path=centerline_graph_vtk,
+                T_env_sim=T_env_sim,
+                point_frame=centerline_point_frame,
+                scale=centerline_scale,
+                offset_sim=centerline_offset_sim,
+                verbose=scene_verbose,
+            )
 
         endpoints = mcr_centerline.get_start_target_by_y(centerline_data)
         if is_artificial_model:
@@ -1442,6 +1504,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         nume_nodes_viz=nume_nodes_viz,
         T_start_sim=t_start_sim_runtime,
         color=[0.2, 0.8, 1.0, 1.0],
+        verbose=scene_verbose,
     )
 
     try:
@@ -1481,12 +1544,35 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         "target_position": target_point_sim,
         "centerline_points": centerline_data.points_sim if centerline_data is not None else None,
         "centerline_radius": centerline_data.radius_sim if centerline_data is not None else None,
+        "centerline_graph_points": (
+            centerline_graph_data.points_sim
+            if centerline_graph_data is not None
+            else None
+        ),
+        "centerline_graph_edges": (
+            centerline_graph_data.edges
+            if centerline_graph_data is not None
+            else None
+        ),
+        "centerline_graph_radius": (
+            centerline_graph_data.radius_sim
+            if centerline_graph_data is not None
+            else None
+        ),
         "chosen_model": chosen_model,
         "environment_stl": environment_stl,
+        "visual_stl": visual_stl,
         "centerline_vtk": centerline_vtk,
+        "centerline_graph_vtk": centerline_graph_vtk,
+        "sdf_vti": sdf_vti,
+        "metadata_json": metadata_json,
         "task_id": task_id,
         "curriculum_stage": "gui_nonros_centerline_aligned_pose",
         "vessel_scale_factor": float(vessel_scale_factor),
+        "asset_source_to_sim_scale": float(centerline_scale),
+        "asset_T_env_sim": list(T_env_sim),
+        "asset_offset_sim": list(centerline_offset_sim),
+        "is_artificial_model": bool(is_artificial_model),
         "soft_randomize_single_vessel": bool(soft_randomize_single_vessel),
         "nominal_start_position": start_point_sim,
         "nominal_target_position": target_point_sim,

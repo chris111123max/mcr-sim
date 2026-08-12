@@ -36,8 +36,26 @@ WAYPOINT_HANDOFF_CONFIRM_STEPS = 2
 
 LOCAL_FIELD_ACTION_ANGLE_RAD = 2.0 * math.pi / 180.0
 MAX_ACTION_DELTA = 0.30
+# The ratio is retained only for legacy vessels that do not provide a VTI SDF.
 OUT_OF_VESSEL_SAFETY_RATIO = 1.00
 OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
+
+# Multi-model vessel safety.  The VTI stores center-to-wall signed distance;
+# actor features and penalties use catheter-surface clearance.  A genuine
+# outside termination requires the catheter centre to remain at least 0.5 mm
+# outside for three consecutive environment steps, so ordinary wall contact
+# and a one-step collision-solver overshoot are not mislabeled as escape.
+SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
+SDF_NEAR_WALL_MARGIN_M = 0.001
+SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
+SDF_OUTSIDE_CONFIRM_STEPS = 3
+
+# On branching vessels, compare distance to the selected target route with
+# distance to the complete centerline graph.  A 2 mm preference for another
+# graph branch, sustained for five steps, is treated as a wrong-branch failure.
+WRONG_BRANCH_DISTANCE_MARGIN_M = 0.002
+WRONG_BRANCH_OBSERVATION_SCALE_M = 0.005
+WRONG_BRANCH_CONFIRM_STEPS = 5
 
 # Domain randomization only shrinks the generated vessels.  Keeping the upper
 # bound at 1.0 preserves the nominal geometry and avoids making C05 longer than
@@ -49,18 +67,23 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward shaping.  Dense progress is normalized by 1 mm and therefore scales
-# with actual motion rather than giving the same reward to a micron and a full
-# insertion step.  Terminal outcomes remain larger than accumulated waypoint
-# bonuses so a near-complete failure is distinct from a success.
+# Reward shaping.  Dense progress is normalized by 1 mm.  Its unit weight and
+# the small one-shot waypoint bonus keep total route shaping below terminal
+# success/failure magnitudes even for the longest 495 mm route.  VTI clearance
+# supplies smooth wall-risk/penetration terms; the complete graph supplies a
+# continuous off-route term plus a separately confirmed wrong-branch terminal.
 REWARD_PROGRESS_NORMALIZATION_M = 0.001
-REWARD_WAYPOINT_APPROACH = 5.0
-REWARD_WAYPOINT_REACHED = 5.0
-REWARD_TARGET_APPROACH = 5.0
-REWARD_SUCCESS = 1000.0
-REWARD_OUT_OF_VESSEL = -1000.0
-REWARD_TIMEOUT = -500.0
-REWARD_STEP = -0.05
+REWARD_WAYPOINT_APPROACH = 1.0
+REWARD_WAYPOINT_REACHED = 2.0
+REWARD_TARGET_APPROACH = 1.0
+REWARD_WALL_PROXIMITY = -0.5
+REWARD_WALL_PENETRATION = -5.0
+REWARD_OFF_TARGET_BRANCH = -2.0
+REWARD_WRONG_BRANCH = -1000.0
+REWARD_SUCCESS = 1500.0
+REWARD_OUT_OF_VESSEL = -1500.0
+REWARD_TIMEOUT = -1000.0
+REWARD_STEP = -0.01
 
 # Collision/contact defaults.  Catheter Line/Point primitives represent their
 # physical radius through proximity.  Vessel collision remains triangle-only.
@@ -115,8 +138,39 @@ def validate_training_defaults() -> None:
         raise ValueError("Endpoint randomization distances must be non-negative.")
     if REWARD_PROGRESS_NORMALIZATION_M <= 0.0:
         raise ValueError("Reward progress normalization must be positive.")
-    if not (REWARD_SUCCESS > 0.0 and REWARD_OUT_OF_VESSEL < 0.0 and REWARD_TIMEOUT < 0.0):
+    if not (
+        REWARD_SUCCESS > 0.0
+        and REWARD_OUT_OF_VESSEL < 0.0
+        and REWARD_WRONG_BRANCH < 0.0
+        and REWARD_TIMEOUT < 0.0
+    ):
         raise ValueError("Terminal reward signs are invalid.")
+    dense_progress_upper = (
+        longest_scaled_route
+        / REWARD_PROGRESS_NORMALIZATION_M
+        * max(REWARD_WAYPOINT_APPROACH, REWARD_TARGET_APPROACH)
+    )
+    waypoint_bonus_upper = (
+        math.ceil(longest_scaled_route / WAYPOINT_SPACING_M)
+        * REWARD_WAYPOINT_REACHED
+    )
+    shaping_upper = dense_progress_upper + waypoint_bonus_upper
+    terminal_magnitude_floor = min(
+        REWARD_SUCCESS,
+        abs(REWARD_OUT_OF_VESSEL),
+        abs(REWARD_WRONG_BRANCH),
+        abs(REWARD_TIMEOUT),
+    )
+    if terminal_magnitude_floor <= shaping_upper:
+        raise ValueError(
+            "Terminal rewards must dominate the longest-route shaping upper bound."
+        )
+    if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
+        raise ValueError("SDF clearance scales must be positive.")
+    if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:
+        raise ValueError("Invalid SDF outside confirmation settings.")
+    if WRONG_BRANCH_DISTANCE_MARGIN_M <= 0.0 or WRONG_BRANCH_CONFIRM_STEPS < 1:
+        raise ValueError("Invalid wrong-branch confirmation settings.")
 
 
 validate_training_defaults()

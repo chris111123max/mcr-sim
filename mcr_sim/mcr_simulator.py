@@ -32,6 +32,7 @@ class Simulator(Sofa.Core.Controller):
             dt=SOFA_TIME_STEP_S,
             gravity=[0, 0, 0],
             friction_coef=FRICTION_COEFFICIENT,
+            verbose=True,
             *args, **kwargs):
 
         # These are needed (and the normal way to override from a python class)
@@ -41,6 +42,7 @@ class Simulator(Sofa.Core.Controller):
         self.dt = dt
         self.gravity = gravity
         self.friction_coef = friction_coef
+        self.verbose = bool(verbose)
 
         self.root_node.addObject(
             'RequiredPlugin',
@@ -107,12 +109,13 @@ class Simulator(Sofa.Core.Controller):
                 tolerance=constraint_tolerance,
                 maxIterations=constraint_max_it,
                 printLog='false')
-            print(
-                "[CONSTRAINT_SOLVER]",
-                "type=GenericConstraintSolver",
-                "tolerance=", constraint_tolerance,
-                "maxIterations=", constraint_max_it,
-            )
+            if self.verbose:
+                print(
+                    "[CONSTRAINT_SOLVER]",
+                    "type=GenericConstraintSolver",
+                    "tolerance=", constraint_tolerance,
+                    "maxIterations=", constraint_max_it,
+                )
         else:
             self.lcp_solver = self.root_node.addObject(
                 'LCPConstraintSolver',
@@ -120,13 +123,14 @@ class Simulator(Sofa.Core.Controller):
                 tolerance=constraint_tolerance,
                 maxIt=constraint_max_it,
                 build_lcp='false')
-            print(
-                "[CONSTRAINT_SOLVER]",
-                "type=LCPConstraintSolver",
-                "mu=", friction_coef,
-                "tolerance=", constraint_tolerance,
-                "maxIt=", constraint_max_it,
-            )
+            if self.verbose:
+                print(
+                    "[CONSTRAINT_SOLVER]",
+                    "type=LCPConstraintSolver",
+                    "mu=", friction_coef,
+                    "tolerance=", constraint_tolerance,
+                    "maxIt=", constraint_max_it,
+                )
 
         self.root_node.addObject(
             'CollisionPipeline',
@@ -156,12 +160,13 @@ class Simulator(Sofa.Core.Controller):
         lmd_angle_cone = os.environ.get(
             "MCR_LMD_ANGLE_CONE", str(LMD_ANGLE_CONE)
         )
-        print(
-            "[LOCAL_MIN_DISTANCE]",
-            "contactDistance=", lmd_contact_distance,
-            "alarmDistance=", lmd_alarm_distance,
-            "angleCone=", lmd_angle_cone,
-        )
+        if self.verbose:
+            print(
+                "[LOCAL_MIN_DISTANCE]",
+                "contactDistance=", lmd_contact_distance,
+                "alarmDistance=", lmd_alarm_distance,
+                "angleCone=", lmd_angle_cone,
+            )
         self.root_node.addObject(
             'LocalMinDistance',
             contactDistance=lmd_contact_distance,

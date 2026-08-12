@@ -204,18 +204,23 @@ INDEX_HTML = r"""<!doctype html>
       const episodeLabels = {
         paused: '手动暂停', running: '运行', success: '成功',
         out_of_vessel: '出血管', timeout: '超时',
-        non_finite: '数值异常', ended: '结束'
+        wrong_branch: '错误分支', non_finite: '数值异常', ended: '结束'
       };
       const episodeLabel = episodeLabels[data.episode_state] || data.episode_state;
       const distance = data.distance_to_goal_mm == null
         ? '--' : Number(data.distance_to_goal_mm).toFixed(2);
       const safety = data.safety_ratio == null
         ? '--' : Number(data.safety_ratio).toFixed(3);
+      const clearance = data.sdf_clearance_mm == null
+        ? '--' : Number(data.sdf_clearance_mm).toFixed(2);
+      const routeGap = data.route_graph_gap_mm == null
+        ? '--' : Number(data.route_graph_gap_mm).toFixed(2);
       const requested = data.requested_action.map(v => Number(v).toFixed(1)).join(',');
       const applied = data.applied_action.map(v => Number(v).toFixed(2)).join(',');
       status.textContent = `模型 ${data.model}　${data.width}×${data.height}　` +
         `渲染 ${data.render_fps.toFixed(1)} FPS　回合 ${episodeLabel}　` +
-        `终点距离 ${distance}mm　安全比 ${safety}　` +
+        `终点距离 ${distance}mm　SDF净空 ${clearance}mm　` +
+        `路径差 ${routeGap}mm　旧安全比 ${safety}　` +
         `训练等价控制　请求 [${requested}]　应用 [${applied}]　` +
         `有效插入 ${Number(data.effective_insert).toFixed(2)}　步数 ${data.steps}`;
     } catch (_) { status.textContent = '状态连接中断'; }
@@ -289,6 +294,8 @@ class ViewerState:
         self.terminal_reason = "not_done"
         self.distance_to_goal_mm: Optional[float] = None
         self.safety_ratio: Optional[float] = None
+        self.sdf_clearance_mm: Optional[float] = None
+        self.route_graph_gap_mm: Optional[float] = None
         self.steps = 0
         self.requested_action = [0.0, 0.0, 0.0]
         self.applied_action = [0.0, 0.0, 0.0]
@@ -307,7 +314,7 @@ class ViewerState:
     def set_playing(self, playing: bool) -> bool:
         with self.lock:
             terminal_states = {
-                "success", "out_of_vessel", "timeout", "non_finite", "ended"
+                "success", "out_of_vessel", "wrong_branch", "timeout", "non_finite", "ended"
             }
             if playing and self.episode_state in terminal_states:
                 return False
@@ -341,6 +348,12 @@ class ViewerState:
             self.safety_ratio = self._finite_optional(
                 info.get("centerline_safety_ratio")
             )
+            self.sdf_clearance_mm = self._finite_optional(
+                info.get("sdf_surface_clearance"), 1000.0
+            )
+            self.route_graph_gap_mm = self._finite_optional(
+                info.get("route_graph_distance_gap"), 1000.0
+            )
             if stopped:
                 self.playing = False
                 self.requested_action = [0.0, 0.0, 0.0]
@@ -348,6 +361,7 @@ class ViewerState:
                 state_by_reason = {
                     "target": "success",
                     "out_of_vessel": "out_of_vessel",
+                    "wrong_branch": "wrong_branch",
                     "timeout": "timeout",
                     "non_finite": "non_finite",
                 }
@@ -364,6 +378,8 @@ class ViewerState:
             self.terminal_reason = "not_done"
             self.distance_to_goal_mm = None
             self.safety_ratio = None
+            self.sdf_clearance_mm = None
+            self.route_graph_gap_mm = None
             self.steps = 0
             self.requested_action = [0.0, 0.0, 0.0]
             self.applied_action = [0.0, 0.0, 0.0]
@@ -399,6 +415,8 @@ class ViewerState:
                 "terminal_reason": self.terminal_reason,
                 "distance_to_goal_mm": self.distance_to_goal_mm,
                 "safety_ratio": self.safety_ratio,
+                "sdf_clearance_mm": self.sdf_clearance_mm,
+                "route_graph_gap_mm": self.route_graph_gap_mm,
                 "steps": self.steps,
                 "control_mode": "training_equivalent",
                 "requested_action": self.requested_action,
@@ -606,6 +624,7 @@ def main() -> int:
             "radius_observation_scale": RADIUS_OBSERVATION_SCALE_M,
             "actor_history_steps": ACTOR_HISTORY_STEPS,
             "debug_rendering": True,
+            "verbose_scene": True,
             "positioning_camera": True,
             "vessel_alpha": float(args.vessel_alpha),
             "randomize_start_target": False,
@@ -711,6 +730,8 @@ def main() -> int:
                             f"steps={terminal_status['steps']}",
                             f"distance_mm={terminal_status['distance_to_goal_mm']}",
                             f"safety_ratio={terminal_status['safety_ratio']}",
+                            f"sdf_clearance_mm={terminal_status['sdf_clearance_mm']}",
+                            f"route_graph_gap_mm={terminal_status['route_graph_gap_mm']}",
                             flush=True,
                         )
                         break
