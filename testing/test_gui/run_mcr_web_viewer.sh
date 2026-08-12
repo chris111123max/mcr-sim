@@ -18,16 +18,27 @@ SOFA_BUILD="${SOFA_BUILD:-${SOFA_ROOT:-$SOFA_BUILD_DEFAULT}}"
 STLIB_ROOT="${STLIB_ROOT:-$WORKSPACE_ROOT/mcr_env/sofa/src/STLIB}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 
+# Keep GUI runtime libraries in the persistent mcr_sofa Conda environment.
+# Worker-local apt/system packages disappear when a SCOW job is recreated.
+PYTHON_PREFIX="$($PYTHON_BIN -c 'import sys; print(sys.prefix)')"
+PERSISTENT_GUI_LIB="$PYTHON_PREFIX/lib"
+
 export SOFA_ROOT="$SOFA_BUILD"
 export SOFAPYTHON3_ROOT="$SOFA_BUILD"
 export PYTHONPATH="$SOFA_BUILD/lib/python3/site-packages:$STLIB_ROOT:$STLIB_ROOT/python:$STLIB_ROOT/python3/src:$PYTHON_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-CONDA_LIB_SUFFIX=""
-if [[ -n "${CONDA_PREFIX:-}" ]]; then
-    CONDA_LIB_SUFFIX=":$CONDA_PREFIX/lib"
-fi
-export LD_LIBRARY_PATH="$SOFA_BUILD/lib:$SOFA_BUILD/external_directories/STLIB/lib:$SOFA_BUILD/external_directories/SoftRobots/lib:$SOFA_BUILD/external_directories/BeamAdapter/lib$CONDA_LIB_SUFFIX${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$PERSISTENT_GUI_LIB:$SOFA_BUILD/lib:$SOFA_BUILD/external_directories/STLIB/lib:$SOFA_BUILD/external_directories/SoftRobots/lib:$SOFA_BUILD/external_directories/BeamAdapter/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export SOFA_PLUGIN_PATH="$SOFA_BUILD/lib:$SOFA_BUILD/external_directories/STLIB/lib:$SOFA_BUILD/external_directories/SoftRobots/lib:$SOFA_BUILD/external_directories/BeamAdapter/lib${SOFA_PLUGIN_PATH:+:$SOFA_PLUGIN_PATH}"
+
+if ! find "$PERSISTENT_GUI_LIB" -maxdepth 1 \
+    \( -name 'libGLEW.so.2.2' -o -name 'libGLEW.so.2.2.*' \) \
+    -print -quit 2>/dev/null | grep -q .; then
+    echo "[ERROR] Persistent GUI library is missing: libGLEW.so.2.2"
+    echo "[ERROR] Expected under: $PERSISTENT_GUI_LIB"
+    echo "[HINT]  Install once into the persistent mcr_sofa Conda environment:"
+    echo "        conda install -n mcr_sofa -c conda-forge 'glew=2.2.*'"
+    exit 1
+fi
 
 # Ascend NPUs are not graphics devices. Mesa software EGL is the portable
 # rendering backend on this display-less worker.
