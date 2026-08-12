@@ -121,6 +121,7 @@ INDEX_HTML = r"""<!doctype html>
         <span class="control-label">仿真/相机</span>
         <button data-op="play">▶ 仿真</button>
         <button data-op="pause">⏸ 暂停</button>
+        <button data-op="reset_episode">重置回合</button>
         <button data-op="reset_camera">重置视角</button>
         <button data-op="zoom_in">放大</button>
         <button data-op="zoom_out">缩小</button>
@@ -200,10 +201,21 @@ INDEX_HTML = r"""<!doctype html>
       const data = await response.json();
       document.getElementById('title').textContent =
         `MCR SOFA Web Viewer x${data.sim_steps_per_frame}`;
+      const episodeLabels = {
+        paused: '手动暂停', running: '运行', success: '成功',
+        out_of_vessel: '出血管', timeout: '超时',
+        non_finite: '数值异常', ended: '结束'
+      };
+      const episodeLabel = episodeLabels[data.episode_state] || data.episode_state;
+      const distance = data.distance_to_goal_mm == null
+        ? '--' : Number(data.distance_to_goal_mm).toFixed(2);
+      const safety = data.safety_ratio == null
+        ? '--' : Number(data.safety_ratio).toFixed(3);
       const requested = data.requested_action.map(v => Number(v).toFixed(1)).join(',');
       const applied = data.applied_action.map(v => Number(v).toFixed(2)).join(',');
       status.textContent = `模型 ${data.model}　${data.width}×${data.height}　` +
-        `渲染 ${data.render_fps.toFixed(1)} FPS　仿真 ${data.playing ? '运行' : '暂停'}　` +
+        `渲染 ${data.render_fps.toFixed(1)} FPS　回合 ${episodeLabel}　` +
+        `终点距离 ${distance}mm　安全比 ${safety}　` +
         `训练等价控制　请求 [${requested}]　应用 [${applied}]　` +
         `有效插入 ${Number(data.effective_insert).toFixed(2)}　步数 ${data.steps}`;
     } catch (_) { status.textContent = '状态连接中断'; }
@@ -273,6 +285,10 @@ class ViewerState:
         self.height = 0
         self.render_fps = 0.0
         self.playing = False
+        self.episode_state = "paused"
+        self.terminal_reason = "not_done"
+        self.distance_to_goal_mm: Optional[float] = None
+        self.safety_ratio: Optional[float] = None
         self.steps = 0
         self.requested_action = [0.0, 0.0, 0.0]
         self.applied_action = [0.0, 0.0, 0.0]
@@ -288,22 +304,70 @@ class ViewerState:
             self.height = int(height)
             self.render_fps = float(fps)
 
-    def set_playing(self, playing: bool) -> None:
+    def set_playing(self, playing: bool) -> bool:
         with self.lock:
+            terminal_states = {
+                "success", "out_of_vessel", "timeout", "non_finite", "ended"
+            }
+            if playing and self.episode_state in terminal_states:
+                return False
             self.playing = bool(playing)
+            if self.playing:
+                self.episode_state = "running"
+            elif self.episode_state not in terminal_states:
+                self.episode_state = "paused"
             if not self.playing:
                 self.requested_action = [0.0, 0.0, 0.0]
+            return True
 
     def is_playing(self) -> bool:
         with self.lock:
             return self.playing
 
-    def record_step(self, stopped: bool = False) -> None:
+    @staticmethod
+    def _finite_optional(value, scale: float = 1.0) -> Optional[float]:
+        try:
+            value = float(value) * float(scale)
+        except Exception:
+            return None
+        return value if math.isfinite(value) else None
+
+    def record_step(self, info: dict, stopped: bool = False) -> None:
         with self.lock:
             self.steps += 1
+            self.distance_to_goal_mm = self._finite_optional(
+                info.get("current_dist_to_goal"), 1000.0
+            )
+            self.safety_ratio = self._finite_optional(
+                info.get("centerline_safety_ratio")
+            )
             if stopped:
                 self.playing = False
                 self.requested_action = [0.0, 0.0, 0.0]
+                self.terminal_reason = str(info.get("terminal_reason", "other"))
+                state_by_reason = {
+                    "target": "success",
+                    "out_of_vessel": "out_of_vessel",
+                    "timeout": "timeout",
+                    "non_finite": "non_finite",
+                }
+                self.episode_state = state_by_reason.get(
+                    self.terminal_reason, "ended"
+                )
+            else:
+                self.episode_state = "running"
+
+    def reset_episode(self) -> None:
+        with self.lock:
+            self.playing = False
+            self.episode_state = "paused"
+            self.terminal_reason = "not_done"
+            self.distance_to_goal_mm = None
+            self.safety_ratio = None
+            self.steps = 0
+            self.requested_action = [0.0, 0.0, 0.0]
+            self.applied_action = [0.0, 0.0, 0.0]
+            self.effective_insert = 0.0
 
     def set_requested_action(self, action) -> None:
         with self.lock:
@@ -331,6 +395,10 @@ class ViewerState:
                 "height": self.height,
                 "render_fps": self.render_fps,
                 "playing": self.playing,
+                "episode_state": self.episode_state,
+                "terminal_reason": self.terminal_reason,
+                "distance_to_goal_mm": self.distance_to_goal_mm,
+                "safety_ratio": self.safety_ratio,
                 "steps": self.steps,
                 "control_mode": "training_equivalent",
                 "requested_action": self.requested_action,
@@ -419,7 +487,7 @@ def make_handler(state: ViewerState):
                 self._send(HTTPStatus.BAD_REQUEST, "text/plain", b"Bad coordinates\n")
                 return
             allowed = {
-                "play", "pause", "reset_camera", "zoom_in", "zoom_out",
+                "play", "pause", "reset_episode", "reset_camera", "zoom_in", "zoom_out",
                 "left", "right", "up", "down", "orbit", "pan",
             }
             if op not in allowed:
@@ -478,6 +546,10 @@ def apply_camera_command(env: MCREnv, state: ViewerState, command, initial_camer
         return
     if op == "pause":
         state.set_playing(False)
+        return
+    if op == "reset_episode":
+        env.reset()
+        state.reset_episode()
         return
     if op == "reset_camera":
         env._set_camera_vector("position", initial_camera[0])
@@ -622,13 +694,25 @@ def main() -> int:
                 )
                 for _ in range(steps_this_frame):
                     requested_action = state.get_requested_action()
-                    _, _, terminated, truncated, _ = env.step(requested_action)
+                    _, _, terminated, truncated, info = env.step(requested_action)
                     state.update_applied_action(
                         getattr(env, "_last_smoothed_action", requested_action),
                         getattr(env, "current_effective_insert", requested_action[2]),
                     )
-                    state.record_step(stopped=bool(terminated or truncated))
+                    state.record_step(
+                        info=info,
+                        stopped=bool(terminated or truncated),
+                    )
                     if terminated or truncated:
+                        terminal_status = state.snapshot()
+                        print(
+                            "[MCR WEB EPISODE END]",
+                            f"reason={info.get('terminal_reason', 'unknown')}",
+                            f"steps={terminal_status['steps']}",
+                            f"distance_mm={terminal_status['distance_to_goal_mm']}",
+                            f"safety_ratio={terminal_status['safety_ratio']}",
+                            flush=True,
+                        )
                         break
             else:
                 env._update_rgb_buffer()
