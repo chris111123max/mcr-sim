@@ -12,6 +12,18 @@ and SOFA collision handling are identical to SAC environment interaction.
 Start the simulation first, then hold I/K for local-N magnetic rotation, J/L
 for local-B rotation, W/S for insertion/retraction, or Space to neutralize.
 
+The viewer defaults also match `train_sac.py`: SOFA time step 0.01 s, frame
+skip 1, settle steps 8, target threshold 0.003 m, maximum episode length 4096,
+radius observation scale 0.005 m, and actor history length 4. The forced model
+selects the vessel being inspected; EGL rendering, camera placement, and vessel
+alpha are display-only differences. Collision defaults are the same scene
+defaults used for training: vessel TriangleCollisionModel only, and catheter
+LineCollisionModel plus PointCollisionModel.
+
+The viewer uses nominal vessel scale 1.00 by default. Use
+`--vessel-scale-factor 0.90` to inspect the hardest shrink-only geometry with
+the same collision and control path before training.
+
 On the Ascend worker, stop any previous server using port 8765 and run:
 
 ```bash
@@ -38,5 +50,6 @@ Available artificial models are B01..B05 and C01..C05. Example:
 
 ```bash
 bash testing/test_gui/run_mcr_web_viewer.sh \
-  --model C05 --width 1920 --height 1080 --fps 3
+  --model C05 --vessel-scale-factor 0.90 \
+  --width 1920 --height 1080 --fps 3
 ```

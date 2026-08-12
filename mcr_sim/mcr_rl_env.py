@@ -11,6 +11,39 @@ from scipy.spatial.transform import Rotation as R
 from .mcr_controller_sofa import ControllerSofa
 from .paths import SCENE_DIR
 from .rl_core.base import SofaEnv, RenderMode, RenderFramework
+from .training_config import (
+    ACTOR_HISTORY_STEPS,
+    CATHETER_RADIUS_M,
+    ENTRY_TANGENT_POINTS,
+    FRAME_SKIP,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    LOCAL_FIELD_ACTION_ANGLE_RAD,
+    MAX_ACTION_DELTA,
+    MAX_EPISODE_STEPS,
+    OUT_OF_VESSEL_FALLBACK_DISTANCE_M,
+    OUT_OF_VESSEL_SAFETY_RATIO,
+    PRE_TARGET_WAYPOINT_OFFSET_M,
+    RADIUS_OBSERVATION_SCALE_M,
+    REWARD_OUT_OF_VESSEL,
+    REWARD_PROGRESS_NORMALIZATION_M,
+    REWARD_STEP,
+    REWARD_SUCCESS,
+    REWARD_TARGET_APPROACH,
+    REWARD_TIMEOUT,
+    REWARD_WAYPOINT_APPROACH,
+    REWARD_WAYPOINT_REACHED,
+    SETTLE_STEPS,
+    SOFA_TIME_STEP_S,
+    START_WINDOW_DISTANCE_M,
+    TARGET_THRESHOLD_M,
+    TARGET_WINDOW_DISTANCE_M,
+    WAYPOINT_HANDOFF_CONFIRM_STEPS,
+    WAYPOINT_HANDOFF_MARGIN_M,
+    WAYPOINT_OBSERVATION_SCALE_M,
+    WAYPOINT_PROGRESS_CLIP_M,
+    WAYPOINT_REACH_THRESHOLD_M,
+    WAYPOINT_SPACING_M,
+)
 
 MCR_SIM_DIR = Path(__file__).resolve().parent
 FLAT_SCENE_DESCRIPTION_FILE_PATH = MCR_SIM_DIR / "scene_description_2d.py"
@@ -43,7 +76,7 @@ class MCREnv(SofaEnv):
 
     Training logic kept in this file:
       1. Sequential Euclidean waypoints sampled from the centerline.
-      2. Binary intermediate-waypoint approach reward and stronger final-target approach reward.
+      2. Continuous distance-progress shaping for intermediate and final targets.
       3. One-shot intermediate-waypoint bonus, final target success bonus, out-of-vessel terminal penalty.
       4. Timeout terminal penalty when max_episode_steps is reached.
       5. Actor and critic use the same tip-local observation.
@@ -56,30 +89,31 @@ class MCREnv(SofaEnv):
         create_scene_kwargs: Optional[dict] = None,
         observation_type: ObservationType = ObservationType.STATE,
         action_type: ActionType = ActionType.CONTINUOUS,
-        time_step: float = 0.01,
-        frame_skip: int = 1,
-        settle_steps: int = 8,
+        time_step: float = SOFA_TIME_STEP_S,
+        frame_skip: int = FRAME_SKIP,
+        settle_steps: int = SETTLE_STEPS,
         render_mode: RenderMode = RenderMode.HUMAN,
         render_framework: RenderFramework = RenderFramework.PYGLET,
-        reward_amount_dict={
-            "waypoint_approach": 20.0,           # intermediate phase: +20 if closer to active waypoint, -20 if farther
-            "waypoint_reached": 100.0,           # one-shot bonus when an intermediate waypoint is reached
-            "target_approach": 80.0,             # final target phase: +80 if closer to target, -80 if farther
-            "successful_task": 4000.0,           # final target bonus when the 2mm target condition is satisfied
-            "out_of_vessel_penalty": -500.0,    # terminal penalty for tip out-of-vessel
-            "timeout_penalty": -500.0,           # terminal penalty when max_episode_steps is reached
-            "step_penalty": -0.5,                # per-step time cost
-        },
+        reward_amount_dict: Optional[dict] = None,
         target_position: Optional[np.ndarray] = None,
         env_type: EnvType = EnvType.FLAT,
-        target_distance_threshold: float = 0.002,
+        target_distance_threshold: float = TARGET_THRESHOLD_M,
         num_catheter_tracking_points: int = 4,
-        max_episode_steps: int = 1000,
+        max_episode_steps: int = MAX_EPISODE_STEPS,
     ):
         if not isinstance(create_scene_kwargs, dict):
             create_scene_kwargs = {}
         create_scene_kwargs["image_shape"] = image_shape
-        create_scene_kwargs.setdefault("insert_substep_max", 1)
+        if reward_amount_dict is None:
+            reward_amount_dict = {
+                "waypoint_approach": REWARD_WAYPOINT_APPROACH,
+                "waypoint_reached": REWARD_WAYPOINT_REACHED,
+                "target_approach": REWARD_TARGET_APPROACH,
+                "successful_task": REWARD_SUCCESS,
+                "out_of_vessel_penalty": REWARD_OUT_OF_VESSEL,
+                "timeout_penalty": REWARD_TIMEOUT,
+                "step_penalty": REWARD_STEP,
+            }
 
         self.target_distance_threshold = float(target_distance_threshold)
         self.num_catheter_tracking_points = int(num_catheter_tracking_points)
@@ -111,32 +145,33 @@ class MCREnv(SofaEnv):
 
         # Scales and safety parameters.
         self.magnetic_field_observation_scale = float(create_scene_kwargs.get("magnetic_field_observation_scale", 0.10))
-        self.radius_observation_scale = float(create_scene_kwargs.get("radius_observation_scale", 0.005))
+        self.radius_observation_scale = float(create_scene_kwargs.get("radius_observation_scale", RADIUS_OBSERVATION_SCALE_M))
         self.default_local_radius = float(create_scene_kwargs.get("default_local_radius", 0.005))
-        self.catheter_radius = float(create_scene_kwargs.get("catheter_radius", 0.000665))
-        self.out_of_vessel_safety_ratio = float(create_scene_kwargs.get("out_of_vessel_safety_ratio", 1.10))
-        self.out_of_vessel_fallback_distance = float(create_scene_kwargs.get("out_of_vessel_fallback_distance", 0.012))
-        self.local_field_action_angle = float(create_scene_kwargs.get("local_field_action_angle", 2.0 * np.pi / 180.0))
+        self.catheter_radius = float(create_scene_kwargs.get("catheter_radius", CATHETER_RADIUS_M))
+        self.out_of_vessel_safety_ratio = float(create_scene_kwargs.get("out_of_vessel_safety_ratio", OUT_OF_VESSEL_SAFETY_RATIO))
+        self.out_of_vessel_fallback_distance = float(create_scene_kwargs.get("out_of_vessel_fallback_distance", OUT_OF_VESSEL_FALLBACK_DISTANCE_M))
+        self.local_field_action_angle = float(create_scene_kwargs.get("local_field_action_angle", LOCAL_FIELD_ACTION_ANGLE_RAD))
 
         # Insertion safety shield is disabled in this version.
         # The third action component is passed through directly after clipping
         # to [-1, 1]. Near-wall insertion reduction, insertion blocking, and
         # forced retraction after out-of-vessel detection are all removed.
 
-        # Insertion exploration bias.
-        # SAC random exploration is zero-mean by default, which easily leads to
-        # insert/retract cancellation at the vessel entry. A small positive bias
-        # helps the agent experience waypoint approach rewards early, while still
-        # allowing retraction through negative raw_insert actions.
-        self.insert_bias = float(create_scene_kwargs.get("insert_bias", 0.0))
+        # Retraction remains available across the full action range.
         self.insert_negative_limit = float(create_scene_kwargs.get("insert_negative_limit", -1.0))
 
         # Waypoint task parameters.
-        self.waypoint_spacing = float(create_scene_kwargs.get("waypoint_spacing", 0.005))       # 5 mm
-        self.waypoint_reach_threshold = float(create_scene_kwargs.get("waypoint_reach_threshold", 0.003))  # 3 mm for intermediate waypoints
-        self.pre_target_waypoint_offset = float(create_scene_kwargs.get("pre_target_waypoint_offset", 0.001))  # 1 mm before final target
-        self.waypoint_observation_scale = float(create_scene_kwargs.get("waypoint_observation_scale", 0.010))
-        self.progress_clip = float(create_scene_kwargs.get("waypoint_progress_clip", 0.003))     # cap per-step delta to +/-3 mm
+        self.waypoint_spacing = float(create_scene_kwargs.get("waypoint_spacing", WAYPOINT_SPACING_M))
+        self.waypoint_reach_threshold = float(create_scene_kwargs.get("waypoint_reach_threshold", WAYPOINT_REACH_THRESHOLD_M))
+        self.pre_target_waypoint_offset = float(create_scene_kwargs.get("pre_target_waypoint_offset", PRE_TARGET_WAYPOINT_OFFSET_M))
+        self.waypoint_observation_scale = float(create_scene_kwargs.get("waypoint_observation_scale", WAYPOINT_OBSERVATION_SCALE_M))
+        self.progress_clip = float(create_scene_kwargs.get("waypoint_progress_clip", WAYPOINT_PROGRESS_CLIP_M))
+        self.reward_progress_normalization = float(
+            create_scene_kwargs.get(
+                "reward_progress_normalization",
+                REWARD_PROGRESS_NORMALIZATION_M,
+            )
+        )
 
         # Adjacent-waypoint handoff.
         # When the next ordered waypoint is clearly closer than the active one
@@ -145,18 +180,18 @@ class MCREnv(SofaEnv):
         # It uses only Euclidean distances to adjacent waypoints:
         # no centerline progress and no cross-section gate.
         self.waypoint_handoff_margin = float(
-            create_scene_kwargs.get("waypoint_handoff_margin", 0.0005)
+            create_scene_kwargs.get("waypoint_handoff_margin", WAYPOINT_HANDOFF_MARGIN_M)
         )  # next waypoint must be at least 0.5 mm closer
         self.waypoint_handoff_confirm_steps = max(
             1,
-            int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", 2)),
+            int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
         )
 
         # Actor observation: 24-D current geometry + 4 * 7-D action-response history = 52-D.
         self.vessel_section_feature_dim = 4
         self.actor_current_geometry_dim = 24
         self.actor_dynamic_step_dim = 7
-        self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", 4)))
+        self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", ACTOR_HISTORY_STEPS)))
         self.actor_dynamic_history_dim = self.actor_dynamic_step_dim * self.actor_history_steps
         self.actor_observation_dim = self.actor_current_geometry_dim + self.actor_dynamic_history_dim
         self._actor_dynamic_history = deque(maxlen=self.actor_history_steps)
@@ -188,6 +223,7 @@ class MCREnv(SofaEnv):
         self.reward_amount_dict.update(reward_amount_dict)
         self.reward_info = {}
         self.reward_features = {}
+        self.episode_reward_totals = defaultdict(float)
 
         # Centerline / waypoint buffers.
         self.centerline_points = None
@@ -243,7 +279,7 @@ class MCREnv(SofaEnv):
         # Low-level action rate limiter.
         # Prevents rapid magnetic command reversal in high-curvature sections.
         self.max_action_delta = float(
-            create_scene_kwargs.get("max_action_delta", 0.30)
+            create_scene_kwargs.get("max_action_delta", MAX_ACTION_DELTA)
         )
 
         self._last_smoothed_action = np.zeros(3, dtype=np.float32)
@@ -535,10 +571,39 @@ class MCREnv(SofaEnv):
             )
 
         elif randomize_start_target:
-            start_window = int(np.clip(self.create_scene_kwargs.get("start_window_points", self.create_scene_kwargs.get("start_target_window_points", 5)), 1, n_pts))
-            target_window = int(np.clip(self.create_scene_kwargs.get("target_window_points", self.create_scene_kwargs.get("start_target_window_points", 5)), 1, n_pts))
-            start_idx = int(rng.choice(np.arange(0, start_window, dtype=np.int64)))
-            target_idx = int(rng.choice(np.arange(max(0, n_pts - target_window), n_pts, dtype=np.int64)))
+            segment_lengths = np.linalg.norm(np.diff(points, axis=0), axis=1)
+            cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
+            total_length = float(cumulative[-1])
+            start_window_distance = max(
+                0.0,
+                float(
+                    self.create_scene_kwargs.get(
+                        "start_window_distance_m",
+                        START_WINDOW_DISTANCE_M,
+                    )
+                ),
+            )
+            target_window_distance = max(
+                0.0,
+                float(
+                    self.create_scene_kwargs.get(
+                        "target_window_distance_m",
+                        TARGET_WINDOW_DISTANCE_M,
+                    )
+                ),
+            )
+            start_candidates = np.flatnonzero(
+                cumulative <= start_window_distance + 1e-12
+            )
+            target_candidates = np.flatnonzero(
+                total_length - cumulative <= target_window_distance + 1e-12
+            )
+            if start_candidates.size == 0:
+                start_candidates = np.asarray([0], dtype=np.int64)
+            if target_candidates.size == 0:
+                target_candidates = np.asarray([n_pts - 1], dtype=np.int64)
+            start_idx = int(rng.choice(start_candidates))
+            target_idx = int(rng.choice(target_candidates))
             if target_idx <= start_idx and n_pts > 1:
                 target_idx = n_pts - 1
 
@@ -551,7 +616,7 @@ class MCREnv(SofaEnv):
         self.current_soft_target_idx = int(target_idx)
 
         if base_start_sim is not None:
-            step = int(np.clip(self.create_scene_kwargs.get("entry_tangent_points", 5), 1, n_pts - 1))
+            step = int(np.clip(self.create_scene_kwargs.get("entry_tangent_points", ENTRY_TANGENT_POINTS), 1, n_pts - 1))
             next_idx = int(np.clip(start_idx + step, 0, n_pts - 1))
             if next_idx == start_idx:
                 next_idx = int(np.clip(start_idx + 1, 0, n_pts - 1))
@@ -559,7 +624,12 @@ class MCREnv(SofaEnv):
             if entry_tangent is not None:
                 desired_tangent = entry_tangent
                 if randomize_initial_orientation:
-                    max_angle_deg = float(self.create_scene_kwargs.get("initial_orientation_max_angle_deg", 20.0))
+                    max_angle_deg = float(
+                        self.create_scene_kwargs.get(
+                            "initial_orientation_max_angle_deg",
+                            INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+                        )
+                    )
                     sampled = self._sample_direction_within_cone(entry_tangent, np.deg2rad(max_angle_deg), rng)
                     if sampled is not None:
                         desired_tangent = sampled
@@ -635,6 +705,7 @@ class MCREnv(SofaEnv):
         self._reset_actor_history()
         self.reward_info = {}
         self.reward_features = {}
+        self.episode_reward_totals = defaultdict(float)
 
         self.mcr_controller_sofa.reset()
         if bool(single_vessel_mode and getattr(self, "soft_randomize_single_vessel", True)):
@@ -718,6 +789,7 @@ class MCREnv(SofaEnv):
                 self.reward_info["timeout_penalty"] = 1.0
                 self.reward_info["reward_timeout_penalty"] = timeout_penalty
                 self.reward_info["reward"] = float(reward)
+                self.episode_reward_totals["timeout_penalty"] += timeout_penalty
 
         info = self._get_info(terminated=terminated, truncated=truncated)
         if truncated:
@@ -896,17 +968,19 @@ class MCREnv(SofaEnv):
         # Tip-centerline approach/keep/near-wall reward terms are disabled, but
         # centerline safety features are still computed for observation, logging,
         # waypoint gating, and out-of-vessel termination.
-        # Binary approach feature:
-        #   +1.0 if the active point distance is smaller than in the previous step;
-        #   -1.0 if the active point distance is larger than in the previous step;
-        #    0.0 if the distance is unchanged up to a tiny numerical tolerance.
+        # Continuous potential-style progress feature.  One feature unit is
+        # 1 mm of actual approach, clipped to keep rare solver jumps bounded.
+        # A micron-scale numerical change therefore no longer receives the
+        # same reward as a full insertion step.
         approach_delta = float(self.current_waypoint_approach_delta)
-        if approach_delta > 1e-9:
-            approach_feature = 1.0
-        elif approach_delta < -1e-9:
-            approach_feature = -1.0
-        else:
-            approach_feature = 0.0
+        approach_feature = float(
+            np.clip(
+                approach_delta
+                / max(float(self.reward_progress_normalization), 1e-9),
+                -1.0,
+                1.0,
+            )
+        )
 
         reward_features = {
             "waypoint_approach": 0.0 if in_final_target_phase else approach_feature,
@@ -942,6 +1016,7 @@ class MCREnv(SofaEnv):
                 value = 0.0
                 self.non_finite_failure = True
             self.reward_info[f"reward_{key}"] = value
+            self.episode_reward_totals[key] += value
             reward += value
         if not np.isfinite(reward):
             reward = -100.0
@@ -974,11 +1049,13 @@ class MCREnv(SofaEnv):
             "current_dist_to_goal": current_dist,
             "final_dist_to_goal": current_dist if (terminated or truncated) else np.nan,
             "target_distance_threshold": float(self.target_distance_threshold),
+            "vessel_scale_factor": float(getattr(self, "vessel_scale_factor", 1.0)),
             "waypoint_idx": int(self.current_waypoint_idx),
             "waypoint_num": int(len(self.waypoint_points)) if self.waypoint_points is not None else 0,
             "waypoint_progress_ratio": float(self.current_waypoint_progress_ratio),
             "waypoint_distance": float(self.current_waypoint_distance),
             "waypoint_approach_delta": float(self.current_waypoint_approach_delta),
+            "reward_progress_normalization": float(self.reward_progress_normalization),
             "waypoint_reached_this_step": bool(self.current_waypoint_reached_this_step),
             "waypoint_reached_count_episode": int(self.current_waypoint_reached_count_episode),
             "waypoint_handoff_counter": int(
@@ -1012,11 +1089,19 @@ class MCREnv(SofaEnv):
             "centerline_safety_margin_min_episode": float(self.min_safety_margin_this_episode),
             "raw_insert": float(self.current_raw_insert),
             "effective_insert": float(self.current_effective_insert),
-            "insert_bias": float(getattr(self, "insert_bias", 0.0)),
             "insert_negative_limit": float(getattr(self, "insert_negative_limit", -1.0)),
             "actor_obs_dim": int(self.actor_observation_dim),
         }
-        return {**info, **self.reward_info, **self.reward_features}
+        episode_reward_totals = {
+            f"episode_reward_{key}": float(value)
+            for key, value in self.episode_reward_totals.items()
+        }
+        return {
+            **info,
+            **self.reward_info,
+            **self.reward_features,
+            **episode_reward_totals,
+        }
 
     # ------------------------------------------------------------------
     # Centerline / waypoint / safety
@@ -1420,12 +1505,12 @@ class MCREnv(SofaEnv):
 
         Normal hit:
             current waypoint distance <= waypoint_reach_threshold.
-            Advance one waypoint and keep the +100 waypoint bonus.
+            Advance one waypoint and keep the configured waypoint bonus.
 
         Missed-point handoff:
             the next ordered waypoint is clearly closer than the current one
             for waypoint_handoff_confirm_steps consecutive steps.
-            Advance exactly one waypoint, but do not award the +100 bonus.
+            Advance exactly one waypoint, but do not award the waypoint bonus.
 
         The handoff uses only current/next waypoint Euclidean distances. It does
         not use centerline progress or a cross-section gate.
@@ -1526,7 +1611,7 @@ class MCREnv(SofaEnv):
         )
         advance = bool(reached_by_radius or handoff)
 
-        # Only a true 3 mm hit is counted/rewarded as waypoint_reached.
+        # Only a true configured-radius hit is counted/rewarded as waypoint_reached.
         self.current_waypoint_reached_this_step = bool(reached_by_radius)
         self.current_target_reached_this_step = False
 
@@ -1550,7 +1635,7 @@ class MCREnv(SofaEnv):
             current_dist = float(np.linalg.norm(active_point - tip_pos))
 
             # Distances before/after a target switch are not comparable.
-            # Reset the switch-step delta to avoid a fake +20/-20 reward.
+            # Reset the switch-step delta to avoid a fake progress reward.
             if handoff or is_final:
                 self.current_waypoint_approach_delta = 0.0
 
@@ -1565,7 +1650,7 @@ class MCREnv(SofaEnv):
         self.previous_waypoint_idx = int(self.current_waypoint_idx)
         self.previous_waypoint_distance = float(current_dist)
 
-        # Return True only for a real threshold hit, so handoff gets no +100.
+        # Return True only for a real threshold hit, so handoff gets no bonus.
         return bool(reached_by_radius)
 
     # ------------------------------------------------------------------
@@ -1573,30 +1658,17 @@ class MCREnv(SofaEnv):
     # ------------------------------------------------------------------
 
     def _apply_insert_safety_shield(self, raw_insert: float) -> float:
-        """Aggressive high-curvature insertion damping test.
+        """Apply only the configured action bounds.
 
-        Temporary experiment:
-        - safety ratio <= 0.6: original insertion command
-        - safety ratio > 0.6: insertion magnitude reduced to 10%
-
-        Purpose:
-        verify whether excessive insertion in sharp turns causes
-        accumulated bending energy and late-stage oscillation.
+        Collision response and the 1.00 out-of-vessel termination provide the
+        safety constraint.  Avoid a hidden state-dependent 10x insertion scale
+        change, which makes the SAC action meaning inconsistent near the wall.
         """
         raw_insert = float(np.clip(raw_insert, -1.0, 1.0))
-
         self.current_raw_insert = raw_insert
-
-        ratio = float(getattr(self, "current_centerline_safety_ratio", np.nan))
-
-        if np.isfinite(ratio) and ratio > 0.6:
-            effective_insert = raw_insert * 0.1
-        else:
-            effective_insert = raw_insert
-
         effective_insert = float(
             np.clip(
-                effective_insert,
+                raw_insert,
                 float(self.insert_negative_limit),
                 1.0,
             )
@@ -1651,6 +1723,9 @@ class MCREnv(SofaEnv):
         self.chosen_model = self.scene_creation_result.get("chosen_model", "unknown")
         self.centerline_vtk = self.scene_creation_result.get("centerline_vtk", "unknown")
         self.task_id = self.scene_creation_result.get("task_id", str(self.chosen_model))
+        self.vessel_scale_factor = float(
+            self.scene_creation_result.get("vessel_scale_factor", 1.0)
+        )
 
         raw_centerline = self.scene_creation_result.get("centerline_points", None)
         raw_centerline_radius = self.scene_creation_result.get("centerline_radius", None)

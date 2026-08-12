@@ -11,6 +11,7 @@ import argparse
 import binascii
 import json
 import math
+import os
 import queue
 import secrets
 import struct
@@ -34,6 +35,17 @@ if str(PYTHON_ROOT) not in sys.path:
 
 from mcr_sim.mcr_rl_env import ActionType, EnvType, MCREnv, ObservationType
 from mcr_sim.rl_core.base import RenderFramework, RenderMode
+from mcr_sim.training_config import (
+    ACTOR_HISTORY_STEPS,
+    ENTRY_TANGENT_POINTS,
+    FRAME_SKIP,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    MAX_EPISODE_STEPS,
+    RADIUS_OBSERVATION_SCALE_M,
+    SETTLE_STEPS,
+    SOFA_TIME_STEP_S,
+    TARGET_THRESHOLD_M,
+)
 
 
 ARTIFICIAL_MODELS = [f"B{i:02d}" for i in range(1, 6)] + [
@@ -423,8 +435,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--width", type=int, default=1280)
     parser.add_argument("--height", type=int, default=720)
     parser.add_argument("--fps", type=float, default=5.0)
-    parser.add_argument("--time-step", type=float, default=0.001)
-    parser.add_argument("--settle-steps", type=int, default=8)
+    parser.add_argument(
+        "--time-step",
+        type=float,
+        default=float(os.environ.get("MCR_SOFA_DT", str(SOFA_TIME_STEP_S))),
+        help="SOFA time step; defaults to the same 0.01 s used by train_sac.py.",
+    )
+    parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
+    parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS)
+    parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M)
+    parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS)
+    parser.add_argument(
+        "--vessel-scale-factor",
+        type=float,
+        default=1.0,
+        help="Fixed shrink-only vessel scale for preflight testing (0.90 to 1.00).",
+    )
     parser.add_argument("--vessel-alpha", type=float, default=0.75)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--access-token", default="")
@@ -466,6 +492,17 @@ def main() -> int:
         raise SystemExit("--width/--height must be at least 320x240")
     if not (0.2 <= args.fps <= 20.0):
         raise SystemExit("--fps must be between 0.2 and 20")
+    if args.time_step <= 0.0:
+        raise SystemExit("--time-step must be positive")
+    if args.frame_skip < 1:
+        raise SystemExit("--frame-skip must be at least 1")
+    if not (0.90 <= args.vessel_scale_factor <= 1.0):
+        raise SystemExit("--vessel-scale-factor must be between 0.90 and 1.00")
+
+    # The scene reads MCR_SOFA_DT when it creates the simulator. Keep that
+    # value synchronized with MCREnv's time_step so the viewer and SAC
+    # training execute the same physical step duration.
+    os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
 
     token = args.access_token.strip() or secrets.token_urlsafe(18)
     state = ViewerState(token=token, model=args.model)
@@ -475,23 +512,28 @@ def main() -> int:
         image_shape=(int(args.height), int(args.width)),
         create_scene_kwargs={
             "force_model": args.model,
+            "radius_observation_scale": RADIUS_OBSERVATION_SCALE_M,
+            "actor_history_steps": ACTOR_HISTORY_STEPS,
             "debug_rendering": True,
             "positioning_camera": True,
             "vessel_alpha": float(args.vessel_alpha),
             "randomize_start_target": False,
             "randomize_initial_orientation": False,
+            "initial_orientation_max_angle_deg": INITIAL_ORIENTATION_MAX_ANGLE_DEG,
             "soft_randomize_single_vessel": True,
-            "entry_tangent_points": 5,
+            "entry_tangent_points": ENTRY_TANGENT_POINTS,
+            "vessel_scale_factor": float(args.vessel_scale_factor),
         },
         observation_type=ObservationType.STATE,
         action_type=ActionType.CONTINUOUS,
         time_step=float(args.time_step),
-        frame_skip=1,
+        frame_skip=int(args.frame_skip),
         settle_steps=int(args.settle_steps),
         render_mode=RenderMode.HEADLESS,
         render_framework=RenderFramework.PYGLET,
         env_type=EnvType.AORTIC,
-        max_episode_steps=1_000_000,
+        target_distance_threshold=float(args.target_threshold),
+        max_episode_steps=int(args.max_episode_steps),
     )
 
     server = None
@@ -516,6 +558,20 @@ def main() -> int:
 
         print("=" * 72, flush=True)
         print("MCR SOFA Web Viewer is ready", flush=True)
+        print(
+            "Training  : "
+            f"dt={args.time_step} frame_skip={args.frame_skip} "
+            f"settle_steps={args.settle_steps} "
+            f"target_threshold={args.target_threshold} "
+            f"max_episode_steps={args.max_episode_steps} "
+            f"vessel_scale_factor={args.vessel_scale_factor}",
+            flush=True,
+        )
+        print(
+            "Collision : vessel Triangle; catheter Line+Point "
+            "(proximity values are reported in the SOFA log above)",
+            flush=True,
+        )
         print(f"Local URL : http://{args.host}:{args.port}/?token={token}", flush=True)
         print("Tunnel    : cloudflared tunnel --protocol http2 "
               f"--url http://{args.host}:{args.port}", flush=True)

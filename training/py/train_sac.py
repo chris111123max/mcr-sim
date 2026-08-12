@@ -2,6 +2,7 @@ import argparse
 import math
 import os
 import platform
+import random
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -29,6 +30,41 @@ from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
 from mcr_sim.distributed import DistributedSAC, initialize_distributed
 from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
+from mcr_sim.training_config import (
+    ACTOR_HISTORY_STEPS,
+    ENTRY_TANGENT_POINTS,
+    FRAME_SKIP,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    MAX_EPISODE_STEPS,
+    OUT_OF_VESSEL_SAFETY_RATIO,
+    RADIUS_OBSERVATION_SCALE_M,
+    REWARD_OUT_OF_VESSEL,
+    REWARD_PROGRESS_NORMALIZATION_M,
+    REWARD_STEP,
+    REWARD_SUCCESS,
+    REWARD_TARGET_APPROACH,
+    REWARD_TIMEOUT,
+    REWARD_WAYPOINT_APPROACH,
+    REWARD_WAYPOINT_REACHED,
+    SAC_BATCH_SIZE,
+    SAC_BUFFER_SIZE,
+    SAC_EPOCHS,
+    SAC_GAMMA,
+    SAC_GRADIENT_STEPS,
+    SAC_LEARNING_RATE,
+    SAC_LEARNING_STARTS,
+    SAC_N_ENVS,
+    SAC_STEPS_PER_EPOCH,
+    SAC_TAU,
+    SAC_TRAIN_FREQ,
+    SETTLE_STEPS,
+    SOFA_TIME_STEP_S,
+    START_WINDOW_DISTANCE_M,
+    TARGET_THRESHOLD_M,
+    TARGET_WINDOW_DISTANCE_M,
+    VESSEL_SCALE_MAX,
+    VESSEL_SCALE_MIN,
+)
 
 DEFAULT_LOG_ROOT = TRAINING_RUNS_DIR
 
@@ -175,6 +211,20 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "centerline_safety_margin": self._safe_float(info.get("centerline_safety_margin", np.nan)),
             "centerline_safety_margin_min_episode": self._safe_float(info.get("centerline_safety_margin_min_episode", np.nan)),
             "out_of_vessel": bool(info.get("out_of_vessel_this_episode", False)),
+            "vessel_scale_factor": self._safe_float(info.get("vessel_scale_factor", np.nan)),
+            "reward_progress": self._safe_float(
+                info.get("episode_reward_waypoint_approach", 0.0)
+            )
+            + self._safe_float(info.get("episode_reward_target_approach", 0.0)),
+            "reward_waypoints": self._safe_float(
+                info.get("episode_reward_waypoint_reached", 0.0)
+            ),
+            "reward_terminal": self._safe_float(
+                info.get("episode_reward_successful_task", 0.0)
+            )
+            + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
+            + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0)),
+            "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0)),
         }
 
     def _on_step(self) -> bool:
@@ -226,6 +276,11 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"rollout_recent/centerline_safety_ratio_max_w{self.window_size}", self._max(ep["centerline_safety_ratio_max_episode"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/centerline_safety_margin_mean_w{self.window_size}", self._mean(ep["centerline_safety_margin"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/centerline_safety_margin_min_w{self.window_size}", self._mean(ep["centerline_safety_margin_min_episode"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/progress_w{self.window_size}", self._mean(ep["reward_progress"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/waypoints_w{self.window_size}", self._mean(ep["reward_waypoints"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
 
         if self.total_episodes > 0:
             self.logger.record(f"rollout_cumulative/success_{self.success_label}", float(self.total_success_target / self.total_episodes))
@@ -304,20 +359,30 @@ class ExtraRolloutMetricsCallback(BaseCallback):
 class DistributedRuntimeCallback(BaseCallback):
     """Rank-0 TensorBoard scalars describing global distributed progress."""
 
-    def __init__(self, world_size: int, total_n_envs: int, global_batch_size: int, local_batch_size: int):
+    def __init__(
+        self,
+        world_size: int,
+        total_n_envs: int,
+        global_batch_size: int,
+        local_batch_size: int,
+        steps_per_epoch: int,
+    ):
         super().__init__(verbose=0)
         self.world_size = int(world_size)
         self.total_n_envs = int(total_n_envs)
         self.global_batch_size = int(global_batch_size)
         self.local_batch_size = int(local_batch_size)
+        self.steps_per_epoch = int(steps_per_epoch)
 
     def _on_step(self) -> bool:
         return True
 
     def _on_rollout_end(self) -> None:
+        global_timesteps = float(self.model.num_timesteps * self.world_size)
+        self.logger.record("distributed/global_timesteps", global_timesteps, exclude="stdout")
         self.logger.record(
-            "distributed/global_timesteps",
-            float(self.model.num_timesteps * self.world_size),
+            "distributed/global_epoch",
+            global_timesteps / float(self.steps_per_epoch),
             exclude="stdout",
         )
         self.logger.record("distributed/world_size", float(self.world_size), exclude="stdout")
@@ -468,7 +533,30 @@ def parse_args():
             "Empty string means uniform multi-vessel training."
         ),
     )
-    parser.add_argument("--timesteps", type=int, default=2_000_000)
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=SAC_EPOCHS,
+        help=(
+            "Number of training epochs. One epoch is --steps-per-epoch global "
+            "environment transitions across all ranks (default: 50)."
+        ),
+    )
+    parser.add_argument(
+        "--steps-per-epoch",
+        type=int,
+        default=SAC_STEPS_PER_EPOCH,
+        help="Global environment transitions per epoch (default: 100000).",
+    )
+    parser.add_argument(
+        "--timesteps",
+        type=int,
+        default=None,
+        help=(
+            "Compatibility override for total global transitions. When omitted, "
+            "total transitions = epochs * steps-per-epoch."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument(
@@ -500,7 +588,7 @@ def parse_args():
     parser.add_argument(
         "--n-envs",
         type=int,
-        default=1,
+        default=SAC_N_ENVS,
         help=(
             "Global number of SOFA environments. Distributed mode divides it "
             "equally across ranks; single-process mode uses all locally."
@@ -508,45 +596,50 @@ def parse_args():
     )
 
     # SAC-specific arguments
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--learning-rate", type=float, default=SAC_LEARNING_RATE)
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=128,
+        default=SAC_BATCH_SIZE,
         help=(
             "Global SAC minibatch size. Distributed mode requires divisibility "
             "by world size and uses batch_size/world_size per rank."
         ),
     )
-    parser.add_argument("--buffer-size", type=int, default=300_000)
-    parser.add_argument("--learning-starts", type=int, default=10_000)
-    parser.add_argument("--train-freq", type=int, default=1)
-    parser.add_argument("--gradient-steps", type=int, default=1)
-    parser.add_argument("--tau", type=float, default=0.005)
+    parser.add_argument("--buffer-size", type=int, default=SAC_BUFFER_SIZE)
+    parser.add_argument("--learning-starts", type=int, default=SAC_LEARNING_STARTS)
+    parser.add_argument("--train-freq", type=int, default=SAC_TRAIN_FREQ)
+    parser.add_argument(
+        "--gradient-steps",
+        type=int,
+        default=SAC_GRADIENT_STEPS,
+        help="SAC gradient updates per rollout; -1 matches updates to collected transitions.",
+    )
+    parser.add_argument("--tau", type=float, default=SAC_TAU)
     parser.add_argument(
         "--ent-coef",
         type=str,
         default="auto",
         help="Entropy coefficient: 'auto', 'auto_0.001', or fixed float such as 0.001",
     )
-    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gamma", type=float, default=SAC_GAMMA)
 
-    parser.add_argument("--frame-skip", type=int, default=1)
-    parser.add_argument("--time-step", type=float, default=0.01)
+    parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
+    parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
     parser.add_argument(
         "--settle-steps",
         type=int,
-        default=8,
+        default=SETTLE_STEPS,
         help="SOFA settle steps after reset. Increase to 10-20 if initialization becomes unstable.",
     )
-    parser.add_argument("--target-threshold", type=float, default=0.010)
-    parser.add_argument("--max-episode-steps", type=int, default=2048)
+    parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M)
+    parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS)
 
     # Environment safety option kept because it is part of the actor state.
     parser.add_argument(
         "--radius-observation-scale",
         type=float,
-        default=0.005,
+        default=RADIUS_OBSERVATION_SCALE_M,
         help="Local vessel radius observation scale in meters. Default 5 mm.",
     )
 
@@ -556,7 +649,7 @@ def parse_args():
         "--randomize-start-target",
         dest="randomize_start_target",
         action="store_true",
-        help="Randomize start and target inside a small ball around nominal endpoints.",
+        help="Randomize start/target by choosing nearby centerline endpoint samples.",
     )
     dr_group.add_argument(
         "--no-randomize-start-target",
@@ -564,12 +657,26 @@ def parse_args():
         action="store_false",
         help="Disable start/target endpoint randomization.",
     )
-    parser.set_defaults(randomize_start_target=False)
+    parser.set_defaults(randomize_start_target=True)
+    parser.add_argument(
+        "--start-window-mm",
+        type=float,
+        default=START_WINDOW_DISTANCE_M * 1000.0,
+        help="Physical centerline randomization window from the nominal start, in mm.",
+    )
+    parser.add_argument(
+        "--target-window-mm",
+        type=float,
+        default=TARGET_WINDOW_DISTANCE_M * 1000.0,
+        help="Physical centerline randomization window from the nominal target, in mm.",
+    )
+    parser.add_argument("--start-window-points", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--target-window-points", type=int, default=None, help=argparse.SUPPRESS)
     parser.add_argument(
         "--start-target-random-radius",
         type=float,
-        default=0.002,
-        help="Start/target randomization radius in meters. Default 0.002 = 2 mm.",
+        default=None,
+        help=argparse.SUPPRESS,
     )
 
     init_group = parser.add_mutually_exclusive_group()
@@ -585,17 +692,17 @@ def parse_args():
         action="store_false",
         help="Disable initial orientation randomization.",
     )
-    parser.set_defaults(randomize_initial_orientation=False)
+    parser.set_defaults(randomize_initial_orientation=True)
     parser.add_argument(
         "--initial-orientation-max-angle-deg",
         type=float,
-        default=20.0,
-        help="Max initial orientation deviation from entry tangent in degrees. Default 20.",
+        default=INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+        help="Max initial orientation deviation from entry tangent in degrees.",
     )
     parser.add_argument(
         "--entry-tangent-points",
         type=int,
-        default=5,
+        default=ENTRY_TANGENT_POINTS,
         help="Number of initial centerline points used to estimate entry tangent. Default 5.",
     )
     soft_group = parser.add_mutually_exclusive_group()
@@ -616,6 +723,19 @@ def parse_args():
     )
     parser.set_defaults(soft_randomize_single_vessel=True)
 
+    parser.add_argument(
+        "--vessel-scale-min",
+        type=float,
+        default=VESSEL_SCALE_MIN,
+        help="Minimum isotropic vessel scale sampled per episode (default: 0.90).",
+    )
+    parser.add_argument(
+        "--vessel-scale-max",
+        type=float,
+        default=VESSEL_SCALE_MAX,
+        help="Maximum isotropic vessel scale sampled per episode (default: 1.00).",
+    )
+
     # All-vessel local-observation curriculum runs.
     parser.add_argument(
         "--log-root",
@@ -624,7 +744,12 @@ def parse_args():
         help="Training output root. Defaults to the project-level training_runs directory.",
     )
     parser.add_argument("--exp-name", type=str, default="sac_waypoint_uniform")
-    parser.add_argument("--save-freq", type=int, default=50_000)
+    parser.add_argument(
+        "--save-freq",
+        type=int,
+        default=0,
+        help="Global transitions between checkpoints; 0 saves once per epoch.",
+    )
     parser.add_argument("--render", choices=["headless", "human"], default="headless")
     parser.add_argument(
         "--resume-from",
@@ -653,6 +778,30 @@ def parse_args():
     # Scene/env sampling is uniform over the active training vessels. No priority sampling.
 
     args = parser.parse_args()
+    if args.epochs <= 0 or args.steps_per_epoch <= 0:
+        parser.error("--epochs and --steps-per-epoch must be positive integers")
+    if args.timesteps is None:
+        args.timesteps = int(args.epochs) * int(args.steps_per_epoch)
+    elif args.timesteps <= 0:
+        parser.error("--timesteps must be positive when provided")
+    if args.save_freq <= 0:
+        args.save_freq = int(args.steps_per_epoch)
+    if args.max_episode_steps <= 0:
+        parser.error("--max-episode-steps must be a positive integer")
+    if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
+        parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
+    if args.start_window_mm < 0.0 or args.target_window_mm < 0.0:
+        parser.error("start/target window distances must be non-negative")
+    if args.start_window_points is not None or args.target_window_points is not None:
+        print(
+            "[WARNING] --start-window-points/--target-window-points are deprecated "
+            "and ignored; use --start-window-mm/--target-window-mm."
+        )
+    if args.start_target_random_radius is not None:
+        print(
+            "[WARNING] --start-target-random-radius is deprecated and ignored; "
+            "use --start-window-mm/--target-window-mm."
+        )
     args.ent_coef = _parse_ent_coef(args.ent_coef)
     return args
 
@@ -672,19 +821,24 @@ def build_env(args):
             # environment seeding, but this avoids identical default RNG streams
             # during SOFA scene construction/randomization.
             try:
-                np.random.seed(int(args.seed) + global_env_offset + int(rank))
+                env_seed = int(args.seed) + global_env_offset + int(rank)
+                np.random.seed(env_seed)
+                random.seed(env_seed)
             except Exception:
                 pass
 
             create_scene_kwargs = {
                 "radius_observation_scale": float(args.radius_observation_scale),
-                "actor_history_steps": 4,
+                "actor_history_steps": ACTOR_HISTORY_STEPS,
                 "randomize_start_target": bool(args.randomize_start_target),
-                "start_target_random_radius": float(args.start_target_random_radius),
+                "start_window_distance_m": float(args.start_window_mm) / 1000.0,
+                "target_window_distance_m": float(args.target_window_mm) / 1000.0,
                 "randomize_initial_orientation": bool(args.randomize_initial_orientation),
                 "initial_orientation_max_angle_deg": float(args.initial_orientation_max_angle_deg),
                 "entry_tangent_points": int(args.entry_tangent_points),
                 "soft_randomize_single_vessel": bool(args.soft_randomize_single_vessel),
+                "vessel_scale_min": float(args.vessel_scale_min),
+                "vessel_scale_max": float(args.vessel_scale_max),
             }
             # If running with GUI (human), enable debug_rendering so the scene
             # creates the visual OglModel and ensure vessels are sufficiently
@@ -724,6 +878,9 @@ def build_env(args):
 
 def main():
     args = parse_args()
+    # The Python environment and the SOFA scene must advance with the same dt.
+    # Set this before spawning worker processes so every scene inherits it.
+    os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(
         enabled=bool(args.distributed),
         requested_device=args.device,
@@ -797,7 +954,9 @@ def main():
             checkpoint_prefix = f"sac_mcr_{threshold_tag}_all_vessels{forced_tag}_ckpt"
             # One callback call represents total_n_envs transitions across all
             # synchronized ranks, so save_freq retains global-timestep semantics.
-            effective_save_freq = max(1, int(args.save_freq) // total_n_envs)
+            effective_save_freq = max(
+                1, int(math.ceil(float(args.save_freq) / float(total_n_envs)))
+            )
             checkpoint_callback = CheckpointCallback(
                 save_freq=effective_save_freq,
                 save_path=str(model_dir),
@@ -813,6 +972,7 @@ def main():
                 total_n_envs=total_n_envs,
                 global_batch_size=global_batch_size,
                 local_batch_size=local_batch_size,
+                steps_per_epoch=args.steps_per_epoch,
             )
             callback_list = CallbackList(
                 [checkpoint_callback, extra_metrics_callback, distributed_callback]
@@ -948,7 +1108,8 @@ def main():
             print(f"  obs={env.observation_space}  action={env.action_space}")
             print("  algorithm=standard SAC: actor and critic use the same 52-D waypoint observation")
             print(
-                f"  timesteps={args.timesteps}  n_envs={int(args.n_envs)}  "
+                f"  epochs={args.epochs}  steps_per_epoch={args.steps_per_epoch}  "
+                f"timesteps={args.timesteps}  n_envs={int(args.n_envs)}  "
                 f"lr={args.learning_rate:g}  batch={args.batch_size}  "
                 f"buffer={args.buffer_size}  ent_coef={args.ent_coef}"
             )
@@ -959,16 +1120,31 @@ def main():
                 f"global_batch={global_batch_size}  local_batch={local_batch_size}  "
                 f"buffer_per_rank={args.buffer_size}  ent_coef={args.ent_coef}"
             )
-            print(f"  max_steps={args.max_episode_steps}")
+            print(
+                f"  max_steps={args.max_episode_steps}  "
+                f"effective_epochs={float(args.timesteps) / float(args.steps_per_epoch):.3f}  "
+                f"checkpoint_every={args.save_freq} global transitions"
+            )
             print(
                 f"  radius_obs_scale={float(args.radius_observation_scale)*1000.0:.2f}mm"
             )
             print(
+                f"  out_of_vessel_ratio={OUT_OF_VESSEL_SAFETY_RATIO:.2f}  "
+                f"progress_unit={REWARD_PROGRESS_NORMALIZATION_M*1000.0:.1f}mm  "
+                f"reward_progress=[{REWARD_WAYPOINT_APPROACH:g},"
+                f"{REWARD_TARGET_APPROACH:g}]  waypoint={REWARD_WAYPOINT_REACHED:g}  "
+                f"success={REWARD_SUCCESS:g}  out={REWARD_OUT_OF_VESSEL:g}  "
+                f"timeout={REWARD_TIMEOUT:g}  step={REWARD_STEP:g}"
+            )
+            print(
                 f"  active_train_models={','.join(ARTIFICIAL_MODEL_IDS)}  "
                 f"randomize_start_target={bool(args.randomize_start_target)} "
-                f"radius={float(args.start_target_random_radius)*1000.0:.2f}mm  "
+                f"start_window={float(args.start_window_mm):.1f}mm "
+                f"target_window={float(args.target_window_mm):.1f}mm  "
                 f"randomize_initial_orientation={bool(args.randomize_initial_orientation)} "
                 f"max_angle={float(args.initial_orientation_max_angle_deg):.1f}deg  "
+                f"vessel_scale=[{float(args.vessel_scale_min):.2f},"
+                f"{float(args.vessel_scale_max):.2f}]  "
                 f"soft_randomize_single_vessel={bool(args.soft_randomize_single_vessel)}"
             )
             print(f"  run_dir={run_dir}")

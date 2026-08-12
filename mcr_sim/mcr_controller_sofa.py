@@ -3,6 +3,7 @@ import Sofa.Core
 import numpy as np
 
 from . import mcr_mag_controller
+from .training_config import CONTROLLER_MAX_INSERTION_M, MAX_INSERTION_PER_ACTION_M
 from scipy.spatial.transform import Rotation as R
 
 # Increment field angle in rad
@@ -61,12 +62,11 @@ class ControllerSofa(Sofa.Core.Controller):
         self.mag_controller.field_des = self.mag_field_init
         self.invalid_action = False
 
-        # Net insertion command per RL step remains 0.6 mm at |action_insert|=1.
-        # To improve collision detection without reducing macroscopic insertion speed,
-        # the command is buffered and then applied in smaller chunks over SOFA substeps.
-        # Recommended runtime: --time-step 0.05 --frame-skip 2.
-        self.insert_step_per_action = 0.0002
-        self.insert_substep_max = 0.0002
+        # At |action_insert|=1 an RL step requests at most 0.2 mm.  This is
+        # deliberately small relative to the minimum scaled lumen clearance,
+        # allowing the collision solver to react before the catheter crosses a wall.
+        self.insert_step_per_action = MAX_INSERTION_PER_ACTION_M
+        self.insert_substep_max = MAX_INSERTION_PER_ACTION_M
         self.pending_insert_delta = 0.0
 
     def onKeypressedEvent(self, event):
@@ -99,10 +99,8 @@ class ControllerSofa(Sofa.Core.Controller):
     def insertRetract(self, val):
         """Buffer insertion/retraction command.
 
-        The RL action still represents up to 0.6 mm insertion per RL step, but the
-        actual xtip update is split into smaller SOFA substeps in onAnimateBeginEvent.
-        With --time-step 0.05 --frame-skip 2, this preserves the old macroscopic
-        speed while giving collision/constraint solving two chances to react.
+        The RL action represents up to 0.2 mm insertion per step.  Pending motion
+        is still buffered so future configurations may use smaller SOFA substeps.
         """
         val = float(np.clip(val, -1.0, 1.0))
         delta = val * float(self.insert_step_per_action)
@@ -110,9 +108,14 @@ class ControllerSofa(Sofa.Core.Controller):
         # Prevent the buffer from requesting impossible insertion beyond the catheter limit.
         current_xtip = float(self._getXTipValue())
         target_xtip = current_xtip + float(self.pending_insert_delta) + delta
-        if target_xtip > 0.51:
+        if target_xtip > CONTROLLER_MAX_INSERTION_M:
             self.invalid_action = True
-            delta = max(0.0, 0.51 - current_xtip - float(self.pending_insert_delta))
+            delta = max(
+                0.0,
+                CONTROLLER_MAX_INSERTION_M
+                - current_xtip
+                - float(self.pending_insert_delta),
+            )
         else:
             self.invalid_action = False
 
@@ -124,16 +127,16 @@ class ControllerSofa(Sofa.Core.Controller):
         if abs(pending) < 1e-12:
             return
 
-        max_chunk = abs(float(getattr(self, "insert_substep_max", 0.0003)))
+        max_chunk = abs(float(getattr(self, "insert_substep_max", MAX_INSERTION_PER_ACTION_M)))
         if max_chunk <= 0.0:
-            max_chunk = abs(float(getattr(self, "insert_step_per_action", 0.0006)))
+            max_chunk = abs(float(getattr(self, "insert_step_per_action", MAX_INSERTION_PER_ACTION_M)))
 
         chunk = float(np.clip(pending, -max_chunk, max_chunk))
         current_xtip = float(self._getXTipValue())
         new_xtip = current_xtip + chunk
 
-        if new_xtip > 0.51:
-            self.instrument.IRC.xtip[0] = 0.51
+        if new_xtip > CONTROLLER_MAX_INSERTION_M:
+            self.instrument.IRC.xtip[0] = CONTROLLER_MAX_INSERTION_M
             self.pending_insert_delta = 0.0
             self.invalid_action = True
         elif new_xtip < 0.0:

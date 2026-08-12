@@ -27,15 +27,18 @@ and entropy optimizer paths.
 
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
-- `--timesteps`: global transition budget (SB3 may overshoot by one global
-  vectorized step, as it does in single-process vector environments).
+- `--epochs` and `--steps-per-epoch`: the primary global transition budget.
+  The default is 50 x 100,000 = 5,000,000 global transitions.
+- `--timesteps`: optional compatibility override for the global transition
+  budget (SB3 may overshoot by one global vectorized step).
 - `--buffer-size`: capacity of each rank-local CPU replay buffer.
 - `--learning-starts`: rank-local warm-up transitions.
 - checkpoint, TensorBoard, progress bar, experiment directory, and final model
   writes are rank-0 only.
 
-For four ranks, `--n-envs 64 --batch-size 512` means 16 SOFA environments and
-a 128-transition minibatch on every rank. Gradient averaging makes the effective
+For the stable default, `--n-envs 4 --batch-size 512` means one SOFA environment
+and a 128-transition minibatch on every rank. Increase environment count only
+after measuring SOFA CPU/RAM throughput. Gradient averaging makes the effective
 global minibatch 512.
 
 ## Launch
@@ -47,10 +50,10 @@ The normal launcher inserts `torchrun` automatically:
   --device npu \
   --distributed \
   --world-size 4 \
-  --n-envs 64 \
+  --n-envs 4 \
   --batch-size 512 \
-  --force-model 0237 \
-  --timesteps 5000000 \
+  --epochs 50 \
+  --steps-per-epoch 100000 \
   --target-threshold 0.003 \
   --time-step 0.01 \
   --frame-skip 1 \
@@ -71,8 +74,8 @@ size is used to retain global timestep meaning when changing world size.
 
 ## Server smoke test
 
-Do not start the full five-million-step run first. Use four ranks, a smaller
-environment count, and 2,000-5,000 global timesteps. Confirm all rank/device
+Do not start the full five-million-step run first. Use four ranks, four
+environments, and `--epochs 1 --steps-per-epoch 2000`. Confirm all rank/device
 lines appear, HCCL initializes, training losses advance, and exactly one
 checkpoint/TensorBoard run is written.
 

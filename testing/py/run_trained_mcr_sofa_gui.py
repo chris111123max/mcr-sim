@@ -54,6 +54,16 @@ from stable_baselines3 import SAC
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, EnvType
 from mcr_sim.paths import PROJECT_ROOT
 from mcr_sim.rl_core.base import RenderMode
+from mcr_sim.training_config import (
+    ENTRY_TANGENT_POINTS,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    MAX_EPISODE_STEPS,
+    SETTLE_STEPS,
+    SOFA_TIME_STEP_S,
+    START_WINDOW_DISTANCE_M,
+    TARGET_THRESHOLD_M,
+    TARGET_WINDOW_DISTANCE_M,
+)
 
 
 def _get_component_name(component) -> str:
@@ -700,15 +710,15 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="Path to trained SAC model zip.")
     parser.add_argument("--env-type", choices=["aortic", "flat"], default="aortic")
     parser.add_argument("--force-model", type=str, default="", help="Specific model to force, e.g. 0207, V1, 0210, 0021. Leave empty for random.")
-    parser.add_argument("--target-threshold", type=float, default=0.010, help="Success distance threshold in meters. Default 0.010 for 10 mm testing.")
+    parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M, help="Success distance threshold in meters; defaults to the training value.")
     parser.add_argument("--sleep", type=float, default=0.0, help="Wait time after each GUI/env step to slow visualization.")
     parser.add_argument("--vessel-alpha", type=float, default=0.35, help="Vessel opacity (0.0~1.0).")
     parser.add_argument("--positioning-camera", action="store_true", help="Force camera setup even if debug rendering is off.")
     parser.add_argument("--print-every", type=int, default=1, help="Print metrics every N GUI/env steps.")
-    parser.add_argument("--time-step", type=float, default=0.1, help="SOFA time step in seconds. Use the value used in training when known.")
+    parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S, help="SOFA time step in seconds; defaults to the training value.")
     parser.add_argument("--frame-skip", type=int, default=1, help="Env frame skip. Default 1, matching current MCREnv default.")
-    parser.add_argument("--max-steps", type=int, default=2000, help="Max GUI/env steps before pausing. Default 2000 for longer GUI testing.")
-    parser.add_argument("--max-episode-steps", type=int, default=2000, help="MCREnv max_episode_steps. Default 2000 for longer GUI testing.")
+    parser.add_argument("--max-steps", type=int, default=MAX_EPISODE_STEPS, help="Max GUI/env steps before pausing.")
+    parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS, help="MCREnv episode limit; defaults to training.")
     parser.add_argument("--continue-after-done", action="store_true", help="Do not pause when training termination condition is reached.")
     parser.add_argument("--continue-after-threshold", action="store_true", help="Do not pause immediately when current distance reaches target threshold.")
     parser.add_argument("--enable-no-progress-termination", action="store_true", help="Use training no-progress termination. Default: disabled for GUI testing.")
@@ -718,10 +728,11 @@ def main():
     # the target/instrument pose inside MCREnv.reset(), instead of double-randomizing
     # in createScene().
     parser.add_argument("--no-randomize-start-target", action="store_true", help="Disable start/target randomization. Default: enabled.")
-    parser.add_argument("--start-target-random-radius", type=float, default=0.002, help="Start/target randomization radius in meters. Default 0.002 = 2 mm.")
+    parser.add_argument("--start-window-mm", type=float, default=START_WINDOW_DISTANCE_M * 1000.0, help="Physical start randomization window in mm.")
+    parser.add_argument("--target-window-mm", type=float, default=TARGET_WINDOW_DISTANCE_M * 1000.0, help="Physical target randomization window in mm.")
     parser.add_argument("--no-randomize-initial-orientation", action="store_true", help="Disable initial orientation cone randomization. Default: enabled.")
-    parser.add_argument("--initial-orientation-max-angle-deg", type=float, default=30.0, help="Initial orientation random cone half-angle in degrees. Default 30.")
-    parser.add_argument("--entry-tangent-points", type=int, default=5, help="Number of centerline points used to estimate entry tangent. Default 5.")
+    parser.add_argument("--initial-orientation-max-angle-deg", type=float, default=INITIAL_ORIENTATION_MAX_ANGLE_DEG, help="Initial orientation random cone half-angle in degrees.")
+    parser.add_argument("--entry-tangent-points", type=int, default=ENTRY_TANGENT_POINTS, help="Number of centerline points used to estimate entry tangent.")
     parser.add_argument("--disable-soft-randomize-single-vessel", action="store_true", help="Disable soft single-vessel random reset; normally keep off.")
 
     # Collision arguments are retained for compatibility with older shell scripts,
@@ -753,7 +764,8 @@ def main():
         "use_vessel_line_point_collision": bool(args.use_vessel_line_point_collision),
 
         "randomize_start_target": not bool(args.no_randomize_start_target),
-        "start_target_random_radius": float(args.start_target_random_radius),
+        "start_window_distance_m": float(args.start_window_mm) / 1000.0,
+        "target_window_distance_m": float(args.target_window_mm) / 1000.0,
         "randomize_initial_orientation": not bool(args.no_randomize_initial_orientation),
         "initial_orientation_max_angle_deg": float(args.initial_orientation_max_angle_deg),
         "entry_tangent_points": int(args.entry_tangent_points),
@@ -768,7 +780,8 @@ def main():
     print(
         "[RANDOMIZATION]",
         f"randomize_start_target={create_scene_kwargs['randomize_start_target']}",
-        f"radius_mm={create_scene_kwargs['start_target_random_radius'] * 1000.0:.3f}",
+        f"start_window={args.start_window_mm:.1f}mm",
+        f"target_window={args.target_window_mm:.1f}mm",
         f"randomize_initial_orientation={create_scene_kwargs['randomize_initial_orientation']}",
         f"max_angle_deg={create_scene_kwargs['initial_orientation_max_angle_deg']:.3f}",
         f"soft_randomize_single_vessel={create_scene_kwargs['soft_randomize_single_vessel']}",
@@ -786,7 +799,7 @@ def main():
         time_step=float(args.time_step),
         frame_skip=int(args.frame_skip),
         target_distance_threshold=float(args.target_threshold),
-        settle_steps=8,
+        settle_steps=SETTLE_STEPS,
         max_episode_steps=int(args.max_episode_steps),
         # RenderMode.NONE prevents pyglet/pygame conflicts with Sofa.Gui.
         render_mode=RenderMode.NONE,

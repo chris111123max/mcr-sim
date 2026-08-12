@@ -1,6 +1,16 @@
 import Sofa
 import os
 
+from .training_config import (
+    CONSTRAINT_MAX_ITERATIONS,
+    CONSTRAINT_TOLERANCE,
+    FRICTION_COEFFICIENT,
+    LMD_ALARM_DISTANCE_M,
+    LMD_ANGLE_CONE,
+    LMD_CONTACT_DISTANCE_M,
+    SOFA_TIME_STEP_S,
+)
+
 
 class Simulator(Sofa.Core.Controller):
     """
@@ -19,9 +29,9 @@ class Simulator(Sofa.Core.Controller):
     def __init__(
             self,
             root_node,
-            dt=0.01,
+            dt=SOFA_TIME_STEP_S,
             gravity=[0, 0, 0],
-            friction_coef=0.04,
+            friction_coef=FRICTION_COEFFICIENT,
             *args, **kwargs):
 
         # These are needed (and the normal way to override from a python class)
@@ -85,10 +95,10 @@ class Simulator(Sofa.Core.Controller):
             "MCR_CONSTRAINT_SOLVER", "lcp"
         ).strip().lower()
         constraint_tolerance = os.environ.get(
-            "MCR_CONSTRAINT_TOLERANCE", "1e-6"
+            "MCR_CONSTRAINT_TOLERANCE", str(CONSTRAINT_TOLERANCE)
         )
         constraint_max_it = os.environ.get(
-            "MCR_CONSTRAINT_MAX_IT", "20000"
+            "MCR_CONSTRAINT_MAX_IT", str(CONSTRAINT_MAX_ITERATIONS)
         )
 
         if constraint_solver_type in ("generic", "genericconstraintsolver"):
@@ -133,13 +143,19 @@ class Simulator(Sofa.Core.Controller):
             'BVHNarrowPhase',
             name='N2_2')
 
-        # Lightweight LocalMinDistance:
-        #   - contactDistance=1.0 mm and alarmDistance=2.0 mm are a lightweight
-        #     triangle-only setting for faster RL training;
-        #   - do not use vessel Line/Point collision here, because it caused LCP nan.
-        lmd_contact_distance = os.environ.get("MCR_LMD_CONTACT_DISTANCE", "0.0010")
-        lmd_alarm_distance = os.environ.get("MCR_LMD_ALARM_DISTANCE", "0.0015")
-        lmd_angle_cone = os.environ.get("MCR_LMD_ANGLE_CONE", "0.02")
+        # Lightweight LocalMinDistance.  The static vessel is triangle-only;
+        # catheter Line/Point primitives carry the catheter-radius proximity.
+        # Vessel Line/Point models stay disabled because they multiply contacts
+        # and previously destabilized the LCP solve.
+        lmd_contact_distance = os.environ.get(
+            "MCR_LMD_CONTACT_DISTANCE", str(LMD_CONTACT_DISTANCE_M)
+        )
+        lmd_alarm_distance = os.environ.get(
+            "MCR_LMD_ALARM_DISTANCE", str(LMD_ALARM_DISTANCE_M)
+        )
+        lmd_angle_cone = os.environ.get(
+            "MCR_LMD_ANGLE_CONE", str(LMD_ANGLE_CONE)
+        )
         print(
             "[LOCAL_MIN_DISTANCE]",
             "contactDistance=", lmd_contact_distance,

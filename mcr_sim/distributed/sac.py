@@ -50,6 +50,13 @@ class DistributedSAC(SAC):
         if context is None:
             raise RuntimeError("DistributedSAC requires a DistributedContext before training.")
 
+        # SB3 resolves gradient_steps=-1 from transitions collected by the
+        # rank-local VecEnv.  One synchronized update, however, consumes data
+        # from every rank.  Multiply by world size so -1 retains its documented
+        # global update-to-data ratio instead of silently becoming 1/world_size.
+        if int(getattr(self, "gradient_steps", 0)) < 0 and context.enabled:
+            gradient_steps = int(gradient_steps) * int(context.world_size)
+
         self.policy.set_training_mode(True)
         optimizers = [self.actor.optimizer, self.critic.optimizer]
         if self.ent_coef_optimizer is not None:

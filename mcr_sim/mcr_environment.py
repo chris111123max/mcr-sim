@@ -38,7 +38,7 @@ class Environment(Sofa.Core.Controller):
         collision_proximity=0.0,
         triangle_collision_proximity=None,
         line_point_collision_proximity=None,
-        use_line_point_collision=True,
+        use_line_point_collision=False,
         *args, **kwargs):
 
         # These are needed (and the normal way to override from a python class)
@@ -50,9 +50,9 @@ class Environment(Sofa.Core.Controller):
         self.name_env = name
         self.color = color
 
-        # Old-version collision setting:
-        #   - Use Triangle + Line + Point collision models on the vessel.
-        #   - Do not set proximity on vessel collision models, matching the original implementation.
+        # Training uses the static triangle wall only.  Optional vessel
+        # Line/Point models remain available for diagnostics, but are disabled
+        # by default because they multiply contact pairs on dense meshes.
         self.collision_proximity = float(collision_proximity)
         self.triangle_collision_proximity = (
             self.collision_proximity

@@ -24,6 +24,15 @@ from mcr_sim import (
     mcr_simulator,
 )
 from mcr_sim.paths import DEFAULT_CALIBRATION_PATH, TEST_MESH_DIR, TRAIN_MESH_DIR
+from mcr_sim.training_config import (
+    ENTRY_TANGENT_POINTS,
+    FRICTION_COEFFICIENT,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    SOFA_TIME_STEP_S,
+    START_WINDOW_DISTANCE_M,
+    TARGET_WINDOW_DISTANCE_M,
+    VESSEL_TRIANGLE_PROXIMITY_M,
+)
 
 # ============================================================
 # Paths
@@ -565,17 +574,15 @@ def _sample_endpoint_window_start_target(
     centerline_data,
     nominal_start_point_sim,
     nominal_target_point_sim,
-    start_window_points=5,
-    target_window_points=5,
+    start_window_distance_m=START_WINDOW_DISTANCE_M,
+    target_window_distance_m=TARGET_WINDOW_DISTANCE_M,
     rng=None,
 ):
-    """Sample start/target from discrete endpoint windows on the centerline.
+    """Sample start/target from fixed arc-length endpoint windows.
 
     Scheme-1 initialization:
-      - start is sampled from the first ``start_window_points`` centerline points
-        near the nominal entry side;
-      - target is sampled from the last ``target_window_points`` centerline points
-        near the nominal target side;
+      - start is sampled inside ``start_window_distance_m`` from the entry;
+      - target is sampled inside ``target_window_distance_m`` from the outlet;
       - no off-center ball perturbation is added.
 
     The helper determines the centerline direction from the nominal start/target,
@@ -588,8 +595,12 @@ def _sample_endpoint_window_start_target(
         raise ValueError("Centerline points must be an Nx3 array with at least two points")
 
     n = int(pts.shape[0])
-    start_window_points = int(np.clip(int(start_window_points), 1, n))
-    target_window_points = int(np.clip(int(target_window_points), 1, n))
+    start_window_distance_m = max(0.0, float(start_window_distance_m))
+    target_window_distance_m = max(0.0, float(target_window_distance_m))
+    cumulative = np.concatenate(
+        ([0.0], np.cumsum(np.linalg.norm(np.diff(pts, axis=0), axis=1)))
+    )
+    total_length = float(cumulative[-1])
 
     nominal_start = np.asarray(nominal_start_point_sim, dtype=np.float64).reshape(3)
     nominal_target = np.asarray(nominal_target_point_sim, dtype=np.float64).reshape(3)
@@ -600,11 +611,22 @@ def _sample_endpoint_window_start_target(
     stored_forward = bool(forward_cost <= reverse_cost)
 
     if stored_forward:
-        start_candidates = np.arange(0, start_window_points, dtype=np.int64)
-        target_candidates = np.arange(max(0, n - target_window_points), n, dtype=np.int64)
+        start_arc = cumulative
+        target_arc = total_length - cumulative
     else:
-        start_candidates = np.arange(max(0, n - start_window_points), n, dtype=np.int64)
-        target_candidates = np.arange(0, target_window_points, dtype=np.int64)
+        start_arc = total_length - cumulative
+        target_arc = cumulative
+
+    start_candidates = np.flatnonzero(
+        start_arc <= start_window_distance_m + 1e-12
+    ).astype(np.int64)
+    target_candidates = np.flatnonzero(
+        target_arc <= target_window_distance_m + 1e-12
+    ).astype(np.int64)
+    if start_candidates.size == 0:
+        start_candidates = np.asarray([0 if stored_forward else n - 1], dtype=np.int64)
+    if target_candidates.size == 0:
+        target_candidates = np.asarray([n - 1 if stored_forward else 0], dtype=np.int64)
 
     start_idx = int(rng.choice(start_candidates))
     target_idx = int(rng.choice(target_candidates))
@@ -627,6 +649,8 @@ def _sample_endpoint_window_start_target(
         "stored_forward": stored_forward,
         "start_candidates": start_candidates.tolist(),
         "target_candidates": target_candidates.tolist(),
+        "start_window_distance_m": start_window_distance_m,
+        "target_window_distance_m": target_window_distance_m,
     }
 
 
@@ -950,11 +974,32 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     elif is_test_mesh:
         centerline_scale = 0.003
 
+    # Scale the STL, centerline coordinates, and centerline radii together.
+    # A fixed factor is used by the GUI preflight viewer; training supplies a
+    # bounded range and samples once whenever the SOFA scene is constructed.
+    fixed_scale_factor = kwargs.get("vessel_scale_factor", None)
+    if fixed_scale_factor is not None:
+        vessel_scale_factor = float(fixed_scale_factor)
+    else:
+        # Generic/test scenes remain nominal unless training explicitly passes
+        # the shrink-only randomization range.
+        scale_min = float(kwargs.get("vessel_scale_min", 1.0))
+        scale_max = float(kwargs.get("vessel_scale_max", 1.0))
+        if not (0.5 <= scale_min <= scale_max <= 1.0):
+            raise ValueError(
+                "vessel_scale_min/max must satisfy 0.5 <= min <= max <= 1.0"
+            )
+        vessel_scale_factor = float(np.random.uniform(scale_min, scale_max))
+    if not (0.5 <= vessel_scale_factor <= 1.0):
+        raise ValueError("vessel_scale_factor must be between 0.5 and 1.0")
+    centerline_scale *= vessel_scale_factor
+
     print(
         "[MODEL_SCALE]",
         "task_id=", task_id,
         "is_test_mesh=", bool(is_test_mesh),
         "centerline_scale=", centerline_scale,
+        "vessel_scale_factor=", vessel_scale_factor,
     )
 
     centerline_offset_sim = [0.0, 0.0, 0.0]
@@ -1007,14 +1052,16 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         activated=True,
     )
 
-    sim_friction_coef = float(os.environ.get("MCR_FRICTION_COEF", "0.01"))
+    sim_friction_coef = float(
+        os.environ.get("MCR_FRICTION_COEF", str(FRICTION_COEFFICIENT))
+    )
     mcr_simulator.Simulator(root_node=root_node, friction_coef=sim_friction_coef)
     print("[SIM_FRICTION] friction_coef =", sim_friction_coef)
 
     # SOFA dt for training/testing.
     # Default is 0.01 s. This matches mcr_simulator.Simulator(dt=0.01)
     # and avoids the previous GUI-only override to 0.002 s.
-    sofa_dt = float(os.environ.get("MCR_SOFA_DT", "0.01"))
+    sofa_dt = float(os.environ.get("MCR_SOFA_DT", str(SOFA_TIME_STEP_S)))
     old_sofa_dt = float(root_node.dt.value)
     root_node.dt.value = sofa_dt
     sofa_steps_per_0p1s = int(round(0.1 / sofa_dt)) if sofa_dt > 0.0 else 1
@@ -1049,8 +1096,10 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     # Keep vessel Line/PointCollisionModel optional for speed, but make the
     # TriangleCollisionModel slightly more conservative because centerline escape
     # is no longer used as a training-time safety termination.
-    # 0.0010 = 1.0 mm collision proximity.
-    vessel_collision_proximity = float(kwargs.get("vessel_collision_proximity", 0.0002))
+    # Training default: 0.0002 m = 0.2 mm vessel triangle proximity.
+    vessel_collision_proximity = float(
+        kwargs.get("vessel_collision_proximity", VESSEL_TRIANGLE_PROXIMITY_M)
+    )
     vessel_triangle_collision_proximity = float(
         kwargs.get(
             "vessel_triangle_collision_proximity",
@@ -1065,9 +1114,9 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     )
     use_vessel_line_point_collision = bool(
         kwargs.get(
-        "use_vessel_line_point_collision",
-        str(os.environ.get("MCR_USE_VESSEL_LINE_POINT_COLLISION", "0")).lower()
-        in ("1", "true", "yes", "y", "on"),
+            "use_vessel_line_point_collision",
+            str(os.environ.get("MCR_USE_VESSEL_LINE_POINT_COLLISION", "0")).lower()
+            in ("1", "true", "yes", "y", "on"),
         )
     )
 
@@ -1164,8 +1213,8 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
                 )
 
         # Scheme-1 start/target randomization for generalization:
-        # sample start from the first K centerline points and target from the last K
-        # centerline points. No spatial ball perturbation is added, so the initial
+        # sample within fixed arc-length windows at the two centerline ends.
+        # No spatial ball perturbation is added, so the initial
         # task stays exactly on the vessel centerline and avoids wall-biased starts.
         #
         # In single-vessel soft-reset mode, MCREnv.reset() handles randomization
@@ -1175,20 +1224,26 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
             and (not soft_randomize_single_vessel)
             and str(task_id).lower() not in ("aorta6", "aorta7")
         )
-        rng = np.random.default_rng()
+        # Derive Generator state from the worker's seeded NumPy stream so
+        # distributed runs are different across environments yet reproducible.
+        rng = np.random.default_rng(np.random.randint(0, 2**32 - 1))
         nominal_start_point_sim = np.asarray(start_point_sim, dtype=np.float64).copy()
         nominal_target_point_sim = np.asarray(target_point_sim, dtype=np.float64).copy()
         sampled_start_idx = None
         sampled_target_idx = None
         if randomize_start_target:
-            start_window_points = int(kwargs.get("start_window_points", kwargs.get("start_target_window_points", 5)))
-            target_window_points = int(kwargs.get("target_window_points", kwargs.get("start_target_window_points", 5)))
+            start_window_distance_m = float(
+                kwargs.get("start_window_distance_m", START_WINDOW_DISTANCE_M)
+            )
+            target_window_distance_m = float(
+                kwargs.get("target_window_distance_m", TARGET_WINDOW_DISTANCE_M)
+            )
             endpoint_sample = _sample_endpoint_window_start_target(
                 centerline_data=centerline_data,
                 nominal_start_point_sim=nominal_start_point_sim,
                 nominal_target_point_sim=nominal_target_point_sim,
-                start_window_points=start_window_points,
-                target_window_points=target_window_points,
+                start_window_distance_m=start_window_distance_m,
+                target_window_distance_m=target_window_distance_m,
                 rng=rng,
             )
             start_point_sim = np.asarray(endpoint_sample["start_point_sim"], dtype=np.float64)
@@ -1196,8 +1251,8 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
             sampled_start_idx = int(endpoint_sample["start_idx"])
             sampled_target_idx = int(endpoint_sample["target_idx"])
             print("[START_TARGET_ENDPOINT_WINDOW_RANDOMIZATION]")
-            print("  start_window_points =", start_window_points)
-            print("  target_window_points=", target_window_points)
+            print("  start_window_mm      =", start_window_distance_m * 1000.0)
+            print("  target_window_mm     =", target_window_distance_m * 1000.0)
             print("  stored_forward      =", endpoint_sample["stored_forward"])
             print("  start_candidates    =", endpoint_sample["start_candidates"])
             print("  target_candidates   =", endpoint_sample["target_candidates"])
@@ -1235,14 +1290,19 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
                     centerline_data=centerline_data,
                     start_point_sim=start_point_sim,
                     target_point_sim=target_point_sim,
-                    tangent_step=int(kwargs.get("entry_tangent_points", 5)),
+                    tangent_step=int(kwargs.get("entry_tangent_points", ENTRY_TANGENT_POINTS)),
                 )
 
                 # Randomize the initial mcR forward direction within a cone around
                 # the centerline entry direction. This improves sim-to-sim robustness
                 # without changing the nominal insertion point distribution.
                 randomize_initial_orientation = bool(kwargs.get("randomize_initial_orientation", False)) and (not soft_randomize_single_vessel)
-                max_init_angle_deg = float(kwargs.get("initial_orientation_max_angle_deg", 20.0))
+                max_init_angle_deg = float(
+                    kwargs.get(
+                        "initial_orientation_max_angle_deg",
+                        INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+                    )
+                )
                 randomized_entry_tangent = entry_tangent
                 sampled_angle_deg = 0.0
                 if randomize_initial_orientation and max_init_angle_deg > 0.0:
@@ -1426,6 +1486,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         "centerline_vtk": centerline_vtk,
         "task_id": task_id,
         "curriculum_stage": "gui_nonros_centerline_aligned_pose",
+        "vessel_scale_factor": float(vessel_scale_factor),
         "soft_randomize_single_vessel": bool(soft_randomize_single_vessel),
         "nominal_start_position": start_point_sim,
         "nominal_target_position": target_point_sim,

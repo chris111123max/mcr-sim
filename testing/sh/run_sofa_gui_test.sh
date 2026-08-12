@@ -43,13 +43,14 @@ cd "$PYTHON_ROOT"
 
 MODEL_PATH="${MODEL_PATH:-$PYTHON_ROOT/run_mul/sac_10mm_V1_gate_fsm_trainfreq2_buf200k_human_retrain_V1_only_aortic_10mm_20260606_111201/models/sac_mcr_10mm_all_vessels_privileged_V1_only_ckpt_800000_steps.zip}"
 
-TIME_STEP="${TIME_STEP:-0.1}"
+TIME_STEP="${TIME_STEP:-0.01}"
 FRAME_SKIP="${FRAME_SKIP:-1}"
-MAX_STEPS="${MAX_STEPS:-2000}"
-MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-2000}"
-TARGET_THRESHOLD="${TARGET_THRESHOLD:-0.010}"
-START_TARGET_RANDOM_RADIUS="${START_TARGET_RANDOM_RADIUS:-0.002}"
-INITIAL_ORIENTATION_MAX_ANGLE_DEG="${INITIAL_ORIENTATION_MAX_ANGLE_DEG:-30.0}"
+MAX_STEPS="${MAX_STEPS:-4096}"
+MAX_EPISODE_STEPS="${MAX_EPISODE_STEPS:-4096}"
+TARGET_THRESHOLD="${TARGET_THRESHOLD:-0.003}"
+START_WINDOW_MM="${START_WINDOW_MM:-10.0}"
+TARGET_WINDOW_MM="${TARGET_WINDOW_MM:-10.0}"
+INITIAL_ORIENTATION_MAX_ANGLE_DEG="${INITIAL_ORIENTATION_MAX_ANGLE_DEG:-10.0}"
 ENTRY_TANGENT_POINTS="${ENTRY_TANGENT_POINTS:-5}"
 
 normalized_args=()
@@ -94,14 +95,14 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=============================================================="
-echo " Starting MCR SOFA GUI inference: 2000 steps, no no-progress termination "
+echo " Starting MCR SOFA GUI inference: $MAX_STEPS steps, no no-progress termination "
 echo "=============================================================="
 echo "MODEL_PATH=$MODEL_PATH"
 echo "Python=$(which python)"
 echo "SOFA_ROOT=$SOFA_ROOT"
 echo "Timing: dt=$TIME_STEP frame_skip=$FRAME_SKIP max_steps=$MAX_STEPS max_episode_steps=$MAX_EPISODE_STEPS"
 echo "Target threshold: $TARGET_THRESHOLD m"
-echo "Randomization: start/target radius=${START_TARGET_RANDOM_RADIUS}m, initial angle=${INITIAL_ORIENTATION_MAX_ANGLE_DEG}deg, entry_tangent_points=${ENTRY_TANGENT_POINTS}"
+echo "Randomization: start_window=${START_WINDOW_MM}mm target_window=${TARGET_WINDOW_MM}mm, initial angle=${INITIAL_ORIENTATION_MAX_ANGLE_DEG}deg, entry_tangent_points=${ENTRY_TANGENT_POINTS}"
 echo "No-progress gate termination: disabled by default. Add --enable-no-progress-termination to restore it."
 
 "$PYTHON_BIN" "$PYTHON_ROOT/testing/py/run_trained_mcr_sofa_gui.py" \
@@ -113,7 +114,8 @@ echo "No-progress gate termination: disabled by default. Add --enable-no-progres
     --frame-skip "$FRAME_SKIP" \
     --max-steps "$MAX_STEPS" \
     --max-episode-steps "$MAX_EPISODE_STEPS" \
-    --start-target-random-radius "$START_TARGET_RANDOM_RADIUS" \
+    --start-window-mm "$START_WINDOW_MM" \
+    --target-window-mm "$TARGET_WINDOW_MM" \
     --initial-orientation-max-angle-deg "$INITIAL_ORIENTATION_MAX_ANGLE_DEG" \
     --entry-tangent-points "$ENTRY_TANGENT_POINTS" \
     "${normalized_args[@]}" \

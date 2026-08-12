@@ -2,6 +2,8 @@ import Sofa
 import os
 import numpy as np
 
+from .training_config import CATHETER_COLLISION_PROXIMITY_M
+
 
 class Instrument(Sofa.Core.Controller):
     """
@@ -246,16 +248,21 @@ class Instrument(Sofa.Core.Controller):
             controller='../m_ircontroller',
             useCurvAbs=True, printLog=False,
             name='collisMap')
-        catheter_collision_proximity = float(os.environ.get("MCR_CATHETER_COLLISION_PROXIMITY", "0.0006"))  # 0.6 mm catheter collision proximity
+        catheter_collision_proximity = float(
+            os.environ.get(
+                "MCR_CATHETER_COLLISION_PROXIMITY",
+                str(CATHETER_COLLISION_PROXIMITY_M),
+            )
+        )
         print("[CATHETER_COLLISION] proximity =", catheter_collision_proximity)
 
         Collis.addObject(
             'LineCollisionModel',
-                proximity=catheter_collision_proximity,
+            proximity=catheter_collision_proximity,
             group=1)
         Collis.addObject(
             'PointCollisionModel',
-                proximity=catheter_collision_proximity,
+            proximity=catheter_collision_proximity,
             group=1)
 
         # VISU ROS
