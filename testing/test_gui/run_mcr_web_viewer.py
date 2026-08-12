@@ -447,7 +447,18 @@ def main() -> int:
             server.server_close()
         if server_thread is not None:
             server_thread.join(timeout=2.0)
-        env.close()
+        # Initialization can fail before SofaEnv creates ``_sofa_root_node``.
+        # Cleanup must never hide the original initialization traceback.
+        if hasattr(env, "sofa_simulation") and hasattr(env, "_sofa_root_node"):
+            try:
+                env.close()
+            except Exception as close_exc:
+                print(
+                    f"[MCR WEB] Cleanup warning: "
+                    f"{type(close_exc).__name__}: {close_exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
     return 0
 
 
