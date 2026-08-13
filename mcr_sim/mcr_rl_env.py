@@ -2717,7 +2717,7 @@ class MCREnv(SofaEnv):
             )
         if (
             is_artificial_model
-            and str(self.chosen_model).upper().startswith("B")
+            and str(self.chosen_model).upper()[0:1] in ("B", "V")
             and (
                 self.centerline_graph_points is None
                 or self.centerline_graph_edges is None

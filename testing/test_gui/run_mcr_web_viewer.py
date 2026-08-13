@@ -46,11 +46,12 @@ from mcr_sim.training_config import (
     SOFA_TIME_STEP_S,
     TARGET_THRESHOLD_M,
 )
+from mcr_sim.paths import VALID_MESH_DIR
 
 
 ARTIFICIAL_MODELS = [f"B{i:02d}" for i in range(1, 6)] + [
     f"C{i:02d}" for i in range(1, 6)
-]
+] + [f"V{i:02d}" for i in range(1, 6)]
 
 
 def encode_png(rgb: np.ndarray) -> bytes:
@@ -548,6 +549,14 @@ def make_handler(state: ViewerState):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", default="B01", choices=ARTIFICIAL_MODELS)
+    parser.add_argument(
+        "--asset-root",
+        default="",
+        help=(
+            "Optional vessel asset root. V01-V05 default to PROJECT_ROOT/mesh/valid; "
+            "B/C models default to the existing train assets."
+        ),
+    )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--width", type=int, default=1280)
@@ -645,23 +654,30 @@ def main() -> int:
     )
     state.set_playing(args.start_playing)
 
+    asset_root = str(args.asset_root).strip()
+    if not asset_root and str(args.model).upper().startswith("V"):
+        asset_root = str(VALID_MESH_DIR)
+    scene_kwargs = {
+        "force_model": args.model,
+        "radius_observation_scale": RADIUS_OBSERVATION_SCALE_M,
+        "actor_history_steps": ACTOR_HISTORY_STEPS,
+        "debug_rendering": True,
+        "verbose_scene": True,
+        "positioning_camera": True,
+        "vessel_alpha": float(args.vessel_alpha),
+        "randomize_start_target": False,
+        "randomize_initial_orientation": False,
+        "initial_orientation_max_angle_deg": INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+        "soft_randomize_single_vessel": True,
+        "entry_tangent_points": ENTRY_TANGENT_POINTS,
+        "vessel_scale_factor": float(args.vessel_scale_factor),
+    }
+    if asset_root:
+        scene_kwargs["asset_root"] = asset_root
+
     env = MCREnv(
         image_shape=(int(args.height), int(args.width)),
-        create_scene_kwargs={
-            "force_model": args.model,
-            "radius_observation_scale": RADIUS_OBSERVATION_SCALE_M,
-            "actor_history_steps": ACTOR_HISTORY_STEPS,
-            "debug_rendering": True,
-            "verbose_scene": True,
-            "positioning_camera": True,
-            "vessel_alpha": float(args.vessel_alpha),
-            "randomize_start_target": False,
-            "randomize_initial_orientation": False,
-            "initial_orientation_max_angle_deg": INITIAL_ORIENTATION_MAX_ANGLE_DEG,
-            "soft_randomize_single_vessel": True,
-            "entry_tangent_points": ENTRY_TANGENT_POINTS,
-            "vessel_scale_factor": float(args.vessel_scale_factor),
-        },
+        create_scene_kwargs=scene_kwargs,
         observation_type=ObservationType.STATE,
         action_type=ActionType.CONTINUOUS,
         time_step=float(args.time_step),

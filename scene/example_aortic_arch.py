@@ -1008,7 +1008,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     task_name_lower = str(task_id).lower()
     is_artificial_model = (
         len(task_name_lower) == 3
-        and task_name_lower[0] in ("b", "c")
+        and task_name_lower[0] in ("b", "c", "v")
         and task_name_lower[1:].isdigit()
     )
     if is_artificial_model:

@@ -53,6 +53,7 @@ from stable_baselines3 import SAC
 # Import environment definitions: 非 ROS GUI 版本
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, EnvType
 from mcr_sim.paths import PROJECT_ROOT
+from mcr_sim.paths import VALID_MESH_DIR
 from mcr_sim.rl_core.base import RenderMode
 from mcr_sim.training_config import (
     ENTRY_TANGENT_POINTS,
@@ -723,6 +724,12 @@ def main():
     parser.add_argument("--model", type=str, required=True, help="Path to trained SAC model zip.")
     parser.add_argument("--env-type", choices=["aortic", "flat"], default="aortic")
     parser.add_argument("--force-model", type=str, default="", help="Specific model to force, e.g. 0207, V1, 0210, 0021. Leave empty for random.")
+    parser.add_argument(
+        "--asset-root",
+        type=str,
+        default="",
+        help="Optional vessel asset root; use PROJECT_ROOT/mesh/valid for V01-V05.",
+    )
     parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M, help="Success distance threshold in meters; defaults to the training value.")
     parser.add_argument("--sleep", type=float, default=0.0, help="Wait time after each GUI/env step to slow visualization.")
     parser.add_argument("--vessel-alpha", type=float, default=0.35, help="Vessel opacity (0.0~1.0).")
@@ -788,6 +795,11 @@ def main():
         create_scene_kwargs["vessel_collision_proximity"] = float(args.vessel_collision_proximity)
     if args.force_model:
         create_scene_kwargs["force_model"] = args.force_model
+        asset_root = str(args.asset_root).strip()
+        if not asset_root and str(args.force_model).upper().startswith("V"):
+            asset_root = str(VALID_MESH_DIR)
+        if asset_root:
+            create_scene_kwargs["asset_root"] = str(Path(asset_root).expanduser().resolve())
         print(f"Forcing model to: {args.force_model}")
 
     print(

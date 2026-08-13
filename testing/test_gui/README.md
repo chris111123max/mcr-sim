@@ -62,7 +62,9 @@ https://example.trycloudflare.com/?token=TOKEN_PRINTED_BY_THE_VIEWER
 The quick-tunnel hostname and token are temporary secrets. Do not share them.
 Stop both processes with Ctrl+C after inspection.
 
-Available artificial models are B01..B05 and C01..C05. Example:
+Available artificial models are B01..B05, C01..C05, and the held-out
+validation models V01..V05. V01..V05 automatically use `mesh/valid`; B/C
+models continue to use `mesh/train`. Example:
 
 ```bash
 bash testing/test_gui/run_mcr_web_viewer.sh \
