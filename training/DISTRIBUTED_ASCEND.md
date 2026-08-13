@@ -85,14 +85,13 @@ environment step. SAC loss metrics are reduced every 64 train blocks. Each
 rank also writes a `[PERF]` window every 64 vector steps with update time,
 collective time/call count, and remaining rollout/IPC/callback time.
 
-For the throughput-balanced four-NPU default, `--n-envs 64 --batch-size 2048
---gradient-steps 2` means 16 SOFA environments and a 512-transition minibatch
+For the quality-oriented four-NPU default, `--n-envs 64 --batch-size 2048
+--gradient-steps 4` means 16 SOFA environments and a 512-transition minibatch
 on every rank. Gradient averaging makes the effective global minibatch 2048.
-Each rollout collects 64 new transitions and processes `2 x 2048 = 4096` replay
-samples. This is 64 replay samples per new transition: half the update-to-data
-ratio of the previous 32-environment setting, while retaining the same minibatch
-size and optimizer-step cadence. Learning rate, tau, gamma, and entropy settings
-remain unchanged.
+Each rollout collects 64 new transitions and processes `4 x 2048 = 8192` replay
+samples. Compared with the 32-environment, 2048-batch, two-update setting, this
+preserves both replay samples and optimizer updates per newly collected sample.
+Learning rate, tau, gamma, and entropy settings remain unchanged.
 
 ## Launch
 
@@ -105,7 +104,7 @@ The normal launcher inserts `torchrun` automatically:
   --world-size 4 \
   --n-envs 64 \
   --batch-size 2048 \
-  --gradient-steps 2 \
+  --gradient-steps 4 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --target-threshold 0.003 \

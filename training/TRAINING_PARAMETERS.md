@@ -110,7 +110,7 @@ bash training/sh/run_train_sac.sh \
   --world-size 4 \
   --n-envs 64 \
   --batch-size 2048 \
-  --gradient-steps 2 \
+  --gradient-steps 4 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --render headless \
