@@ -75,6 +75,7 @@ class BranchSpec:
     trunk_radius_mm: float
     outlet_radius_mm: float
     angle_range_deg: Tuple[float, float]
+    turnback_mm: float
     difficulty: str
 
 
@@ -88,23 +89,25 @@ CURVED_SPECS: Tuple[CurvedSpec, ...] = (
 
 
 BRANCH_SPECS: Tuple[BranchSpec, ...] = (
-    BranchSpec("B01", 201, 0.80, 1.00, 5.0, 2.0, 5.0, 3.4, (45.0, 65.0), "low"),
-    BranchSpec("B02", 202, 1.00, 1.00, 11.0, 4.0, 5.0, 3.2, (35.0, 80.0), "medium-low"),
-    BranchSpec("B03", 203, 0.90, 1.00, 17.0, 6.0, 5.1, 3.0, (25.0, 55.0), "medium"),
-    BranchSpec("B04", 204, 1.28, 1.00, 22.0, 7.0, 5.2, 2.9, (65.0, 110.0), "medium-high"),
-    BranchSpec("B05", 205, 1.12, 1.00, 31.0, 10.0, 5.2, 2.8, (30.0, 105.0), "high"),
+    BranchSpec("B01", 201, 0.80, 1.00, 5.0, 2.0, 5.0, 3.4, (45.0, 65.0), 0.0, "low"),
+    BranchSpec("B02", 202, 1.00, 1.00, 11.0, 4.0, 5.0, 3.2, (35.0, 80.0), 0.0, "medium-low"),
+    BranchSpec("B03", 203, 0.90, 1.00, 17.0, 6.0, 5.1, 3.0, (25.0, 55.0), 0.0, "medium"),
+    BranchSpec("B04", 204, 1.28, 1.00, 22.0, 7.0, 5.2, 2.9, (65.0, 110.0), 0.0, "medium-high"),
+    BranchSpec("B05", 205, 1.12, 1.00, 31.0, 10.0, 5.2, 2.8, (30.0, 105.0), 0.0, "high"),
 )
 
 # Held-out validation vessels.  Every model combines C-family-like long,
 # three-dimensional bends with B-family-like three-level branching.  These
 # parameters intentionally do not reuse the B01..B05 geometry/seed envelope.
-# V01/V02 are simple, V03/V04 medium, and V05 difficult.
+# All five are deliberately challenging held-out cases; difficulty increases
+# monotonically through path length, 3-D curvature, branch deflection, and
+# reduced outlet radius.
 VALID_BRANCH_SPECS: Tuple[BranchSpec, ...] = (
-    BranchSpec("V01", 301, 0.92, 1.35, 12.0, 8.0, 5.4, 3.8, (42.0, 72.0), "easy"),
-    BranchSpec("V02", 302, 1.03, 1.48, 18.0, 12.0, 5.2, 3.6, (34.0, 84.0), "easy"),
-    BranchSpec("V03", 303, 1.13, 1.62, 28.0, 19.0, 5.0, 3.25, (26.0, 98.0), "medium"),
-    BranchSpec("V04", 304, 1.24, 1.72, 37.0, 26.0, 4.85, 3.05, (40.0, 112.0), "medium"),
-    BranchSpec("V05", 305, 1.34, 1.82, 48.0, 34.0, 4.65, 2.80, (22.0, 126.0), "hard"),
+    BranchSpec("V01", 301, 1.10, 1.65, 22.0, 20.0, 5.00, 3.35, (30.0, 95.0), 10.0, "hard-1"),
+    BranchSpec("V02", 302, 1.25, 1.78, 31.0, 28.0, 4.85, 3.10, (22.0, 110.0), 22.0, "hard-2"),
+    BranchSpec("V03", 303, 1.40, 1.88, 42.0, 38.0, 4.70, 2.90, (18.0, 120.0), 34.0, "very-hard-1"),
+    BranchSpec("V04", 304, 1.55, 1.94, 54.0, 50.0, 4.55, 2.70, (15.0, 132.0), 48.0, "very-hard-2"),
+    BranchSpec("V05", 305, 1.70, 1.98, 68.0, 64.0, 4.40, 2.50, (12.0, 145.0), 58.0, "very-hard-3"),
 )
 
 
@@ -290,6 +293,44 @@ def _bezier_edge(
     samples: int = 15,
 ) -> Tuple[np.ndarray, np.ndarray]:
     d = p1 - p0
+    if float(spec.turnback_mm) > 0.0 and int(edge_index) == 0:
+        # Held-out validation trunk with a genuine direction-reversal / U-turn.
+        # The alternating lateral anchors create two large heading changes,
+        # approaching 180 degrees for V04/V05 while retaining a smooth spline.
+        distance = float(np.linalg.norm(d))
+        forward = _normalize(d, (0.0, 1.0, 0.0))
+        lateral = _normalize(np.cross(forward, np.array([0.0, 0.0, 1.0])), (1.0, 0.0, 0.0))
+        vertical = _normalize(np.cross(forward, lateral), (0.0, 0.0, 1.0))
+        turn = float(spec.turnback_mm)
+        anchors = [
+            p0,
+            p0 + forward * (0.27 * distance) + lateral * turn + vertical * (0.20 * turn),
+            p0 + forward * (0.53 * distance) - lateral * turn - vertical * (0.15 * turn),
+            p0 + forward * (0.78 * distance) + lateral * (0.72 * turn),
+            p1,
+        ]
+        points_out = []
+        for index in range(len(anchors) - 1):
+            a = anchors[index]
+            b = anchors[index + 1]
+            previous = anchors[index - 1] if index > 0 else a
+            following = anchors[index + 2] if index + 2 < len(anchors) else b
+            c1 = a + (b - previous) * 0.18
+            c2 = b - (following - a) * 0.18
+            t_local = np.linspace(0.0, 1.0, max(5, int(samples // 3)), endpoint=index == len(anchors) - 2)
+            omt = 1.0 - t_local
+            segment = (
+                omt[:, None] ** 3 * a
+                + 3.0 * omt[:, None] ** 2 * t_local[:, None] * c1
+                + 3.0 * omt[:, None] * t_local[:, None] ** 2 * c2
+                + t_local[:, None] ** 3 * b
+            )
+            if index > 0:
+                segment = segment[1:]
+            points_out.append(segment)
+        points = np.vstack(points_out)
+        radii = np.linspace(radius0, radius1, len(points), dtype=np.float64)
+        return points, radii
     tangent = _normalize(d, (0.0, 1.0, 0.0))
     ref = np.array([0.0, 0.0, 1.0])
     if abs(float(np.dot(ref, tangent))) > 0.92:
@@ -963,6 +1004,7 @@ def generate_branch_model(spec: BranchSpec, model_dir: Path, spacing_mm: float) 
             "trunk_radius_mm": spec.trunk_radius_mm,
             "outlet_radius_mm": spec.outlet_radius_mm,
             "nominal_angle_range_deg": list(spec.angle_range_deg),
+            "turnback_mm": spec.turnback_mm,
             "collision_surface_spacing_mm": collision_spacing_mm,
             "visual_surface_spacing_mm": visual_spacing_mm,
             "visual_wall_offset_mm": 1.0,
