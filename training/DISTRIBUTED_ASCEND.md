@@ -43,6 +43,16 @@ the optimizer step. PPO never uses the SAC replay buffer.
 - checkpoint, TensorBoard, progress bar, experiment directory, and final model
   writes are rank-0 only.
 
+Every run directory contains three persistent output groups:
+
+- `logs/`: `console.log`, per-rank console logs, the effective
+  `run_config.json`, and train/validation CSV summaries;
+- `tb/`: TensorBoard event files;
+- `models/`: per-epoch, best-validation, and final model checkpoints.
+
+The console capture is performed by the training process itself, so these logs
+remain available when the outer `nohup` output is redirected to `/dev/null`.
+
 For the stable default, `--n-envs 32 --batch-size 512` means eight SOFA environments
 and a 128-transition minibatch on every rank. Increase environment count only
 after measuring SOFA CPU/RAM throughput. Gradient averaging makes the effective

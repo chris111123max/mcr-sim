@@ -32,6 +32,7 @@ from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
 from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
 from mcr_sim.rl_core.experiment import EpochExperimentCallback
+from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
 from mcr_sim.training_config import (
     ACTOR_HISTORY_STEPS,
     ENTRY_TANGENT_POINTS,
@@ -1168,10 +1169,23 @@ def main():
     run_dir = log_root.resolve() / f"{args.exp_name}{forced_tag}_{run_timestamp}"
     model_dir = run_dir / "models"
     tb_dir = run_dir / "tb"
+    log_dir = run_dir / "logs"
     if context.is_main:
         model_dir.mkdir(parents=True, exist_ok=True)
         tb_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
     context.barrier()
+
+    run_log = start_run_log_capture(log_dir, context.rank)
+    if context.is_main:
+        write_run_config(
+            log_dir / "run_config.json",
+            args,
+            algorithm="sac",
+            run_dir=run_dir,
+            model_dir=model_dir,
+            tensorboard_dir=tb_dir,
+        )
 
     print(
         f"[RANK {context.rank}] local_rank={context.local_rank} "
@@ -1218,7 +1232,7 @@ def main():
                 epochs=args.epochs,
                 episodes_per_epoch=args.episodes_per_epoch,
                 model_dir=model_dir,
-                run_dir=run_dir,
+                run_dir=log_dir,
                 validation_interval=VALID_INTERVAL,
                 validation_fn=None if args.skip_validation else run_validation,
                 resume_progress=not args.reset_num_timesteps,

@@ -24,6 +24,7 @@ from mcr_sim.distributed import DistributedPPO, initialize_distributed
 from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
 from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
 from mcr_sim.rl_core.experiment import EpochExperimentCallback
+from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
 from mcr_sim.training_config import (
     FRAME_SKIP,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
@@ -203,11 +204,23 @@ def main():
     if not log_root.is_absolute():
         log_root = PROJECT_ROOT / log_root
     run_dir = log_root.resolve() / f"{args.exp_name}_{timestamp}"
-    model_dir, tb_dir = run_dir / "models", run_dir / "tb"
+    model_dir, tb_dir, log_dir = run_dir / "models", run_dir / "tb", run_dir / "logs"
     if context.is_main:
         model_dir.mkdir(parents=True, exist_ok=True)
         tb_dir.mkdir(parents=True, exist_ok=True)
+        log_dir.mkdir(parents=True, exist_ok=True)
     context.barrier()
+
+    run_log = start_run_log_capture(log_dir, context.rank)
+    if context.is_main:
+        write_run_config(
+            log_dir / "run_config.json",
+            args,
+            algorithm="ppo",
+            run_dir=run_dir,
+            model_dir=model_dir,
+            tensorboard_dir=tb_dir,
+        )
 
     env = None
     try:
@@ -244,7 +257,7 @@ def main():
             epochs=args.epochs,
             episodes_per_epoch=args.episodes_per_epoch,
             model_dir=model_dir,
-            run_dir=run_dir,
+            run_dir=log_dir,
             validation_interval=VALID_INTERVAL,
             validation_fn=None if args.skip_validation else run_validation,
             resume_progress=not args.reset_num_timesteps,
