@@ -92,11 +92,11 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | epoch / episodes per epoch | 50 / 100 | 正式训练预算与保存周期 |
-| 全局环境数 | 4 | 四卡时每卡 1 个 SOFA 环境，先保证稳定再做吞吐测试 |
-| 全局/local batch（四卡） | 512 / 128 | 每卡独立采样，梯度同步后等效全局 512 |
+| 全局环境数 | 32 | 四卡时每卡 8 个 SOFA 环境 |
+| 全局/local batch（四卡） | 1024 / 256 | 每卡独立采样，梯度同步后等效全局 1024 |
 | replay buffer | 每卡 500000 | 每个 rank 的 CPU 回放容量 |
 | learning starts | 每卡 50000 | 先收集较多、多血管经验再更新 |
-| gradient steps | -1 | 更新次数自动匹配本轮收集的 transition 数 |
+| gradient steps | 4 | 每轮执行 4 次同步更新；与 1024 batch 组合后保持旧单卡的 replay 样本利用比例 |
 | gamma / tau / lr | 0.995 / 0.005 / 3e-4 | 更长视野，同时保留标准 SAC 软更新和学习率 |
 
 推荐四卡启动方式：
@@ -107,6 +107,8 @@ bash training/sh/run_train_sac.sh \
   --distributed \
   --world-size 4 \
   --n-envs 32 \
+  --batch-size 1024 \
+  --gradient-steps 4 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --render headless \

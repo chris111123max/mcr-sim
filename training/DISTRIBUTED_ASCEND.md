@@ -18,8 +18,7 @@ and backward on its local NPU. Actor, critic, and automatic entropy gradients
 are averaged before their optimizer steps. Initial actor, critic, target critic,
 and entropy state are broadcast from rank 0. The target critic then stays equal
 because every rank applies the same Polyak update to synchronized critic weights.
-Actor and critic gradients are flattened into module-level HCCL collectives;
-training metrics stay on the NPU until the end of each update block.
+Training metrics stay on the NPU until the end of each update block.
 
 This is intentionally implemented in a project-side `DistributedSAC` subclass.
 Wrapping only `policy` in PyTorch DDP would not cover SB3 SAC's separate critic
@@ -27,13 +26,16 @@ and entropy optimizer paths.
 
 PPO uses a separate project-side `DistributedPPO`. Each rank owns an on-policy
 rollout buffer; policy gradients are averaged before PPO gradient clipping and
-the optimizer step. PPO uses the same flattened-gradient and device-resident
-metric infrastructure as SAC, and never uses the SAC replay buffer.
+the optimizer step. PPO uses the same device-resident metric infrastructure as
+SAC, and never uses the SAC replay buffer.
 
 ## CLI semantics
 
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
+- `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
+  default is 4. `-1` follows SB3's rank-local collected-transition count and is
+  deliberately not multiplied by world size.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
   The formal default is 50 x 100 = 5,000 completed episodes. All ranks participate
   in the episode counter and rank 0 saves one checkpoint per epoch.
@@ -62,10 +64,14 @@ environment step. SAC loss metrics are reduced every 64 train blocks. Each
 rank also writes a `[PERF]` window every 64 vector steps with update time,
 collective time/call count, and remaining rollout/IPC/callback time.
 
-For the stable default, `--n-envs 32 --batch-size 512` means eight SOFA environments
-and a 128-transition minibatch on every rank. Increase environment count only
-after measuring SOFA CPU/RAM throughput. Gradient averaging makes the effective
-global minibatch 512.
+For the balanced four-NPU default, `--n-envs 32 --batch-size 1024
+--gradient-steps 4` means eight SOFA environments and a 256-transition minibatch
+on every rank. Gradient averaging makes the effective global minibatch 1024.
+Each rollout collects 32 new transitions and processes `4 x 1024 = 4096` replay
+samples, retaining the old single-NPU `128 replay samples / new transition`
+ratio while cutting synchronized optimizer steps. A 2048 global batch with only
+two updates is faster in principle, but changes SAC's optimizer and target-update
+cadence more aggressively and is not the quality-first default.
 
 ## Launch
 
@@ -77,7 +83,8 @@ The normal launcher inserts `torchrun` automatically:
   --distributed \
   --world-size 4 \
   --n-envs 32 \
-  --batch-size 512 \
+  --batch-size 1024 \
+  --gradient-steps 4 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --target-threshold 0.003 \

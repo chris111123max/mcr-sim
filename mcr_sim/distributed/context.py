@@ -93,40 +93,22 @@ class DistributedContext:
             dist.broadcast(tensor.data, src=source)
 
     def average_gradients(self, parameters: Iterable[th.nn.Parameter]) -> None:
-        """Average trainable gradients with one collective for the module.
+        """Average trainable gradients in a fixed collective order.
 
-        SAC's actor and critic are small MLPs.  Issuing one HCCL collective for
-        every weight and bias tensor makes communication latency dominate the
-        actual NPU work.  Flattening preserves exactly the same element-wise
-        world-size average while reducing each module from many collectives to
-        one.  The fixed parameter order is shared by every synchronized rank.
+        Do not manually concatenate NPU gradients here.  On the deployed
+        torch_npu/HCCL stack, the extra device-side concatenate and copy-back
+        kernels cost more than the small collectives they replace.  Algorithms
+        that are genuinely wrapped by DDP should use DDP's native buckets.
         """
         if not self.enabled:
             return
-        gradients = []
-        gradient_parameters = []
         for parameter in parameters:
             if not parameter.requires_grad:
                 continue
             if parameter.grad is None:
                 parameter.grad = th.zeros_like(parameter)
-            gradients.append(parameter.grad.reshape(-1))
-            gradient_parameters.append(parameter)
-        if not gradients:
-            return
-
-        flat_gradient = th.cat(gradients)
-        self.all_reduce(flat_gradient)
-        flat_gradient.div_(float(self.world_size))
-
-        offset = 0
-        with th.no_grad():
-            for parameter in gradient_parameters:
-                element_count = parameter.grad.numel()
-                parameter.grad.copy_(
-                    flat_gradient[offset : offset + element_count].view_as(parameter.grad)
-                )
-                offset += element_count
+            self.all_reduce(parameter.grad)
+            parameter.grad.div_(float(self.world_size))
 
     def average_tensor_gradient(self, tensor: Optional[th.Tensor]) -> None:
         if not self.enabled or tensor is None:

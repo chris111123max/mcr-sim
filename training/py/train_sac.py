@@ -718,7 +718,10 @@ def parse_args():
         "--gradient-steps",
         type=int,
         default=SAC_GRADIENT_STEPS,
-        help="SAC gradient updates per rollout; -1 matches updates to collected transitions.",
+        help=(
+            "Synchronized SAC optimizer updates per rollout; -1 uses the "
+            "rank-local number of collected transitions without a world-size multiplier."
+        ),
     )
     parser.add_argument("--tau", type=float, default=SAC_TAU)
     parser.add_argument(
@@ -1055,6 +1058,27 @@ def main():
         args.local_n_envs = total_n_envs
         local_batch_size = global_batch_size
         local_total_timesteps = int(args.timesteps)
+    if int(args.gradient_steps) == 0 or int(args.gradient_steps) < -1:
+        raise ValueError("--gradient-steps must be -1 or a positive integer.")
+
+    # Stable-Baselines3 resolves -1 to the transitions collected by the local
+    # VecEnv.  A synchronized update consumes one minibatch from every rank, so
+    # its effective replay batch is the CLI/global batch size.  Persist these
+    # derived values to make the actual optimizer workload unambiguous.
+    effective_gradient_steps = (
+        int(args.local_n_envs) * int(args.train_freq)
+        if int(args.gradient_steps) < 0
+        else int(args.gradient_steps)
+    )
+    new_global_transitions_per_rollout = total_n_envs * int(args.train_freq)
+    args.effective_gradient_steps_per_rollout = effective_gradient_steps
+    args.global_replay_samples_per_rollout = (
+        effective_gradient_steps * global_batch_size
+    )
+    args.replay_samples_per_new_transition = (
+        float(args.global_replay_samples_per_rollout)
+        / float(new_global_transitions_per_rollout)
+    )
     args.rank_seed = int(args.seed) + int(context.rank) * int(args.local_n_envs)
 
     valid_dir = Path(args.valid_dir).expanduser()
@@ -1321,6 +1345,9 @@ def main():
             print(
                 f"[MCR TRAIN] SAC lr={args.learning_rate:g} "
                 f"batch={global_batch_size}/{local_batch_size} "
+                f"updates_per_rollout={effective_gradient_steps} "
+                f"replay_samples_per_new_transition="
+                f"{args.replay_samples_per_new_transition:g} "
                 f"buffer_per_rank={args.buffer_size} ent_coef={args.ent_coef}"
             )
             print(
