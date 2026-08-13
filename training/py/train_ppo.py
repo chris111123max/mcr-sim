@@ -20,7 +20,12 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.utils import get_schedule_fn
 
-from mcr_sim.distributed import DistributedPPO, initialize_distributed
+from mcr_sim.distributed import (
+    DistributedPPO,
+    configure_npu_execution,
+    convert_to_npu_fused_adam,
+    initialize_distributed,
+)
 from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
 from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
 from mcr_sim.rl_core.experiment import EpochExperimentCallback
@@ -73,6 +78,21 @@ def parse_args():
     parser.add_argument("--episodes-per-epoch", type=int, default=PPO_EPISODES_PER_EPOCH)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
+    fused_adam = parser.add_mutually_exclusive_group()
+    fused_adam.add_argument(
+        "--npu-fused-adam", dest="npu_fused_adam", action="store_true"
+    )
+    fused_adam.add_argument(
+        "--no-npu-fused-adam", dest="npu_fused_adam", action="store_false"
+    )
+    npu_execution = parser.add_mutually_exclusive_group()
+    npu_execution.add_argument(
+        "--npu-fast-execution", dest="npu_fast_execution", action="store_true"
+    )
+    npu_execution.add_argument(
+        "--no-npu-fast-execution", dest="npu_fast_execution", action="store_false"
+    )
+    parser.set_defaults(npu_fused_adam=True, npu_fast_execution=True)
     parser.add_argument("--distributed", action="store_true")
     parser.add_argument("--world-size", type=int, default=4)
     parser.add_argument("--local-rank", "--local_rank", dest="local_rank", type=int, default=0)
@@ -160,6 +180,10 @@ def main():
         requested_world_size=args.world_size,
         cli_local_rank=args.local_rank,
         requested_backend=args.dist_backend,
+    )
+    args.npu_execution = configure_npu_execution(
+        context.device.accelerator,
+        enabled=bool(args.npu_fast_execution),
     )
     args.distributed_rank = context.rank
     args.resolved_device = context.device.resolved
@@ -343,6 +367,35 @@ def main():
                 kwargs["distributed_context"] = context
             model = algorithm_class(**kwargs)
             reset_num_timesteps = True
+
+        fused_status = "not_requested"
+        if args.npu_fused_adam and context.device.accelerator == "npu":
+            original_optimizer = model.policy.optimizer
+            fused_optimizer, fused_status = convert_to_npu_fused_adam(
+                original_optimizer
+            )
+            local_fused = fused_status in ("enabled", "already_enabled")
+            globally_fused = context.average_metrics([float(local_fused)])[0] == 1.0
+            if globally_fused:
+                model.policy.optimizer = fused_optimizer
+            else:
+                model.policy.optimizer = original_optimizer
+                fused_status = f"{fused_status};global_fallback"
+        args.npu_fused_adam_status = fused_status
+        args.npu_fused_adam_enabled = fused_status in ("enabled", "already_enabled")
+        if context.is_main:
+            write_run_config(
+                log_dir / "run_config.json",
+                args,
+                algorithm="ppo",
+                run_dir=run_dir,
+                model_dir=model_dir,
+                tensorboard_dir=tb_dir,
+            )
+            print(
+                f"[MCR NPU][PPO] execution={args.npu_execution} "
+                f"fused_adam={args.npu_fused_adam_status}"
+            )
         model.distributed_world_size_at_save = context.world_size
         if context.enabled:
             model.set_distributed_context(context)

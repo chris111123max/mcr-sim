@@ -12,6 +12,7 @@ from stable_baselines3 import SAC
 from stable_baselines3.common.utils import polyak_update
 
 from .context import DistributedContext
+from .npu_performance import zero_optimizer_grad
 
 
 class DistributedSAC(SAC):
@@ -94,7 +95,7 @@ class DistributedSAC(SAC):
             ent_coefs.append(ent_coef.detach())
 
             if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
-                self.ent_coef_optimizer.zero_grad()
+                zero_optimizer_grad(self.ent_coef_optimizer)
                 ent_coef_loss.backward()
                 context.average_tensor_gradient(self.log_ent_coef)
                 self.ent_coef_optimizer.step()
@@ -116,22 +117,37 @@ class DistributedSAC(SAC):
             )
             critic_losses.append(critic_loss.detach())
 
-            self.critic.optimizer.zero_grad()
+            zero_optimizer_grad(self.critic.optimizer)
             critic_loss.backward()
             context.average_gradients(self.critic.parameters())
             self.critic.optimizer.step()
 
-            q_values_pi = th.cat(
-                self.critic(replay_data.observations, actions_pi), dim=1
-            )
-            min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
-            actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
-            actor_losses.append(actor_loss.detach())
+            # The actor needs dQ/da, but never updates critic parameters in
+            # this phase.  Temporarily freezing them preserves the exact actor
+            # gradient while avoiding critic parameter-gradient computation
+            # and storage that the next critic zero_grad would discard.
+            critic_grad_states = [
+                parameter.requires_grad for parameter in self.critic.parameters()
+            ]
+            for parameter in self.critic.parameters():
+                parameter.requires_grad_(False)
+            try:
+                q_values_pi = th.cat(
+                    self.critic(replay_data.observations, actions_pi), dim=1
+                )
+                min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
+                actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
+                actor_losses.append(actor_loss.detach())
 
-            self.actor.optimizer.zero_grad()
-            actor_loss.backward()
-            context.average_gradients(self.actor.parameters())
-            self.actor.optimizer.step()
+                zero_optimizer_grad(self.actor.optimizer)
+                actor_loss.backward()
+                context.average_gradients(self.actor.parameters())
+                self.actor.optimizer.step()
+            finally:
+                for parameter, requires_grad in zip(
+                    self.critic.parameters(), critic_grad_states
+                ):
+                    parameter.requires_grad_(requires_grad)
 
             if gradient_step % self.target_update_interval == 0:
                 polyak_update(self.critic.parameters(), self.critic_target.parameters(), self.tau)

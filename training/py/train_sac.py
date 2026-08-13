@@ -27,7 +27,12 @@ from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
-from mcr_sim.distributed import DistributedSAC, initialize_distributed
+from mcr_sim.distributed import (
+    DistributedSAC,
+    configure_npu_execution,
+    convert_to_npu_fused_adam,
+    initialize_distributed,
+)
 from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
 from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
@@ -664,6 +669,31 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
+    fused_adam = parser.add_mutually_exclusive_group()
+    fused_adam.add_argument(
+        "--npu-fused-adam",
+        dest="npu_fused_adam",
+        action="store_true",
+        help="Use torch_npu.optim.NpuFusedAdam when the installed stack supports it.",
+    )
+    fused_adam.add_argument(
+        "--no-npu-fused-adam",
+        dest="npu_fused_adam",
+        action="store_false",
+    )
+    npu_execution = parser.add_mutually_exclusive_group()
+    npu_execution.add_argument(
+        "--npu-fast-execution",
+        dest="npu_fast_execution",
+        action="store_true",
+        help="Enable compatible precompiled eager and native Linear NPU options.",
+    )
+    npu_execution.add_argument(
+        "--no-npu-fast-execution",
+        dest="npu_fast_execution",
+        action="store_false",
+    )
+    parser.set_defaults(npu_fused_adam=True, npu_fast_execution=True)
     parser.add_argument(
         "--distributed",
         action="store_true",
@@ -1036,6 +1066,10 @@ def main():
         cli_local_rank=int(args.local_rank),
         requested_backend=args.dist_backend,
     )
+    args.npu_execution = configure_npu_execution(
+        context.device.accelerator,
+        enabled=bool(args.npu_fast_execution),
+    )
 
     args.distributed_rank = int(context.rank)
     args.resolved_device = context.device.resolved
@@ -1318,6 +1352,48 @@ def main():
                     f"global_batch={global_batch_size}, local_batch={local_batch_size}, "
                     f"buffer_per_rank={args.buffer_size}"
                 )
+
+        fused_status = {"actor": "not_requested", "critic": "not_requested"}
+        fused_adam_enabled = False
+        if args.npu_fused_adam and context.device.accelerator == "npu":
+            original_actor_optimizer = model.actor.optimizer
+            original_critic_optimizer = model.critic.optimizer
+            fused_actor_optimizer, fused_status["actor"] = convert_to_npu_fused_adam(
+                original_actor_optimizer
+            )
+            fused_critic_optimizer, fused_status["critic"] = convert_to_npu_fused_adam(
+                original_critic_optimizer
+            )
+            local_fused = all(
+                status in ("enabled", "already_enabled")
+                for status in fused_status.values()
+            )
+            globally_fused = context.average_metrics([float(local_fused)])[0] == 1.0
+            if globally_fused:
+                model.actor.optimizer = fused_actor_optimizer
+                model.critic.optimizer = fused_critic_optimizer
+                fused_adam_enabled = True
+            else:
+                # Every rank must use the same optimizer implementation.
+                model.actor.optimizer = original_actor_optimizer
+                model.critic.optimizer = original_critic_optimizer
+                fused_status["global_fallback"] = "one_or_more_ranks_unavailable"
+        args.npu_fused_adam_status = fused_status
+        args.npu_fused_adam_enabled = fused_adam_enabled
+
+        if context.is_main:
+            write_run_config(
+                log_dir / "run_config.json",
+                args,
+                algorithm="sac",
+                run_dir=run_dir,
+                model_dir=model_dir,
+                tensorboard_dir=tb_dir,
+            )
+            print(
+                f"[MCR NPU] execution={args.npu_execution} "
+                f"fused_adam={args.npu_fused_adam_status}"
+            )
 
         if context.enabled:
             model.set_distributed_context(context)

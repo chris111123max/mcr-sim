@@ -12,6 +12,7 @@ from stable_baselines3 import PPO
 from stable_baselines3.common.utils import explained_variance
 
 from .context import DistributedContext
+from .npu_performance import zero_optimizer_grad
 
 
 class DistributedPPO(PPO):
@@ -126,7 +127,7 @@ class DistributedPPO(PPO):
                             )
                         break
 
-                self.policy.optimizer.zero_grad()
+                zero_optimizer_grad(self.policy.optimizer)
                 loss.backward()
                 context.average_gradients(self.policy.parameters())
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)

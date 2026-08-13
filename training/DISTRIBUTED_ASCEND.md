@@ -19,6 +19,11 @@ are averaged before their optimizer steps. Initial actor, critic, target critic,
 and entropy state are broadcast from rank 0. The target critic then stays equal
 because every rank applies the same Polyak update to synchronized critic weights.
 Training metrics stay on the NPU until the end of each update block.
+During the SAC actor phase, critic parameters are temporarily frozen: gradients
+still flow through Q to the action and actor, but unused critic parameter
+gradients are not constructed. Standard optimizers clear gradients with
+`set_to_none` to avoid redundant device writes; fused optimizers use their
+required compatible clearing path. This handling is shared by PPO.
 
 This is intentionally implemented in a project-side `DistributedSAC` subclass.
 Wrapping only `policy` in PyTorch DDP would not cover SB3 SAC's separate critic
@@ -36,6 +41,13 @@ SAC, and never uses the SAC replay buffer.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
   default is 4. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
+- `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
+  Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
+  older installations. A disposable optimizer step is tested first; all ranks
+  retain standard Adam if any rank cannot enable it.
+- `--npu-fast-execution` (default): request precompiled eager operators and the
+  native ND matrix format through APIs provided by the installed torch_npu.
+  Missing version-specific APIs are recorded and safely skipped.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
   The formal default is 50 x 100 = 5,000 completed episodes. All ranks participate
   in the episode counter and rank 0 saves one checkpoint per epoch.
@@ -57,6 +69,9 @@ Every run directory contains three persistent output groups:
 
 The console capture is performed by the training process itself, so these logs
 remain available when the outer `nohup` output is redirected to `/dev/null`.
+`run_config.json` and the `[MCR NPU]` startup line record the requested and
+actually enabled optimizer/execution paths. Use `--no-npu-fused-adam` or
+`--no-npu-fast-execution` to obtain an explicit standard-path comparison.
 
 Episode outcomes and terminal statistics are accumulated locally and packed
 into one collective every 256 vector steps instead of synchronizing every
