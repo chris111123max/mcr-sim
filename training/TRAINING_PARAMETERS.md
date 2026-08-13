@@ -108,7 +108,7 @@ bash training/sh/run_train_sac.sh \
   --device npu \
   --distributed \
   --world-size 4 \
-  --n-envs 32 \
+  --n-envs 64 \
   --batch-size 2048 \
   --gradient-steps 2 \
   --epochs 50 \
