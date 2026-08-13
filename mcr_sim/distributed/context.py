@@ -175,6 +175,36 @@ class DistributedContext:
         dist.broadcast(payload, src=source)
         return bytes(payload.detach().cpu().tolist()).decode("utf-8")
 
+    def all_gather_text(self, value: str):
+        """Gather variable-length UTF-8 text using accelerator tensors.
+
+        HCCL does not provide CPU object collectives on every deployed PyTorch
+        version.  Length-prefixed uint8 tensors keep validation result exchange
+        backend-independent and avoid relying on ``all_gather_object``.
+        """
+
+        if not self.enabled:
+            return [str(value)]
+        encoded = str(value).encode("utf-8")
+        local_length = th.tensor(
+            [len(encoded)], dtype=th.int32, device=self.device.resolved
+        )
+        gathered_lengths = [th.zeros_like(local_length) for _ in range(self.world_size)]
+        self.all_gather(gathered_lengths, local_length)
+        lengths = [int(item.detach().cpu().item()) for item in gathered_lengths]
+        payload_size = max(1, max(lengths))
+        payload = th.zeros(payload_size, dtype=th.uint8, device=self.device.resolved)
+        if encoded:
+            payload[: len(encoded)] = th.tensor(
+                list(encoded), dtype=th.uint8, device=self.device.resolved
+            )
+        gathered_payloads = [th.zeros_like(payload) for _ in range(self.world_size)]
+        self.all_gather(gathered_payloads, payload)
+        return [
+            bytes(item[:length].detach().cpu().tolist()).decode("utf-8")
+            for item, length in zip(gathered_payloads, lengths)
+        ]
+
     def close(self) -> None:
         if self.enabled and dist.is_available() and dist.is_initialized():
             dist.destroy_process_group()

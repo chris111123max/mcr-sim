@@ -86,17 +86,19 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 50 epoch，即 5000 个回合。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
-每 2 个 epoch 由 rank 0 在 `mesh/valid` 的 5 条 unseen 血管上各运行 2 个确定性回合，
-并只按 `valid_success_rate` 的严格提升更新 `best_valid.zip`。
+每 2 个 epoch 在 `mesh/valid` 的 5 条 unseen 血管上各运行 2 个确定性回合。四卡将
+10 个固定种子验证任务按 3/3/2/2 并行执行，再由 rank 0 汇总；验证覆盖、CSV 与
+`best_valid.zip` 的严格提升规则不变。SAC 在 NPU 上默认使用每 rank accelerator-resident
+replay buffer，避免每次更新重复搬运大批量 observation；不支持时四个 rank 一致回退。
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
 | epoch / episodes per epoch | 50 / 100 | 正式训练预算与保存周期 |
 | 全局环境数 | 32 | 四卡时每卡 8 个 SOFA 环境 |
-| 全局/local batch（四卡） | 1024 / 256 | 每卡独立采样，梯度同步后等效全局 1024 |
-| replay buffer | 每卡 500000 | 每个 rank 的 CPU 回放容量 |
+| 全局/local batch（四卡） | 2048 / 512 | 每卡独立采样，梯度同步后等效全局 2048 |
+| replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
 | learning starts | 每卡 50000 | 先收集较多、多血管经验再更新 |
-| gradient steps | 4 | 每轮执行 4 次同步更新；与 1024 batch 组合后保持旧单卡的 replay 样本利用比例 |
+| gradient steps | 2 | 每轮执行 2 次同步更新；与 2048 batch 组合后保持旧单卡的 replay 样本利用比例 |
 | gamma / tau / lr | 0.995 / 0.005 / 3e-4 | 更长视野，同时保留标准 SAC 软更新和学习率 |
 
 推荐四卡启动方式：
@@ -107,8 +109,8 @@ bash training/sh/run_train_sac.sh \
   --distributed \
   --world-size 4 \
   --n-envs 32 \
-  --batch-size 1024 \
-  --gradient-steps 4 \
+  --batch-size 2048 \
+  --gradient-steps 2 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --render headless \

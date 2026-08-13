@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from contextlib import contextmanager
+import json
 from pathlib import Path
 from typing import Callable, List, Sequence
 
@@ -102,6 +103,8 @@ def evaluate_policy(
     episodes_per_vessel: int = 2,
     max_episode_steps: int = 4096,
     base_seed: int = 100_000,
+    task_rank: int = 0,
+    task_world_size: int = 1,
 ) -> ValidationResult:
     """Evaluate every vessel with fixed seeds and no training side effects.
 
@@ -111,10 +114,23 @@ def evaluate_policy(
 
     results: List[ValidationEpisodeResult] = []
     with _preserve_rng_state(), th.no_grad():
+        task_rank = int(task_rank)
+        task_world_size = max(1, int(task_world_size))
         for vessel_index, vessel_id in enumerate(vessel_ids):
+            local_episode_indices = [
+                episode_index
+                for episode_index in range(int(episodes_per_vessel))
+                if (
+                    vessel_index * int(episodes_per_vessel) + episode_index
+                )
+                % task_world_size
+                == task_rank
+            ]
+            if not local_episode_indices:
+                continue
             env = env_factory(str(vessel_id))
             try:
-                for episode_index in range(int(episodes_per_vessel)):
+                for episode_index in local_episode_indices:
                     seed = int(base_seed) + vessel_index * int(episodes_per_vessel) + episode_index
                     try:
                         reset_result = env.reset(seed=seed)
@@ -168,9 +184,47 @@ def evaluate_policy(
     success_count = sum(int(item.success) for item in results)
     episode_count = len(results)
     return ValidationResult(
-        valid_vessels=len(vessel_ids),
+        valid_vessels=len({item.vessel_id for item in results}),
         valid_episodes=episode_count,
         valid_success_count=success_count,
         valid_success_rate=float(success_count / episode_count) if episode_count else 0.0,
         episodes=tuple(results),
+    )
+
+
+def validation_result_to_json(result: ValidationResult) -> str:
+    return json.dumps(
+        [
+            {
+                "vessel_id": item.vessel_id,
+                "episode_index": item.episode_index,
+                "seed": item.seed,
+                "success": item.success,
+                "terminal_reason": item.terminal_reason,
+                "steps": item.steps,
+                "reward": item.reward,
+            }
+            for item in result.episodes
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def merge_validation_json(payloads: Sequence[str]) -> ValidationResult:
+    """Merge rank-local episode payloads into the original global result."""
+
+    episodes = []
+    for payload in payloads:
+        for item in json.loads(payload or "[]"):
+            episodes.append(ValidationEpisodeResult(**item))
+    episodes.sort(key=lambda item: (item.vessel_id, item.episode_index))
+    success_count = sum(int(item.success) for item in episodes)
+    episode_count = len(episodes)
+    return ValidationResult(
+        valid_vessels=len({item.vessel_id for item in episodes}),
+        valid_episodes=episode_count,
+        valid_success_count=success_count,
+        valid_success_rate=float(success_count / episode_count) if episode_count else 0.0,
+        episodes=tuple(episodes),
     )

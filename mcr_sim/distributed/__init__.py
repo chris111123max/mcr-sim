@@ -7,6 +7,7 @@ from .npu_performance import (
     convert_to_npu_fused_adam,
     zero_optimizer_grad,
 )
+from .replay_buffer import AcceleratorReplayBuffer
 from .sac import DistributedSAC
 from .ppo import DistributedPPO
 
@@ -15,6 +16,7 @@ __all__ = [
     "DistributedContext",
     "DistributedSAC",
     "DistributedPPO",
+    "AcceleratorReplayBuffer",
     "configure_npu_execution",
     "convert_to_npu_fused_adam",
     "initialize_distributed",

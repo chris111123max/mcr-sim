@@ -270,6 +270,8 @@ def main():
                     episodes_per_vessel=VALID_EPISODES_PER_VESSEL,
                     max_episode_steps=args.max_episode_steps,
                     base_seed=int(args.seed) + 100_000,
+                    task_rank=context.rank,
+                    task_world_size=context.world_size,
                 )
             finally:
                 current_model.policy.set_training_mode(was_training)

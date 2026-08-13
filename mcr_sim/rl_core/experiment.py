@@ -10,7 +10,11 @@ import numpy as np
 import torch as th
 from stable_baselines3.common.callbacks import BaseCallback
 
-from .evaluation import ValidationResult
+from .evaluation import (
+    ValidationResult,
+    merge_validation_json,
+    validation_result_to_json,
+)
 
 
 def _append_csv(path: Path, fieldnames, row) -> None:
@@ -24,7 +28,7 @@ def _append_csv(path: Path, fieldnames, row) -> None:
 
 
 class EpochExperimentCallback(BaseCallback):
-    """Count global episodes and run rank-0 validation at epoch boundaries."""
+    """Count global episodes and run parallel validation at epoch boundaries."""
 
     def __init__(
         self,
@@ -142,9 +146,34 @@ class EpochExperimentCallback(BaseCallback):
         if self.validation_fn is None or epoch % self.validation_interval != 0:
             return
         error_text = ""
+        local_result = None
+        local_payload = ""
+        try:
+            local_result = self.validation_fn(self.model, epoch)
+            if local_result is None:
+                raise RuntimeError("validation_fn returned no result")
+            local_payload = validation_result_to_json(local_result)
+            local_vessels = sorted(
+                {item.vessel_id for item in local_result.episodes}
+            )
+            print(
+                f"[VALID][Rank {self.context.rank}][Epoch {epoch:03d}] "
+                f"local_episodes={local_result.valid_episodes} "
+                f"vessels={','.join(local_vessels)}"
+            )
+        except BaseException as exc:
+            error_text = f"rank={self.context.rank} {type(exc).__name__}: {exc}"
+
+        error_texts = self.context.all_gather_text(error_text)
+        failures = [text for text in error_texts if text]
+        if failures:
+            self.context.barrier()
+            raise RuntimeError("Parallel validation failed: " + " | ".join(failures))
+
+        payloads = self.context.all_gather_text(local_payload)
         if self.context.is_main:
             try:
-                result = self.validation_fn(self.model, epoch)
+                result = merge_validation_json(payloads)
                 valid_success_rate = float(result.valid_success_rate)
                 is_new_best = valid_success_rate > self.best_valid_success_rate
                 if is_new_best:
@@ -214,7 +243,7 @@ class EpochExperimentCallback(BaseCallback):
         error_text = self.context.broadcast_text(error_text)
         self.context.barrier()
         if error_text:
-            raise RuntimeError(f"Validation failed on rank 0: {error_text}")
+            raise RuntimeError(f"Validation result handling failed on rank 0: {error_text}")
 
     def _finish_epoch(self, epoch: int) -> None:
         train_success_rate = float(self._epoch_success_count / self.episodes_per_epoch)

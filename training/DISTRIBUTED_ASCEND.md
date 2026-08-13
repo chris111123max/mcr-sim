@@ -12,8 +12,10 @@ device to each rank through `LOCAL_RANK`.
 
 ## Architecture
 
-For SAC, each rank owns an equal share of CPU SOFA environments and its own SB3 replay
-buffer in CPU RAM. It samples a different local minibatch and runs SAC forward
+For SAC, each rank owns an equal share of CPU SOFA environments and its own replay
+buffer. On NPU the default buffer storage and minibatch gather remain on the
+local accelerator; CPU/CUDA or an explicit fallback uses the standard SB3 CPU
+buffer. Each rank samples a different local minibatch and runs SAC forward
 and backward on its local NPU. Actor, critic, and automatic entropy gradients
 are averaged before their optimizer steps. Initial actor, critic, target critic,
 and entropy state are broadcast from rank 0. The target critic then stays equal
@@ -39,7 +41,7 @@ SAC, and never uses the SAC replay buffer.
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
-  default is 4. `-1` follows SB3's rank-local collected-transition count and is
+  default is 2. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
   Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
@@ -55,7 +57,11 @@ SAC, and never uses the SAC replay buffer.
   `--timesteps` is supplied.
 - `--timesteps`: optional compatibility override for the global transition
   budget (SB3 may overshoot by one global vectorized step).
-- `--buffer-size`: capacity of each rank-local CPU replay buffer.
+- `--buffer-size`: capacity of each rank-local replay buffer.
+- `--npu-replay-buffer` (default on NPU): store each rank's replay tensors on
+  its local NPU and gather sampled minibatches without repeated bulk CPU-to-NPU
+  copies. Startup probes required indexing support; every rank collectively
+  falls back to standard SB3 replay if any rank fails.
 - `--learning-starts`: rank-local warm-up transitions.
 - checkpoint, TensorBoard, progress bar, experiment directory, and final model
   writes are rank-0 only.
@@ -79,14 +85,15 @@ environment step. SAC loss metrics are reduced every 64 train blocks. Each
 rank also writes a `[PERF]` window every 64 vector steps with update time,
 collective time/call count, and remaining rollout/IPC/callback time.
 
-For the balanced four-NPU default, `--n-envs 32 --batch-size 1024
---gradient-steps 4` means eight SOFA environments and a 256-transition minibatch
-on every rank. Gradient averaging makes the effective global minibatch 1024.
-Each rollout collects 32 new transitions and processes `4 x 1024 = 4096` replay
+For the throughput-balanced four-NPU default, `--n-envs 32 --batch-size 2048
+--gradient-steps 2` means eight SOFA environments and a 512-transition minibatch
+on every rank. Gradient averaging makes the effective global minibatch 2048.
+Each rollout collects 32 new transitions and processes `2 x 2048 = 4096` replay
 samples, retaining the old single-NPU `128 replay samples / new transition`
-ratio while cutting synchronized optimizer steps. A 2048 global batch with only
-two updates is faster in principle, but changes SAC's optimizer and target-update
-cadence more aggressively and is not the quality-first default.
+ratio while halving synchronized optimizer steps relative to the 1024/4 setting.
+This slightly changes optimizer and target-update cadence in exchange for better
+utilization of each Ascend 910; learning rate, tau, gamma, and entropy settings
+remain unchanged.
 
 ## Launch
 
@@ -98,8 +105,8 @@ The normal launcher inserts `torchrun` automatically:
   --distributed \
   --world-size 4 \
   --n-envs 32 \
-  --batch-size 1024 \
-  --gradient-steps 4 \
+  --batch-size 2048 \
+  --gradient-steps 2 \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --target-threshold 0.003 \
@@ -113,8 +120,10 @@ Single-device CPU, CUDA, and NPU commands remain supported by omitting
 `--distributed`. `--device auto` prefers CUDA, then Ascend NPU, then CPU.
 
 The equivalent PPO launcher is `training/sh/run_train_ppo.sh`. Both launchers
-validate five unseen vessels twice each on rank 0 after epochs 2, 4, ..., 50.
-Ranks 1-3 wait at barriers. `best_valid.zip` is replaced only when
+validate all five unseen vessels twice each after epochs 2, 4, ..., 50. The ten
+fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then gathered
+through the active distributed backend. Rank 0 alone writes the unchanged CSV
+summaries and checkpoints. `best_valid.zip` is replaced only when
 `valid_success_rate` strictly increases.
 
 ## Checkpoint and resume

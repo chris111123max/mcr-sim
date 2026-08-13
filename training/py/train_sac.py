@@ -1,5 +1,6 @@
 import argparse
 import copy
+import gc
 import math
 import os
 import random
@@ -22,12 +23,14 @@ import numpy as np
 import torch as th
 from stable_baselines3 import SAC
 from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback, CallbackList
+from stable_baselines3.common.buffers import ReplayBuffer
 from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
 from mcr_sim.distributed import (
+    AcceleratorReplayBuffer,
     DistributedSAC,
     configure_npu_execution,
     convert_to_npu_fused_adam,
@@ -624,6 +627,42 @@ def _adapt_resume_timestep_counter(
     model.distributed_world_size_at_save = current_world_size
 
 
+def _construct_with_replay_fallback(builder, context, request_accelerator_replay):
+    """Collectively fall back when any rank cannot construct NPU replay."""
+
+    replay_class = AcceleratorReplayBuffer if request_accelerator_replay else ReplayBuffer
+    model = None
+    local_error = ""
+    try:
+        model = builder(replay_class)
+    except Exception as exc:
+        local_error = f"rank={context.rank} {type(exc).__name__}: {exc}"
+    failures = [text for text in context.all_gather_text(local_error) if text]
+    if not failures:
+        return model, bool(request_accelerator_replay), []
+    if not request_accelerator_replay:
+        raise RuntimeError("SAC model construction failed: " + " | ".join(failures))
+
+    model = None
+    gc.collect()
+    npu_api = getattr(th, "npu", None)
+    if npu_api is not None and callable(getattr(npu_api, "empty_cache", None)):
+        npu_api.empty_cache()
+
+    retry_error = ""
+    try:
+        model = builder(ReplayBuffer)
+    except Exception as exc:
+        retry_error = f"rank={context.rank} {type(exc).__name__}: {exc}"
+    retry_failures = [text for text in context.all_gather_text(retry_error) if text]
+    if retry_failures:
+        raise RuntimeError(
+            "SAC model construction failed after replay fallback: "
+            + " | ".join(retry_failures)
+        )
+    return model, False, failures
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Train MCR agent with SAC")
     parser.add_argument("--env-type", choices=["aortic", "flat"], default="aortic")
@@ -669,6 +708,18 @@ def parse_args():
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
+    npu_replay = parser.add_mutually_exclusive_group()
+    npu_replay.add_argument(
+        "--npu-replay-buffer",
+        dest="npu_replay_buffer",
+        action="store_true",
+        help="Keep SAC replay storage and minibatch gathering on the NPU.",
+    )
+    npu_replay.add_argument(
+        "--no-npu-replay-buffer",
+        dest="npu_replay_buffer",
+        action="store_false",
+    )
     fused_adam = parser.add_mutually_exclusive_group()
     fused_adam.add_argument(
         "--npu-fused-adam",
@@ -693,7 +744,11 @@ def parse_args():
         dest="npu_fast_execution",
         action="store_false",
     )
-    parser.set_defaults(npu_fused_adam=True, npu_fast_execution=True)
+    parser.set_defaults(
+        npu_replay_buffer=True,
+        npu_fused_adam=True,
+        npu_fast_execution=True,
+    )
     parser.add_argument(
         "--distributed",
         action="store_true",
@@ -1070,6 +1125,9 @@ def main():
         context.device.accelerator,
         enabled=bool(args.npu_fast_execution),
     )
+    args.npu_replay_buffer_enabled = bool(
+        args.npu_replay_buffer and context.device.accelerator == "npu"
+    )
 
     args.distributed_rank = int(context.rank)
     args.resolved_device = context.device.resolved
@@ -1208,6 +1266,8 @@ def main():
                         episodes_per_vessel=VALID_EPISODES_PER_VESSEL,
                         max_episode_steps=args.max_episode_steps,
                         base_seed=int(args.seed) + 100_000,
+                        task_rank=context.rank,
+                        task_world_size=context.world_size,
                     )
                 finally:
                     current_model.policy.set_training_mode(was_training)
@@ -1278,21 +1338,31 @@ def main():
             if not resume_path.is_file():
                 raise FileNotFoundError(f"Resume model not found: {resume_path}")
 
-            custom_objects = {
-                "learning_rate": args.learning_rate,
-                "buffer_size": args.buffer_size,
-                "batch_size": local_batch_size,
-                "learning_starts": args.learning_starts,
-                "train_freq": args.train_freq,
-                "gradient_steps": args.gradient_steps,
-                "tau": args.tau,
-                "gamma": args.gamma,
-            }
-            model = algorithm_class.load(
-                str(resume_path),
-                env=env,
-                device=args.resolved_device,
-                custom_objects=custom_objects,
+            def build_resumed_model(replay_buffer_class):
+                custom_objects = {
+                    "learning_rate": args.learning_rate,
+                    "buffer_size": args.buffer_size,
+                    "batch_size": local_batch_size,
+                    "learning_starts": args.learning_starts,
+                    "train_freq": args.train_freq,
+                    "gradient_steps": args.gradient_steps,
+                    "tau": args.tau,
+                    "gamma": args.gamma,
+                    "replay_buffer_class": replay_buffer_class,
+                }
+                return algorithm_class.load(
+                    str(resume_path),
+                    env=env,
+                    device=args.resolved_device,
+                    custom_objects=custom_objects,
+                )
+
+            model, args.npu_replay_buffer_enabled, replay_fallbacks = (
+                _construct_with_replay_fallback(
+                    build_resumed_model,
+                    context,
+                    args.npu_replay_buffer_enabled,
+                )
             )
             model.tensorboard_log = tensorboard_log
             model.verbose = sb3_verbose
@@ -1323,26 +1393,36 @@ def main():
                     f"buffer_per_rank={model.buffer_size}"
                 )
         else:
-            model_kwargs = dict(
-                policy="MlpPolicy",
-                env=env,
-                learning_rate=args.learning_rate,
-                buffer_size=args.buffer_size,
-                learning_starts=args.learning_starts,
-                batch_size=local_batch_size,
-                tau=args.tau,
-                gamma=args.gamma,
-                train_freq=args.train_freq,
-                gradient_steps=args.gradient_steps,
-                ent_coef=args.ent_coef,
-                tensorboard_log=tensorboard_log,
-                seed=args.rank_seed,
-                device=args.resolved_device,
-                verbose=sb3_verbose,
+            def build_new_model(replay_buffer_class):
+                model_kwargs = dict(
+                    policy="MlpPolicy",
+                    env=env,
+                    learning_rate=args.learning_rate,
+                    buffer_size=args.buffer_size,
+                    learning_starts=args.learning_starts,
+                    batch_size=local_batch_size,
+                    tau=args.tau,
+                    gamma=args.gamma,
+                    train_freq=args.train_freq,
+                    gradient_steps=args.gradient_steps,
+                    ent_coef=args.ent_coef,
+                    tensorboard_log=tensorboard_log,
+                    seed=args.rank_seed,
+                    device=args.resolved_device,
+                    verbose=sb3_verbose,
+                    replay_buffer_class=replay_buffer_class,
+                )
+                if context.enabled:
+                    model_kwargs["distributed_context"] = context
+                return algorithm_class(**model_kwargs)
+
+            model, args.npu_replay_buffer_enabled, replay_fallbacks = (
+                _construct_with_replay_fallback(
+                    build_new_model,
+                    context,
+                    args.npu_replay_buffer_enabled,
+                )
             )
-            if context.enabled:
-                model_kwargs["distributed_context"] = context
-            model = algorithm_class(**model_kwargs)
             model.distributed_world_size_at_save = int(context.world_size)
             reset_num_timesteps = True
             if context.is_main:
@@ -1380,6 +1460,7 @@ def main():
                 fused_status["global_fallback"] = "one_or_more_ranks_unavailable"
         args.npu_fused_adam_status = fused_status
         args.npu_fused_adam_enabled = fused_adam_enabled
+        args.npu_replay_buffer_fallbacks = replay_fallbacks
 
         if context.is_main:
             write_run_config(
@@ -1392,7 +1473,10 @@ def main():
             )
             print(
                 f"[MCR NPU] execution={args.npu_execution} "
-                f"fused_adam={args.npu_fused_adam_status}"
+                f"fused_adam={args.npu_fused_adam_status} "
+                f"replay_buffer={type(model.replay_buffer).__name__} "
+                f"replay_storage_mb="
+                f"{getattr(model.replay_buffer, 'storage_bytes', 0) / 1e6:.1f}"
             )
 
         if context.enabled:
