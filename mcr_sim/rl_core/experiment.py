@@ -8,7 +8,6 @@ from typing import Callable, Optional
 
 import numpy as np
 import torch as th
-import torch.distributed as dist
 from stable_baselines3.common.callbacks import BaseCallback
 
 from .evaluation import ValidationResult
@@ -39,6 +38,8 @@ class EpochExperimentCallback(BaseCallback):
         validation_interval: int = 2,
         validation_fn: Optional[Callable[[object, int], ValidationResult]] = None,
         resume_progress: bool = True,
+        episode_sync_interval_steps: int = 256,
+        performance_log_interval_steps: int = 64,
     ):
         super().__init__(verbose=0)
         self.context = context
@@ -52,9 +53,21 @@ class EpochExperimentCallback(BaseCallback):
         self.validation_interval = int(validation_interval)
         self.validation_fn = validation_fn
         self.resume_progress = bool(resume_progress)
+        self.episode_sync_interval_steps = max(1, int(episode_sync_interval_steps))
+        self.performance_log_interval_steps = max(
+            1, int(performance_log_interval_steps)
+        )
+        self._performance_step_count = 0
         self.global_completed_episodes = 0
         self.next_epoch = 1
         self._epoch_success_count = 0
+        self._epoch_reward_sum = 0.0
+        self._epoch_episode_steps_sum = 0.0
+        self._epoch_out_of_vessel_count = 0
+        self._epoch_wrong_branch_count = 0
+        self._epoch_non_finite_count = 0
+        self._epoch_timeout_count = 0
+        self._pending_episode_events = []
         self.best_valid_success_rate = -1.0
         self.best_epoch = 0
 
@@ -70,23 +83,44 @@ class EpochExperimentCallback(BaseCallback):
                 self.next_epoch = saved_epoch + 1
                 self.global_completed_episodes = saved_episodes
 
-    def _global_episode_events(self):
+    def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        successes = np.asarray(
-            [bool(done and infos[index].get("done_by_target", False)) for index, done in enumerate(dones)],
-            dtype=np.bool_,
-        )
-        local = th.tensor(
-            np.stack([dones, successes], axis=1).astype(np.int32),
-            dtype=th.int32,
+        events = np.zeros((len(dones), 8), dtype=np.float32)
+        for index, done in enumerate(dones):
+            if not done:
+                continue
+            info = infos[index]
+            episode_info = info.get("episode", {})
+            events[index] = [
+                1.0,
+                float(bool(info.get("done_by_target", False))),
+                float(episode_info.get("r", 0.0)),
+                float(episode_info.get("l", 0.0)),
+                float(bool(info.get("done_by_out_of_vessel", False))),
+                float(bool(info.get("done_by_wrong_branch", False))),
+                float(bool(info.get("done_by_non_finite", False))),
+                float(bool(info.get("TimeLimit.truncated", False) or info.get("terminal_reason") == "timeout")),
+            ]
+        return events
+
+    def _global_pending_episode_events(self):
+        """Synchronize one fixed-size block of episode statistics."""
+
+        local_np = np.stack(self._pending_episode_events, axis=0)
+        local = th.as_tensor(
+            local_np,
+            dtype=th.float32,
             device=self.context.device.resolved,
         )
         if not self.context.enabled:
-            return local.detach().cpu().numpy()
+            return local_np.reshape(-1, local_np.shape[-1])
         gathered = [th.zeros_like(local) for _ in range(self.context.world_size)]
-        dist.all_gather(gathered, local)
-        return np.concatenate([item.detach().cpu().numpy() for item in gathered], axis=0)
+        self.context.all_gather(gathered, local)
+        # Preserve the old per-step rank/env ordering while synchronizing many
+        # steps at once: [rank, step, env, field] -> [step, rank, env, field].
+        stacked = th.stack(gathered, dim=0).permute(1, 0, 2, 3).contiguous()
+        return stacked.view(-1, stacked.shape[-1]).detach().cpu().numpy()
 
     def _checkpoint_path(self, epoch: int) -> Path:
         return self.model_dir / (
@@ -107,7 +141,6 @@ class EpochExperimentCallback(BaseCallback):
     def _run_validation(self, epoch: int, checkpoint_path: Path) -> None:
         if self.validation_fn is None or epoch % self.validation_interval != 0:
             return
-        self.context.barrier()
         error_text = ""
         if self.context.is_main:
             try:
@@ -185,22 +218,34 @@ class EpochExperimentCallback(BaseCallback):
 
     def _finish_epoch(self, epoch: int) -> None:
         train_success_rate = float(self._epoch_success_count / self.episodes_per_epoch)
+        train_reward_mean = float(self._epoch_reward_sum / self.episodes_per_epoch)
+        train_episode_steps_mean = float(
+            self._epoch_episode_steps_sum / self.episodes_per_epoch
+        )
         self._record_model_metadata(epoch, train_success_rate)
         checkpoint_path = self._checkpoint_path(epoch)
         if self.context.is_main:
             self.model.save(str(checkpoint_path))
             self.logger.record("train/success_rate", train_success_rate)
+            self.logger.record("train/reward_mean", train_reward_mean)
+            self.logger.record("train/episode_steps_mean", train_episode_steps_mean)
             self.logger.record("train/episodes", float(self.episodes_per_epoch), exclude="stdout")
             self.logger.record("train/global_completed_episodes", float(self.global_completed_episodes), exclude="stdout")
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
                     "train_success_count": self._epoch_success_count,
                     "train_success_rate": train_success_rate,
+                    "train_reward_mean": train_reward_mean,
+                    "train_episode_steps_mean": train_episode_steps_mean,
+                    "out_of_vessel_count": self._epoch_out_of_vessel_count,
+                    "wrong_branch_count": self._epoch_wrong_branch_count,
+                    "non_finite_count": self._epoch_non_finite_count,
+                    "timeout_count": self._epoch_timeout_count,
                     "global_completed_episodes": self.global_completed_episodes,
                     "global_env_steps": self.model.global_env_steps,
                     "checkpoint": str(checkpoint_path) + ".zip",
@@ -210,6 +255,8 @@ class EpochExperimentCallback(BaseCallback):
                 f"[TRAIN][Epoch {epoch:03d}] train_episodes={self.episodes_per_epoch} "
                 f"train_success_count={self._epoch_success_count} "
                 f"train_success_rate={train_success_rate:.6f} "
+                f"train_reward_mean={train_reward_mean:.3f} "
+                f"train_episode_steps_mean={train_episode_steps_mean:.1f} "
                 f"global_completed_episodes={self.global_completed_episodes} "
                 f"global_env_steps={self.model.global_env_steps} "
                 f"checkpoint={checkpoint_path}.zip"
@@ -219,9 +266,34 @@ class EpochExperimentCallback(BaseCallback):
         self.context.barrier()
         self._run_validation(epoch, checkpoint_path)
         self._epoch_success_count = 0
+        self._epoch_reward_sum = 0.0
+        self._epoch_episode_steps_sum = 0.0
+        self._epoch_out_of_vessel_count = 0
+        self._epoch_wrong_branch_count = 0
+        self._epoch_non_finite_count = 0
+        self._epoch_timeout_count = 0
 
     def _on_step(self) -> bool:
-        events = self._global_episode_events()
+        self._pending_episode_events.append(self._local_episode_events())
+        self._performance_step_count += 1
+        if self._performance_step_count >= self.performance_log_interval_steps:
+            performance = self.context.performance_snapshot(reset=True)
+            print(
+                f"[PERF][Rank {self.context.rank}] "
+                f"vector_steps={self._performance_step_count} "
+                f"elapsed_s={performance['elapsed_seconds']:.3f} "
+                f"rollout_other_s={performance['rollout_other_seconds']:.3f} "
+                f"update_s={performance['update_seconds']:.3f} "
+                f"communication_s={performance['communication_seconds']:.3f} "
+                f"communication_calls={performance['communication_calls']}"
+            )
+            self._performance_step_count = 0
+        sync_interval = self.episode_sync_interval_steps if self.context.enabled else 1
+        if len(self._pending_episode_events) < sync_interval:
+            return True
+
+        events = self._global_pending_episode_events()
+        self._pending_episode_events.clear()
         completed_events = events[events[:, 0] != 0]
         cursor = 0
         while cursor < len(completed_events) and self.global_completed_episodes < self.target_episodes:
@@ -232,6 +304,12 @@ class EpochExperimentCallback(BaseCallback):
             accepted = completed_events[cursor : cursor + take]
             self.global_completed_episodes += len(accepted)
             self._epoch_success_count += int(accepted[:, 1].sum())
+            self._epoch_reward_sum += float(accepted[:, 2].sum())
+            self._epoch_episode_steps_sum += float(accepted[:, 3].sum())
+            self._epoch_out_of_vessel_count += int(accepted[:, 4].sum())
+            self._epoch_wrong_branch_count += int(accepted[:, 5].sum())
+            self._epoch_non_finite_count += int(accepted[:, 6].sum())
+            self._epoch_timeout_count += int(accepted[:, 7].sum())
             cursor += take
             if (
                 self.next_epoch <= self.epochs

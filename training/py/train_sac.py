@@ -490,77 +490,6 @@ class DistributedRuntimeCallback(BaseCallback):
         self.logger.record("distributed/local_batch_size", float(self.local_batch_size), exclude="stdout")
 
 
-class EpisodeBudgetCallback(BaseCallback):
-    """Stop a run after a global number of completed episodes.
-
-    In distributed mode every rank participates in the same all-reduce, so an
-    episode completed on any rank advances the shared budget.  The callback is
-    intentionally installed on every rank; only rank 0 writes checkpoints and
-    TensorBoard scalars.
-    """
-
-    def __init__(
-        self,
-        context,
-        epochs: int,
-        episodes_per_epoch: int,
-        model_dir: Path,
-        checkpoint_prefix: str,
-    ):
-        super().__init__(verbose=0)
-        self.context = context
-        self.epochs = int(epochs)
-        self.episodes_per_epoch = int(episodes_per_epoch)
-        self.target_episodes = self.epochs * self.episodes_per_epoch
-        self.global_episodes = 0
-        self.next_epoch = 1
-        self.model_dir = Path(model_dir)
-        self.checkpoint_prefix = str(checkpoint_prefix)
-
-    def _global_done_count(self) -> int:
-        local_done = int(np.asarray(self.locals.get("dones", []), dtype=np.int64).sum())
-        if not self.context.enabled:
-            return local_done
-        import torch.distributed as dist
-
-        value = th.tensor(
-            [float(local_done)], dtype=th.float32, device=self.context.device.resolved
-        )
-        dist.all_reduce(value, op=dist.ReduceOp.SUM)
-        return int(round(float(value.detach().cpu().item())))
-
-    def _on_step(self) -> bool:
-        completed_now = self._global_done_count()
-        # A vectorized step can finish several environments simultaneously.
-        # Cap accounting at the configured budget so every epoch is reported
-        # as exactly 100 episodes even when the physical step overshoots it.
-        self.global_episodes = min(
-            self.target_episodes, self.global_episodes + completed_now
-        )
-        if self.context.is_main:
-            self.logger.record("episodes/global", float(self.global_episodes), exclude="stdout")
-            self.logger.record(
-                "episodes/epoch",
-                float(min(self.epochs, self.global_episodes // self.episodes_per_epoch)),
-                exclude="stdout",
-            )
-            while (
-                self.global_episodes >= self.next_epoch * self.episodes_per_epoch
-                and self.next_epoch <= self.epochs
-            ):
-                path = self.model_dir / (
-                    f"{self.checkpoint_prefix}_epoch_{self.next_epoch:02d}_"
-                    f"episodes_{self.global_episodes:05d}"
-                )
-                self.model.save(str(path))
-                print(
-                    f"[EPOCH {self.next_epoch:02d}/{self.epochs}] "
-                    f"global_episodes={self.global_episodes} checkpoint={path}.zip"
-                )
-                self.next_epoch += 1
-        return self.global_episodes < self.target_episodes
-
-
 def _parse_ent_coef(value: str) -> Union[str, float]:
     """Parse SAC ent_coef argument.
 
@@ -990,7 +919,7 @@ def parse_args():
         parser.error("--steps-per-epoch must be a positive integer")
     args.episode_mode = args.timesteps is None
     if args.timesteps is None:
-        # Upper bound only; EpisodeBudgetCallback is the authoritative stop
+        # Upper bound only; EpochExperimentCallback is the authoritative stop
         # condition.  max_episode_steps makes the bound safe for timeout runs.
         args.timesteps = int(args.epochs) * int(args.episodes_per_epoch) * int(args.max_episode_steps)
     elif args.timesteps <= 0:

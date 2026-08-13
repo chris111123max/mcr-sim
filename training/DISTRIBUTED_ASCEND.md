@@ -18,6 +18,8 @@ and backward on its local NPU. Actor, critic, and automatic entropy gradients
 are averaged before their optimizer steps. Initial actor, critic, target critic,
 and entropy state are broadcast from rank 0. The target critic then stays equal
 because every rank applies the same Polyak update to synchronized critic weights.
+Actor and critic gradients are flattened into module-level HCCL collectives;
+training metrics stay on the NPU until the end of each update block.
 
 This is intentionally implemented in a project-side `DistributedSAC` subclass.
 Wrapping only `policy` in PyTorch DDP would not cover SB3 SAC's separate critic
@@ -25,7 +27,8 @@ and entropy optimizer paths.
 
 PPO uses a separate project-side `DistributedPPO`. Each rank owns an on-policy
 rollout buffer; policy gradients are averaged before PPO gradient clipping and
-the optimizer step. PPO never uses the SAC replay buffer.
+the optimizer step. PPO uses the same flattened-gradient and device-resident
+metric infrastructure as SAC, and never uses the SAC replay buffer.
 
 ## CLI semantics
 
@@ -52,6 +55,12 @@ Every run directory contains three persistent output groups:
 
 The console capture is performed by the training process itself, so these logs
 remain available when the outer `nohup` output is redirected to `/dev/null`.
+
+Episode outcomes and terminal statistics are accumulated locally and packed
+into one collective every 256 vector steps instead of synchronizing every
+environment step. SAC loss metrics are reduced every 64 train blocks. Each
+rank also writes a `[PERF]` window every 64 vector steps with update time,
+collective time/call count, and remaining rollout/IPC/callback time.
 
 For the stable default, `--n-envs 32 --batch-size 512` means eight SOFA environments
 and a 128-transition minibatch on every rank. Increase environment count only

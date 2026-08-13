@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from typing import Optional
 
-import numpy as np
 import torch as th
 from torch.nn import functional as F
 
@@ -46,6 +46,14 @@ class DistributedSAC(SAC):
         context.barrier()
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
+        started = time.perf_counter()
+        try:
+            self._distributed_train(gradient_steps=gradient_steps, batch_size=batch_size)
+        finally:
+            if self.distributed_context is not None:
+                self.distributed_context.record_update_time(time.perf_counter() - started)
+
+    def _distributed_train(self, gradient_steps: int, batch_size: int = 64) -> None:
         context = self.distributed_context
         if context is None:
             raise RuntimeError("DistributedSAC requires a DistributedContext before training.")
@@ -81,10 +89,10 @@ class DistributedSAC(SAC):
                 ent_coef_loss = -(
                     self.log_ent_coef * (log_prob + self.target_entropy).detach()
                 ).mean()
-                ent_coef_losses.append(float(ent_coef_loss.item()))
+                ent_coef_losses.append(ent_coef_loss.detach())
             else:
                 ent_coef = self.ent_coef_tensor
-            ent_coefs.append(float(ent_coef.item()))
+            ent_coefs.append(ent_coef.detach())
 
             if ent_coef_loss is not None and self.ent_coef_optimizer is not None:
                 self.ent_coef_optimizer.zero_grad()
@@ -107,7 +115,7 @@ class DistributedSAC(SAC):
             critic_loss = 0.5 * sum(
                 F.mse_loss(current_q, target_q_values) for current_q in current_q_values
             )
-            critic_losses.append(float(critic_loss.item()))
+            critic_losses.append(critic_loss.detach())
 
             self.critic.optimizer.zero_grad()
             critic_loss.backward()
@@ -119,7 +127,7 @@ class DistributedSAC(SAC):
             )
             min_qf_pi, _ = th.min(q_values_pi, dim=1, keepdim=True)
             actor_loss = (ent_coef * log_prob - min_qf_pi).mean()
-            actor_losses.append(float(actor_loss.item()))
+            actor_losses.append(actor_loss.detach())
 
             self.actor.optimizer.zero_grad()
             actor_loss.backward()
@@ -132,19 +140,29 @@ class DistributedSAC(SAC):
 
         self._n_updates += gradient_steps
 
-        local_metrics = [
-            float(np.mean(ent_coefs)),
-            float(np.mean(actor_losses)),
-            float(np.mean(critic_losses)),
-            float(np.mean(ent_coef_losses)) if len(ent_coef_losses) > 0 else 0.0,
-        ]
-        ent_coef_mean, actor_loss_mean, critic_loss_mean, ent_coef_loss_mean = (
-            context.average_metrics(local_metrics)
+        # Keep metric reduction on the accelerator.  Calling .item() inside
+        # every gradient step serializes the NPU pipeline with a device-to-host
+        # synchronization; one transfer after the complete train block is
+        # sufficient and yields the same logged means.
+        zero = th.zeros((), dtype=actor_losses[0].dtype, device=actor_losses[0].device)
+        local_metrics = th.stack(
+            [
+                th.stack(ent_coefs).mean(),
+                th.stack(actor_losses).mean(),
+                th.stack(critic_losses).mean(),
+                th.stack(ent_coef_losses).mean() if ent_coef_losses else zero,
+            ]
         )
-
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
-        self.logger.record("train/ent_coef", ent_coef_mean)
-        self.logger.record("train/actor_loss", actor_loss_mean)
-        self.logger.record("train/critic_loss", critic_loss_mean)
-        if len(ent_coef_losses) > 0:
-            self.logger.record("train/ent_coef_loss", ent_coef_loss_mean)
+        metric_values = context.reduce_metrics_periodically(
+            "sac_train",
+            local_metrics,
+            interval=64,
+        )
+        if metric_values is not None:
+            ent_coef_mean, actor_loss_mean, critic_loss_mean, ent_coef_loss_mean = metric_values
+            self.logger.record("train/ent_coef", ent_coef_mean)
+            self.logger.record("train/actor_loss", actor_loss_mean)
+            self.logger.record("train/critic_loss", critic_loss_mean)
+            if len(ent_coef_losses) > 0:
+                self.logger.record("train/ent_coef_loss", ent_coef_loss_mean)
