@@ -1,0 +1,367 @@
+"""Four-device Ascend PPO baseline using the shared MCR experiment protocol."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import math
+import os
+import sys
+from datetime import datetime
+from pathlib import Path
+
+TRAINING_PY_DIR = Path(__file__).resolve().parent
+PYTHON_ROOT = TRAINING_PY_DIR.parents[1]
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+import numpy as np
+from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import CallbackList
+from stable_baselines3.common.utils import get_schedule_fn
+
+from mcr_sim.distributed import DistributedPPO, initialize_distributed
+from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
+from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
+from mcr_sim.rl_core.experiment import EpochExperimentCallback
+from mcr_sim.training_config import (
+    FRAME_SKIP,
+    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    MAX_EPISODE_STEPS,
+    PPO_BATCH_SIZE,
+    PPO_CLIP_RANGE,
+    PPO_ENT_COEF,
+    PPO_EPOCHS,
+    PPO_EPISODES_PER_EPOCH,
+    PPO_GAE_LAMBDA,
+    PPO_GAMMA,
+    PPO_LEARNING_RATE,
+    PPO_MAX_GRAD_NORM,
+    PPO_N_ENVS,
+    PPO_N_EPOCHS,
+    PPO_N_STEPS,
+    PPO_VF_COEF,
+    RADIUS_OBSERVATION_SCALE_M,
+    SETTLE_STEPS,
+    SOFA_TIME_STEP_S,
+    START_WINDOW_DISTANCE_M,
+    TARGET_THRESHOLD_M,
+    TARGET_WINDOW_DISTANCE_M,
+    VALID_EPISODES_PER_VESSEL,
+    VALID_INTERVAL,
+    VALID_VESSELS,
+    VESSEL_SCALE_MAX,
+    VESSEL_SCALE_MIN,
+)
+
+# Reuse the established SOFA environment construction and detailed rollout
+# logger instead of maintaining a second algorithm-specific environment path.
+from train_sac import (  # noqa: E402
+    ALL_MODEL_CHOICES,
+    DistributedRuntimeCallback,
+    ExtraRolloutMetricsCallback,
+    build_env,
+)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train MCR agent with PPO")
+    parser.add_argument("--env-type", choices=["aortic", "flat"], default="aortic")
+    parser.add_argument("--force-model", choices=ALL_MODEL_CHOICES, default="")
+    parser.add_argument("--epochs", type=int, default=PPO_EPOCHS)
+    parser.add_argument("--episodes-per-epoch", type=int, default=PPO_EPISODES_PER_EPOCH)
+    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--distributed", action="store_true")
+    parser.add_argument("--world-size", type=int, default=4)
+    parser.add_argument("--local-rank", "--local_rank", dest="local_rank", type=int, default=0)
+    parser.add_argument("--dist-backend", choices=["", "hccl", "nccl", "gloo"], default="")
+    parser.add_argument("--n-envs", type=int, default=PPO_N_ENVS)
+
+    parser.add_argument("--learning-rate", type=float, default=PPO_LEARNING_RATE)
+    parser.add_argument("--n-steps", type=int, default=PPO_N_STEPS)
+    parser.add_argument("--batch-size", type=int, default=PPO_BATCH_SIZE)
+    parser.add_argument("--n-epochs", type=int, default=PPO_N_EPOCHS)
+    parser.add_argument("--gamma", type=float, default=PPO_GAMMA)
+    parser.add_argument("--gae-lambda", type=float, default=PPO_GAE_LAMBDA)
+    parser.add_argument("--clip-range", type=float, default=PPO_CLIP_RANGE)
+    parser.add_argument("--ent-coef", type=float, default=PPO_ENT_COEF)
+    parser.add_argument("--vf-coef", type=float, default=PPO_VF_COEF)
+    parser.add_argument("--max-grad-norm", type=float, default=PPO_MAX_GRAD_NORM)
+
+    parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
+    parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
+    parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS)
+    parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M)
+    parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS)
+    parser.add_argument("--radius-observation-scale", type=float, default=RADIUS_OBSERVATION_SCALE_M)
+
+    endpoints = parser.add_mutually_exclusive_group()
+    endpoints.add_argument("--randomize-start-target", dest="randomize_start_target", action="store_true")
+    endpoints.add_argument("--no-randomize-start-target", dest="randomize_start_target", action="store_false")
+    parser.set_defaults(randomize_start_target=True)
+    parser.add_argument("--start-window-mm", type=float, default=START_WINDOW_DISTANCE_M * 1000.0)
+    parser.add_argument("--target-window-mm", type=float, default=TARGET_WINDOW_DISTANCE_M * 1000.0)
+    parser.add_argument("--start-window-points", type=int, default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--target-window-points", type=int, default=None, help=argparse.SUPPRESS)
+
+    orientation = parser.add_mutually_exclusive_group()
+    orientation.add_argument("--randomize-initial-orientation", dest="randomize_initial_orientation", action="store_true")
+    orientation.add_argument("--no-randomize-initial-orientation", dest="randomize_initial_orientation", action="store_false")
+    parser.set_defaults(randomize_initial_orientation=True)
+    parser.add_argument("--initial-orientation-max-angle-deg", type=float, default=INITIAL_ORIENTATION_MAX_ANGLE_DEG)
+    parser.add_argument("--entry-tangent-points", type=int, default=5)
+    parser.add_argument("--soft-randomize-single-vessel", dest="soft_randomize_single_vessel", action="store_true")
+    parser.add_argument("--no-soft-randomize-single-vessel", dest="soft_randomize_single_vessel", action="store_false")
+    parser.set_defaults(soft_randomize_single_vessel=True)
+    parser.add_argument("--vessel-scale-min", type=float, default=VESSEL_SCALE_MIN)
+    parser.add_argument("--vessel-scale-max", type=float, default=VESSEL_SCALE_MAX)
+
+    parser.add_argument("--log-root", default=str(TRAINING_RUNS_DIR))
+    parser.add_argument("--variant", default="base")
+    parser.add_argument("--exp-name", default="")
+    parser.add_argument("--render", choices=["headless", "human"], default="headless")
+    parser.add_argument("--resume-from", default="")
+    parser.add_argument("--reset-num-timesteps", action="store_true")
+    parser.add_argument("--valid-dir", default=str(VALID_MESH_DIR))
+    parser.add_argument("--skip-validation", action="store_true")
+    parser.add_argument("--progress-bar", action="store_true")
+    parser.add_argument("--sb3-verbose", type=int, choices=[0, 1, 2], default=1)
+    parser.add_argument("--scene-verbose", action="store_true")
+    args = parser.parse_args()
+
+    if args.epochs <= 0 or args.episodes_per_epoch <= 0:
+        parser.error("--epochs and --episodes-per-epoch must be positive")
+    if args.n_steps <= 0 or args.batch_size <= 0 or args.n_epochs <= 0:
+        parser.error("PPO rollout/update sizes must be positive")
+    if args.max_episode_steps <= 0:
+        parser.error("--max-episode-steps must be positive")
+    if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
+        parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
+    args.steps_per_epoch = args.episodes_per_epoch * args.max_episode_steps
+    args.episode_mode = True
+    return args
+
+
+def _override_learning_rate(model: PPO, learning_rate: float) -> None:
+    model.learning_rate = float(learning_rate)
+    model.lr_schedule = get_schedule_fn(float(learning_rate))
+    for group in model.policy.optimizer.param_groups:
+        group["lr"] = float(learning_rate)
+
+
+def main():
+    args = parse_args()
+    os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
+    context = initialize_distributed(
+        enabled=args.distributed,
+        requested_device=args.device,
+        requested_world_size=args.world_size,
+        cli_local_rank=args.local_rank,
+        requested_backend=args.dist_backend,
+    )
+    args.distributed_rank = context.rank
+    args.resolved_device = context.device.resolved
+    total_n_envs = int(args.n_envs)
+    global_batch_size = int(args.batch_size)
+    if context.enabled:
+        if total_n_envs % context.world_size:
+            raise ValueError("--n-envs must be divisible by world size")
+        if global_batch_size % context.world_size:
+            raise ValueError("--batch-size must be divisible by world size")
+        args.local_n_envs = total_n_envs // context.world_size
+        local_batch_size = global_batch_size // context.world_size
+    else:
+        args.local_n_envs = total_n_envs
+        local_batch_size = global_batch_size
+    local_rollout_size = int(args.n_steps) * int(args.local_n_envs)
+    if local_rollout_size % local_batch_size:
+        raise ValueError(
+            f"local rollout size {local_rollout_size} must be divisible by local batch {local_batch_size}"
+        )
+    args.rank_seed = int(args.seed) + context.rank * args.local_n_envs
+    local_total_timesteps = int(
+        math.ceil(args.epochs * args.episodes_per_epoch * args.max_episode_steps / context.world_size)
+    )
+
+    valid_dir = Path(args.valid_dir).expanduser()
+    if not valid_dir.is_absolute():
+        valid_dir = PROJECT_ROOT / valid_dir
+    valid_dir = valid_dir.resolve()
+    valid_vessels = [] if args.skip_validation else discover_validation_vessels(
+        valid_dir, expected_vessels=VALID_VESSELS
+    )
+
+    timestamp = os.environ.get("MCR_RUN_TIMESTAMP", "").strip()
+    if not timestamp and context.is_main:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = context.broadcast_text(timestamp)
+    if not args.exp_name:
+        device_tag = f"{context.world_size}npu" if context.enabled else "1device"
+        args.exp_name = f"ppo_{args.variant}_{total_n_envs}env_{device_tag}_ep{args.episodes_per_epoch}"
+    log_root = Path(args.log_root).expanduser()
+    if not log_root.is_absolute():
+        log_root = PROJECT_ROOT / log_root
+    run_dir = log_root.resolve() / f"{args.exp_name}_{timestamp}"
+    model_dir, tb_dir = run_dir / "models", run_dir / "tb"
+    if context.is_main:
+        model_dir.mkdir(parents=True, exist_ok=True)
+        tb_dir.mkdir(parents=True, exist_ok=True)
+    context.barrier()
+
+    env = None
+    try:
+        env = build_env(args)
+
+        def run_validation(current_model, epoch):
+            def env_factory(vessel_id):
+                valid_args = copy.copy(args)
+                valid_args.force_model = str(vessel_id)
+                valid_args.asset_root = str(valid_dir)
+                valid_args.local_n_envs = 1
+                valid_args.distributed_rank = 0
+                valid_args.render = "headless"
+                valid_args.seed = int(args.seed) + 100_000
+                return build_env(valid_args)
+
+            was_training = bool(current_model.policy.training)
+            try:
+                return evaluate_policy(
+                    valid_vessels,
+                    env_factory,
+                    lambda observation: current_model.predict(observation, deterministic=True)[0],
+                    episodes_per_vessel=VALID_EPISODES_PER_VESSEL,
+                    max_episode_steps=args.max_episode_steps,
+                    base_seed=int(args.seed) + 100_000,
+                )
+            finally:
+                current_model.policy.set_training_mode(was_training)
+
+        epoch_callback = EpochExperimentCallback(
+            context=context,
+            algorithm_name="ppo",
+            variant=args.variant,
+            epochs=args.epochs,
+            episodes_per_epoch=args.episodes_per_epoch,
+            model_dir=model_dir,
+            run_dir=run_dir,
+            validation_interval=VALID_INTERVAL,
+            validation_fn=None if args.skip_validation else run_validation,
+            resume_progress=not args.reset_num_timesteps,
+        )
+        callbacks = [epoch_callback]
+        if context.is_main:
+            callbacks.extend(
+                [
+                    ExtraRolloutMetricsCallback(window_size=50, success_label="target"),
+                    DistributedRuntimeCallback(
+                        context.world_size,
+                        total_n_envs,
+                        global_batch_size,
+                        local_batch_size,
+                        args.steps_per_epoch,
+                        args.episodes_per_epoch,
+                        epoch_callback,
+                    ),
+                ]
+            )
+        callback = CallbackList(callbacks) if len(callbacks) > 1 else callbacks[0]
+        algorithm_class = DistributedPPO if context.enabled else PPO
+        tensorboard_log = str(tb_dir) if context.is_main else None
+        verbose = args.sb3_verbose if context.is_main else 0
+
+        if args.resume_from:
+            resume_path = Path(args.resume_from).expanduser()
+            if not resume_path.is_absolute():
+                resume_path = PROJECT_ROOT / resume_path
+            resume_path = resume_path.resolve()
+            if not resume_path.is_file():
+                raise FileNotFoundError(f"Resume model not found: {resume_path}")
+            model = algorithm_class.load(
+                str(resume_path),
+                env=env,
+                device=args.resolved_device,
+                custom_objects={
+                    "n_steps": args.n_steps,
+                    "batch_size": local_batch_size,
+                    "n_epochs": args.n_epochs,
+                    "gamma": args.gamma,
+                    "gae_lambda": args.gae_lambda,
+                    "clip_range": get_schedule_fn(args.clip_range),
+                    "ent_coef": args.ent_coef,
+                    "vf_coef": args.vf_coef,
+                    "max_grad_norm": args.max_grad_norm,
+                },
+            )
+            model.tensorboard_log = tensorboard_log
+            model.verbose = verbose
+            model.seed = int(args.rank_seed)
+            model.set_random_seed(int(args.rank_seed))
+            _override_learning_rate(model, args.learning_rate)
+            reset_num_timesteps = args.reset_num_timesteps
+            saved_world_size = max(
+                1, int(getattr(model, "distributed_world_size_at_save", 1))
+            )
+            if not reset_num_timesteps and saved_world_size != context.world_size:
+                completed_global_steps = int(model.num_timesteps) * saved_world_size
+                model.num_timesteps = int(
+                    math.ceil(completed_global_steps / context.world_size)
+                )
+        else:
+            kwargs = dict(
+                policy="MlpPolicy",
+                env=env,
+                learning_rate=args.learning_rate,
+                n_steps=args.n_steps,
+                batch_size=local_batch_size,
+                n_epochs=args.n_epochs,
+                gamma=args.gamma,
+                gae_lambda=args.gae_lambda,
+                clip_range=args.clip_range,
+                ent_coef=args.ent_coef,
+                vf_coef=args.vf_coef,
+                max_grad_norm=args.max_grad_norm,
+                tensorboard_log=tensorboard_log,
+                seed=args.rank_seed,
+                device=args.resolved_device,
+                verbose=verbose,
+            )
+            if context.enabled:
+                kwargs["distributed_context"] = context
+            model = algorithm_class(**kwargs)
+            reset_num_timesteps = True
+        model.distributed_world_size_at_save = context.world_size
+        if context.enabled:
+            model.set_distributed_context(context)
+            model.synchronize_parameters()
+
+        if context.is_main:
+            print(
+                f"[MCR TRAIN][PPO] device={context.device.resolved} distributed={context.enabled} "
+                f"world={context.world_size} envs={total_n_envs} epochs={args.epochs} "
+                f"episodes_per_epoch={args.episodes_per_epoch} max_episode_steps={args.max_episode_steps}"
+            )
+            print(
+                f"[MCR TRAIN][PPO] n_steps={args.n_steps} n_epochs={args.n_epochs} "
+                f"batch={global_batch_size}/{local_batch_size} output={run_dir}"
+            )
+        model.learn(
+            total_timesteps=local_total_timesteps,
+            callback=callback,
+            reset_num_timesteps=reset_num_timesteps,
+            progress_bar=bool(args.progress_bar and context.is_main),
+        )
+        context.barrier()
+        final_path = model_dir / f"ppo_{args.variant}_final_epoch_{args.epochs:03d}"
+        if context.is_main:
+            model.save(str(final_path))
+            print(f"[DONE] model={final_path}.zip")
+        context.barrier()
+    finally:
+        if env is not None:
+            env.close()
+        context.close()
+
+
+if __name__ == "__main__":
+    main()

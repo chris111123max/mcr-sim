@@ -1,4 +1,4 @@
-# Distributed SAC on 4 x Ascend 910B3
+# Distributed SAC/PPO on 4 x Ascend 910B3
 
 Target platform:
 
@@ -12,7 +12,7 @@ device to each rank through `LOCAL_RANK`.
 
 ## Architecture
 
-Each rank owns an equal share of CPU SOFA environments and its own SB3 replay
+For SAC, each rank owns an equal share of CPU SOFA environments and its own SB3 replay
 buffer in CPU RAM. It samples a different local minibatch and runs SAC forward
 and backward on its local NPU. Actor, critic, and automatic entropy gradients
 are averaged before their optimizer steps. Initial actor, critic, target critic,
@@ -23,12 +23,16 @@ This is intentionally implemented in a project-side `DistributedSAC` subclass.
 Wrapping only `policy` in PyTorch DDP would not cover SB3 SAC's separate critic
 and entropy optimizer paths.
 
+PPO uses a separate project-side `DistributedPPO`. Each rank owns an on-policy
+rollout buffer; policy gradients are averaged before PPO gradient clipping and
+the optimizer step. PPO never uses the SAC replay buffer.
+
 ## CLI semantics
 
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
-  The default is 20 x 100 = 2,000 completed episodes. All ranks participate
+  The formal default is 50 x 100 = 5,000 completed episodes. All ranks participate
   in the episode counter and rank 0 saves one checkpoint per epoch.
 - `--steps-per-epoch`: legacy transition-budget setting, used only when
   `--timesteps` is supplied.
@@ -55,7 +59,7 @@ The normal launcher inserts `torchrun` automatically:
   --world-size 4 \
   --n-envs 32 \
   --batch-size 512 \
-  --epochs 20 \
+  --epochs 50 \
   --episodes-per-epoch 100 \
   --target-threshold 0.003 \
   --time-step 0.01 \
@@ -66,6 +70,11 @@ The normal launcher inserts `torchrun` automatically:
 
 Single-device CPU, CUDA, and NPU commands remain supported by omitting
 `--distributed`. `--device auto` prefers CUDA, then Ascend NPU, then CPU.
+
+The equivalent PPO launcher is `training/sh/run_train_ppo.sh`. Both launchers
+validate five unseen vessels twice each on rank 0 after epochs 2, 4, ..., 50.
+Ranks 1-3 wait at barriers. `best_valid.zip` is replaced only when
+`valid_success_rate` strictly increases.
 
 ## Checkpoint and resume
 

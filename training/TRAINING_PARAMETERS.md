@@ -83,13 +83,15 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 
 ## SAC 与 epoch 语义
 
-一个 epoch 定义为 **100 个全局完成回合**。默认训练 20 epoch，即 2000 个回合。
+一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 50 epoch，即 5000 个回合。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
+每 2 个 epoch 由 rank 0 在 `mesh/valid` 的 5 条 unseen 血管上各运行 2 个确定性回合，
+并只按 `valid_success_rate` 的严格提升更新 `best_valid.zip`。
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| epoch / episodes per epoch | 20 / 100 | 训练预算与保存周期 |
+| epoch / episodes per epoch | 50 / 100 | 正式训练预算与保存周期 |
 | 全局环境数 | 4 | 四卡时每卡 1 个 SOFA 环境，先保证稳定再做吞吐测试 |
 | 全局/local batch（四卡） | 512 / 128 | 每卡独立采样，梯度同步后等效全局 512 |
 | replay buffer | 每卡 500000 | 每个 rank 的 CPU 回放容量 |
@@ -105,7 +107,7 @@ bash training/sh/run_train_sac.sh \
   --distributed \
   --world-size 4 \
   --n-envs 32 \
-  --epochs 20 \
+  --epochs 50 \
   --episodes-per-epoch 100 \
   --render headless \
   --exp-name sac_b_c_scale090_100

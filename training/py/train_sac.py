@@ -1,4 +1,5 @@
 import argparse
+import copy
 import math
 import os
 import random
@@ -27,8 +28,10 @@ from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.mcr_rl_env import MCREnv, ObservationType, ActionType, EnvType
 from mcr_sim.distributed import DistributedSAC, initialize_distributed
-from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR
+from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
 from mcr_sim.rl_core.base import RenderMode, RenderFramework
+from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
+from mcr_sim.rl_core.experiment import EpochExperimentCallback
 from mcr_sim.training_config import (
     ACTOR_HISTORY_STEPS,
     ENTRY_TANGENT_POINTS,
@@ -66,6 +69,9 @@ from mcr_sim.training_config import (
     START_WINDOW_DISTANCE_M,
     TARGET_THRESHOLD_M,
     TARGET_WINDOW_DISTANCE_M,
+    VALID_EPISODES_PER_VESSEL,
+    VALID_INTERVAL,
+    VALID_VESSELS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
     WRONG_BRANCH_CONFIRM_STEPS,
@@ -462,7 +468,13 @@ class DistributedRuntimeCallback(BaseCallback):
         if self.episode_callback is not None and self.episodes_per_epoch > 0:
             self.logger.record(
                 "distributed/global_epoch",
-                float(self.episode_callback.global_episodes) / float(self.episodes_per_epoch),
+                float(
+                    getattr(
+                        self.episode_callback,
+                        "global_completed_episodes",
+                        getattr(self.episode_callback, "global_episodes", 0),
+                    )
+                ) / float(self.episodes_per_epoch),
                 exclude="stdout",
             )
         else:
@@ -696,7 +708,7 @@ def parse_args():
         default=SAC_EPOCHS,
         help=(
             "Number of training epochs. In the default episode mode, one epoch "
-            "contains --episodes-per-epoch completed episodes (default: 20)."
+            "contains --episodes-per-epoch completed episodes (formal default: 50 epochs)."
         ),
     )
     parser.add_argument(
@@ -932,6 +944,17 @@ def parse_args():
         help="Path to existing .zip SAC model/checkpoint to continue training. Must match current observation shape.",
     )
     parser.add_argument("--reset-num-timesteps", action="store_true", help="Reset timestep counter when resuming")
+    parser.add_argument(
+        "--valid-dir",
+        type=str,
+        default=str(VALID_MESH_DIR),
+        help="Validation vessel root (default: PROJECT_ROOT/mesh/valid).",
+    )
+    parser.add_argument(
+        "--skip-validation",
+        action="store_true",
+        help="Explicit smoke-test mode only; formal training validates every two epochs.",
+    )
 
     # Console/progress controls. Keeping progress bars off by default reduces
     # terminal I/O during long headless training, especially when stdout is also
@@ -990,6 +1013,8 @@ def parse_args():
             "use --start-window-mm/--target-window-mm."
         )
     args.ent_coef = _parse_ent_coef(args.ent_coef)
+    if not args.episode_mode and not args.skip_validation:
+        parser.error("legacy --timesteps mode requires explicit --skip-validation")
     return args
 
 
@@ -1040,6 +1065,8 @@ def build_env(args):
                 create_scene_kwargs["positioning_camera"] = False
             if args.force_model:
                 create_scene_kwargs["force_model"] = args.force_model
+            if getattr(args, "asset_root", ""):
+                create_scene_kwargs["asset_root"] = str(args.asset_root)
 
             env = MCREnv(
                 env_type=env_type,
@@ -1100,6 +1127,17 @@ def main():
         local_total_timesteps = int(args.timesteps)
     args.rank_seed = int(args.seed) + int(context.rank) * int(args.local_n_envs)
 
+    valid_dir = Path(args.valid_dir).expanduser()
+    if not valid_dir.is_absolute():
+        valid_dir = PROJECT_ROOT / valid_dir
+    valid_dir = valid_dir.resolve()
+    valid_vessels = []
+    if not args.skip_validation:
+        valid_vessels = discover_validation_vessels(
+            valid_dir,
+            expected_vessels=VALID_VESSELS,
+        )
+
     if args.local_n_envs > 1 and args.render == "human":
         raise ValueError("Parallel SOFA environments require --render headless.")
     if local_batch_size <= 0:
@@ -1147,13 +1185,43 @@ def main():
 
         callback_list = None
         if args.episode_mode:
-            checkpoint_prefix = f"sac_{args.variant}"
-            episode_callback = EpisodeBudgetCallback(
+            def run_validation(current_model, epoch):
+                def env_factory(vessel_id):
+                    valid_args = copy.copy(args)
+                    valid_args.force_model = str(vessel_id)
+                    valid_args.asset_root = str(valid_dir)
+                    valid_args.local_n_envs = 1
+                    valid_args.distributed_rank = 0
+                    valid_args.render = "headless"
+                    valid_args.seed = int(args.seed) + 100_000
+                    return build_env(valid_args)
+
+                was_training = bool(current_model.policy.training)
+                try:
+                    return evaluate_policy(
+                        vessel_ids=valid_vessels,
+                        env_factory=env_factory,
+                        deterministic_action=lambda observation: current_model.predict(
+                            observation, deterministic=True
+                        )[0],
+                        episodes_per_vessel=VALID_EPISODES_PER_VESSEL,
+                        max_episode_steps=args.max_episode_steps,
+                        base_seed=int(args.seed) + 100_000,
+                    )
+                finally:
+                    current_model.policy.set_training_mode(was_training)
+
+            episode_callback = EpochExperimentCallback(
                 context=context,
+                algorithm_name="sac",
+                variant=args.variant,
                 epochs=args.epochs,
                 episodes_per_epoch=args.episodes_per_epoch,
                 model_dir=model_dir,
-                checkpoint_prefix=checkpoint_prefix,
+                run_dir=run_dir,
+                validation_interval=VALID_INTERVAL,
+                validation_fn=None if args.skip_validation else run_validation,
+                resume_progress=not args.reset_num_timesteps,
             )
         else:
             episode_callback = None

@@ -227,8 +227,15 @@ def resolve_training_task(kwargs):
         "Y003_right",
     ] + artificial_models
 
+    configured_asset_root = kwargs.get("asset_root")
+    asset_roots = (
+        [Path(configured_asset_root).expanduser().resolve()]
+        if configured_asset_root
+        else [TRAIN_MESH_DIR, TEST_MESH_DIR]
+    )
+
     def _resolve_asset(model_name, stl_candidates, centerline_candidates):
-        model_dirs = [TRAIN_MESH_DIR / model_name, TEST_MESH_DIR / model_name]
+        model_dirs = [base_dir / model_name for base_dir in asset_roots]
 
         environment_stl = None
         centerline_vtk = None
@@ -259,12 +266,13 @@ def resolve_training_task(kwargs):
 
         if environment_stl is None:
             raise FileNotFoundError(
-                f"No STL found for model={model_name}. Tried: {stl_candidates} in train/test"
+                f"No STL found for model={model_name}. Tried: {stl_candidates} "
+                f"under {[str(path) for path in asset_roots]}"
             )
         if centerline_vtk is None:
             raise FileNotFoundError(
                 f"No centerline VTK found for model={model_name}. "
-                f"Tried: {centerline_candidates} in train/test"
+                f"Tried: {centerline_candidates} under {[str(path) for path in asset_roots]}"
             )
 
         return environment_stl, centerline_vtk
@@ -371,9 +379,9 @@ def resolve_training_task(kwargs):
     chosen_model = str(chosen_model)
 
     y_base_model, y_branch = _y_base_and_branch(chosen_model)
-    chosen_dir_exists = any((base_dir / chosen_model).is_dir() for base_dir in (TRAIN_MESH_DIR, TEST_MESH_DIR))
+    chosen_dir_exists = any((base_dir / chosen_model).is_dir() for base_dir in asset_roots)
     y_base_dir_exists = chosen_model.startswith("Y") and any(
-        (base_dir / y_base_model).is_dir() for base_dir in (TRAIN_MESH_DIR, TEST_MESH_DIR)
+        (base_dir / y_base_model).is_dir() for base_dir in asset_roots
     )
 
     if chosen_model not in supported_models and not chosen_dir_exists and not y_base_dir_exists:

@@ -1,4 +1,4 @@
-"""Scale-aware defaults for non-ROS artificial-vessel SAC training.
+"""Scale-aware defaults for non-ROS artificial-vessel RL training.
 
 The ten generated training vessels define the design envelope below.  Keep
 these values synchronized with ``tools/generate_artificial_vessels.py`` when
@@ -100,13 +100,23 @@ FRICTION_COEFFICIENT = 0.01
 CONSTRAINT_TOLERANCE = 1e-6
 CONSTRAINT_MAX_ITERATIONS = 20000
 
+# Shared formal experiment protocol.  Training episode counts are global
+# across every distributed rank, not per-rank budgets.
+NUM_EPOCHS = 50
+TRAIN_EPISODES_PER_EPOCH = 100
+CHECKPOINT_INTERVAL = 1
+VALID_INTERVAL = 2
+VALID_VESSELS = 5
+VALID_EPISODES_PER_VESSEL = 2
+VALID_EPISODES_TOTAL = VALID_VESSELS * VALID_EPISODES_PER_VESSEL
+
 # SAC defaults for the 4-NPU target. Batch size and environment count are
 # global values; train_sac.py divides them evenly between ranks.
 # Comparison runs use an episode-based budget.  A vectorized step can finish
 # several environments at once, so the callback stops at the first vector
 # step reaching the boundary (the reported count is therefore >= 100).
-SAC_EPOCHS = 20
-SAC_EPISODES_PER_EPOCH = 100
+SAC_EPOCHS = NUM_EPOCHS
+SAC_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
 SAC_STEPS_PER_EPOCH = MAX_EPISODE_STEPS * SAC_EPISODES_PER_EPOCH
 SAC_TOTAL_TIMESTEPS = SAC_EPOCHS * SAC_STEPS_PER_EPOCH
 SAC_N_ENVS = 32
@@ -118,6 +128,22 @@ SAC_TRAIN_FREQ = 1
 SAC_GRADIENT_STEPS = -1
 SAC_TAU = 0.005
 SAC_GAMMA = 0.995
+
+# PPO baseline defaults.  ``n_steps`` is per environment; batch size is global
+# and is divided evenly between synchronized ranks, just like SAC.
+PPO_EPOCHS = NUM_EPOCHS
+PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
+PPO_N_ENVS = SAC_N_ENVS
+PPO_LEARNING_RATE = 3e-4
+PPO_N_STEPS = 512
+PPO_BATCH_SIZE = 512
+PPO_N_EPOCHS = 10
+PPO_GAMMA = SAC_GAMMA
+PPO_GAE_LAMBDA = 0.95
+PPO_CLIP_RANGE = 0.2
+PPO_ENT_COEF = 0.0
+PPO_VF_COEF = 0.5
+PPO_MAX_GRAD_NORM = 0.5
 
 
 def validate_training_defaults() -> None:
