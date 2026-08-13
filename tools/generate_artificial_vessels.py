@@ -69,6 +69,7 @@ class BranchSpec:
     model_id: str
     seed: int
     x_scale: float
+    y_scale: float
     z_scale_mm: float
     curve_mm: float
     trunk_radius_mm: float
@@ -87,11 +88,23 @@ CURVED_SPECS: Tuple[CurvedSpec, ...] = (
 
 
 BRANCH_SPECS: Tuple[BranchSpec, ...] = (
-    BranchSpec("B01", 201, 0.80, 5.0, 2.0, 5.0, 3.4, (45.0, 65.0), "low"),
-    BranchSpec("B02", 202, 1.00, 11.0, 4.0, 5.0, 3.2, (35.0, 80.0), "medium-low"),
-    BranchSpec("B03", 203, 0.90, 17.0, 6.0, 5.1, 3.0, (25.0, 55.0), "medium"),
-    BranchSpec("B04", 204, 1.28, 22.0, 7.0, 5.2, 2.9, (65.0, 110.0), "medium-high"),
-    BranchSpec("B05", 205, 1.12, 31.0, 10.0, 5.2, 2.8, (30.0, 105.0), "high"),
+    BranchSpec("B01", 201, 0.80, 1.00, 5.0, 2.0, 5.0, 3.4, (45.0, 65.0), "low"),
+    BranchSpec("B02", 202, 1.00, 1.00, 11.0, 4.0, 5.0, 3.2, (35.0, 80.0), "medium-low"),
+    BranchSpec("B03", 203, 0.90, 1.00, 17.0, 6.0, 5.1, 3.0, (25.0, 55.0), "medium"),
+    BranchSpec("B04", 204, 1.28, 1.00, 22.0, 7.0, 5.2, 2.9, (65.0, 110.0), "medium-high"),
+    BranchSpec("B05", 205, 1.12, 1.00, 31.0, 10.0, 5.2, 2.8, (30.0, 105.0), "high"),
+)
+
+# Held-out validation vessels.  Every model combines C-family-like long,
+# three-dimensional bends with B-family-like three-level branching.  These
+# parameters intentionally do not reuse the B01..B05 geometry/seed envelope.
+# V01/V02 are simple, V03/V04 medium, and V05 difficult.
+VALID_BRANCH_SPECS: Tuple[BranchSpec, ...] = (
+    BranchSpec("V01", 301, 0.92, 1.35, 12.0, 8.0, 5.4, 3.8, (42.0, 72.0), "easy"),
+    BranchSpec("V02", 302, 1.03, 1.48, 18.0, 12.0, 5.2, 3.6, (34.0, 84.0), "easy"),
+    BranchSpec("V03", 303, 1.13, 1.62, 28.0, 19.0, 5.0, 3.25, (26.0, 98.0), "medium"),
+    BranchSpec("V04", 304, 1.24, 1.72, 37.0, 26.0, 4.85, 3.05, (40.0, 112.0), "medium"),
+    BranchSpec("V05", 305, 1.34, 1.82, 48.0, 34.0, 4.65, 2.80, (22.0, 126.0), "hard"),
 )
 
 
@@ -225,7 +238,11 @@ def _branch_base_nodes(spec: BranchSpec) -> Tuple[Dict[str, np.ndarray], Dict[st
         if name not in ("root", "j0"):
             jitter = rng.normal(0.0, (1.6, 2.3, 0.7), size=3)
         nodes[name] = np.array(
-            [x * spec.x_scale + jitter[0], y + jitter[1], z_unit * spec.z_scale_mm + jitter[2]],
+            [
+                x * spec.x_scale + jitter[0],
+                y * spec.y_scale + jitter[1],
+                z_unit * spec.z_scale_mm + jitter[2],
+            ],
             dtype=np.float64,
         )
 
@@ -940,6 +957,7 @@ def generate_branch_model(spec: BranchSpec, model_dir: Path, spacing_mm: float) 
         "catheter_outer_diameter_mm": CATHETER_OUTER_DIAMETER_MM,
         "parameters": {
             "x_scale": spec.x_scale,
+            "y_scale": spec.y_scale,
             "z_scale_mm": spec.z_scale_mm,
             "curve_mm": spec.curve_mm,
             "trunk_radius_mm": spec.trunk_radius_mm,
@@ -977,13 +995,13 @@ def parse_args() -> argparse.Namespace:
         "--output-root",
         type=Path,
         default=TRAIN_MESH_DIR,
-        help="Destination containing C01..C05 and B01..B05.",
+        help="Destination containing generated vessel bundles.",
     )
     parser.add_argument(
         "--models",
         nargs="*",
         default=[],
-        help="Optional model IDs to generate. Default: all ten.",
+        help="Optional model IDs to generate. Default: training C01..C05 and B01..B05.",
     )
     parser.add_argument(
         "--spacing-mm",
@@ -1002,7 +1020,7 @@ def main() -> int:
     args = parse_args()
     output_root = args.output_root.resolve()
     selected = set(args.models or [s.model_id for s in CURVED_SPECS + BRANCH_SPECS])
-    known = {s.model_id for s in CURVED_SPECS + BRANCH_SPECS}
+    known = {s.model_id for s in CURVED_SPECS + BRANCH_SPECS + VALID_BRANCH_SPECS}
     unknown = sorted(selected - known)
     if unknown:
         raise SystemExit(f"Unknown model IDs: {unknown}")
@@ -1035,7 +1053,7 @@ def main() -> int:
             flush=True,
         )
 
-    for spec in BRANCH_SPECS:
+    for spec in BRANCH_SPECS + VALID_BRANCH_SPECS:
         if spec.model_id not in selected:
             continue
         model_dir = output_root / spec.model_id
