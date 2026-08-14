@@ -163,12 +163,24 @@ class EpochExperimentCallback(BaseCallback):
             )
         except BaseException as exc:
             error_text = f"rank={self.context.rank} {type(exc).__name__}: {exc}"
+            print(
+                f"[VALID][Rank {self.context.rank}][Epoch {epoch:03d}] "
+                f"status=failed error={error_text}",
+                flush=True,
+            )
 
         error_texts = self.context.all_gather_text(error_text)
         failures = [text for text in error_texts if text]
         if failures:
-            self.context.barrier()
-            raise RuntimeError("Parallel validation failed: " + " | ".join(failures))
+            # Validation must never terminate a long-running distributed
+            # training job. Per-episode failures are normally converted into
+            # ValidationEpisodeResult records by evaluate_policy; this is the
+            # final guard for unexpected rank-local infrastructure errors.
+            print(
+                f"[VALID][Rank {self.context.rank}][Epoch {epoch:03d}] "
+                "status=continuing_after_errors errors=" + " | ".join(failures),
+                flush=True,
+            )
 
         payloads = self.context.all_gather_text(local_payload)
         if self.context.is_main:
@@ -217,7 +229,7 @@ class EpochExperimentCallback(BaseCallback):
                         self.run_dir / "valid_episodes.csv",
                         [
                             "epoch", "vessel_id", "episode_index", "seed", "success",
-                            "terminal_reason", "steps", "reward",
+                            "terminal_reason", "steps", "reward", "error",
                         ],
                         {
                             "epoch": epoch,
@@ -228,6 +240,7 @@ class EpochExperimentCallback(BaseCallback):
                             "terminal_reason": episode_result.terminal_reason,
                             "steps": episode_result.steps,
                             "reward": episode_result.reward,
+                            "error": episode_result.error,
                         },
                     )
                 print(
@@ -243,7 +256,11 @@ class EpochExperimentCallback(BaseCallback):
         error_text = self.context.broadcast_text(error_text)
         self.context.barrier()
         if error_text:
-            raise RuntimeError(f"Validation result handling failed on rank 0: {error_text}")
+            print(
+                f"[VALID][Rank {self.context.rank}][Epoch {epoch:03d}] "
+                "status=result_handling_failed_continuing error=" + error_text,
+                flush=True,
+            )
 
     def _finish_epoch(self, epoch: int) -> None:
         train_success_rate = float(self._epoch_success_count / self.episodes_per_epoch)

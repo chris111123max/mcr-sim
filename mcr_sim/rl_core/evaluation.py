@@ -54,6 +54,7 @@ class ValidationEpisodeResult:
     terminal_reason: str
     steps: int
     reward: float
+    error: str = ""
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,27 @@ def evaluate_policy(
     """
 
     results: List[ValidationEpisodeResult] = []
+
+    def record_failure(vessel_id, episode_index, seed, step_count, reward, exc):
+        error_text = f"{type(exc).__name__}: {exc}"
+        print(
+            f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+            f"episode={episode_index} status=failed error={error_text}",
+            flush=True,
+        )
+        results.append(
+            ValidationEpisodeResult(
+                vessel_id=str(vessel_id),
+                episode_index=int(episode_index),
+                seed=int(seed),
+                success=False,
+                terminal_reason="validation_error",
+                steps=int(step_count),
+                reward=float(reward),
+                error=error_text,
+            )
+        )
+
     with _preserve_rng_state(), th.no_grad():
         task_rank = int(task_rank)
         task_world_size = max(1, int(task_world_size))
@@ -128,58 +150,133 @@ def evaluate_policy(
             ]
             if not local_episode_indices:
                 continue
-            env = env_factory(str(vessel_id))
+            print(
+                f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                f"status=start episodes={local_episode_indices}",
+                flush=True,
+            )
+            env = None
+            try:
+                env = env_factory(str(vessel_id))
+            except Exception as exc:
+                for episode_index in local_episode_indices:
+                    seed = int(base_seed) + vessel_index * int(episodes_per_vessel) + episode_index
+                    record_failure(vessel_id, episode_index, seed, 0, 0.0, exc)
+                print(
+                    f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                    "status=finished_with_errors",
+                    flush=True,
+                )
+                continue
+
+            vessel_result_start = len(results)
             try:
                 for episode_index in local_episode_indices:
                     seed = int(base_seed) + vessel_index * int(episodes_per_vessel) + episode_index
-                    try:
-                        reset_result = env.reset(seed=seed)
-                    except TypeError:
-                        if hasattr(env, "seed"):
-                            env.seed(seed)
-                        reset_result = env.reset()
-                    observation = (
-                        reset_result[0]
-                        if isinstance(reset_result, tuple) and len(reset_result) == 2
-                        else reset_result
-                    )
                     total_reward = 0.0
-                    final_info = {}
                     step_count = 0
-                    done = False
-                    for step_count in range(1, int(max_episode_steps) + 1):
-                        action = deterministic_action(observation)
-                        step_result = env.step(action)
-                        if len(step_result) == 5:
-                            observation, reward, terminated, truncated, info = step_result
-                            done = bool(terminated or truncated)
-                            final_info = info
-                        else:
-                            observation, reward, dones, infos = step_result
-                            done = bool(np.asarray(dones).reshape(-1)[0])
-                            final_info = infos[0] if isinstance(infos, (list, tuple)) else infos
-                        total_reward += float(np.asarray(reward).reshape(-1)[0])
-                        if done:
-                            break
-                    success = bool(done and final_info.get("done_by_target", False))
-                    terminal_reason = (
-                        str(final_info.get("terminal_reason", "other"))
-                        if done
-                        else "timeout"
+                    print(
+                        f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                        f"episode={episode_index} seed={seed} status=start",
+                        flush=True,
                     )
-                    results.append(
-                        ValidationEpisodeResult(
-                            vessel_id=str(vessel_id),
-                            episode_index=episode_index,
-                            seed=seed,
-                            success=success,
-                            terminal_reason=terminal_reason,
-                            steps=step_count,
-                            reward=total_reward,
+                    try:
+                        try:
+                            reset_result = env.reset(seed=seed)
+                        except TypeError:
+                            if hasattr(env, "seed"):
+                                env.seed(seed)
+                            reset_result = env.reset()
+                        observation = (
+                            reset_result[0]
+                            if isinstance(reset_result, tuple) and len(reset_result) == 2
+                            else reset_result
                         )
-                    )
+                        final_info = {}
+                        done = False
+                        for step_count in range(1, int(max_episode_steps) + 1):
+                            action = deterministic_action(observation)
+                            step_result = env.step(action)
+                            if len(step_result) == 5:
+                                observation, reward, terminated, truncated, info = step_result
+                                done = bool(terminated or truncated)
+                                final_info = info
+                            else:
+                                observation, reward, dones, infos = step_result
+                                done = bool(np.asarray(dones).reshape(-1)[0])
+                                final_info = infos[0] if isinstance(infos, (list, tuple)) else infos
+                            total_reward += float(np.asarray(reward).reshape(-1)[0])
+                            if done:
+                                break
+                        success = bool(done and final_info.get("done_by_target", False))
+                        terminal_reason = (
+                            str(final_info.get("terminal_reason", "other"))
+                            if done
+                            else "timeout"
+                        )
+                        results.append(
+                            ValidationEpisodeResult(
+                                vessel_id=str(vessel_id),
+                                episode_index=episode_index,
+                                seed=seed,
+                                success=success,
+                                terminal_reason=terminal_reason,
+                                steps=step_count,
+                                reward=total_reward,
+                            )
+                        )
+                        print(
+                            f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                            f"episode={episode_index} status=finished "
+                            f"success={success} terminal_reason={terminal_reason} "
+                            f"steps={step_count}",
+                            flush=True,
+                        )
+                    except Exception as exc:
+                        record_failure(
+                            vessel_id,
+                            episode_index,
+                            seed,
+                            step_count,
+                            total_reward,
+                            exc,
+                        )
             finally:
-                env.close()
+                try:
+                    env.close()
+                except Exception as exc:
+                    error_text = f"{type(exc).__name__}: {exc}"
+                    print(
+                        f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                        f"status=close_failed error={error_text}",
+                        flush=True,
+                    )
+                    # A failed SOFA teardown can poison the next validation
+                    # scene. Treat this vessel's local episodes as failed but
+                    # keep all ranks alive and able to reach the collectives.
+                    for result_index in range(vessel_result_start, len(results)):
+                        item = results[result_index]
+                        if item.vessel_id == str(vessel_id):
+                            results[result_index] = ValidationEpisodeResult(
+                                vessel_id=item.vessel_id,
+                                episode_index=item.episode_index,
+                                seed=item.seed,
+                                success=False,
+                                terminal_reason="validation_error",
+                                steps=item.steps,
+                                reward=item.reward,
+                                error=error_text,
+                            )
+            vessel_errors = any(
+                item.error
+                for item in results[vessel_result_start:]
+                if item.vessel_id == str(vessel_id)
+            )
+            print(
+                f"[VALID][Rank {task_rank}][Vessel {vessel_id}] "
+                f"status={'finished_with_errors' if vessel_errors else 'finished'}",
+                flush=True,
+            )
 
     success_count = sum(int(item.success) for item in results)
     episode_count = len(results)
@@ -203,6 +300,7 @@ def validation_result_to_json(result: ValidationResult) -> str:
                 "terminal_reason": item.terminal_reason,
                 "steps": item.steps,
                 "reward": item.reward,
+                "error": item.error,
             }
             for item in result.episodes
         ],

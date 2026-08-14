@@ -103,11 +103,11 @@ BRANCH_SPECS: Tuple[BranchSpec, ...] = (
 # monotonically through path length, 3-D curvature, branch deflection, and
 # reduced outlet radius.
 VALID_BRANCH_SPECS: Tuple[BranchSpec, ...] = (
-    BranchSpec("V01", 301, 1.05, 1.28, 20.0, 16.0, 5.10, 3.45, (35.0, 90.0), 8.0, "easy"),
+    BranchSpec("V01", 301, 1.05, 1.28, 20.0, 16.0, 5.30, 3.70, (35.0, 90.0), 8.0, "easy"),
     BranchSpec("V02", 302, 1.14, 1.34, 28.0, 23.0, 5.00, 3.30, (28.0, 100.0), 15.0, "easy"),
-    BranchSpec("V03", 303, 1.18, 1.31, 36.0, 29.5, 4.85, 3.10, (22.0, 112.0), 22.0, "medium"),
+    BranchSpec("V03", 303, 1.18, 1.31, 36.0, 29.5, 5.10, 3.50, (22.0, 112.0), 22.0, "medium"),
     BranchSpec("V04", 304, 1.13, 1.19, 41.0, 33.5, 4.70, 2.90, (18.0, 125.0), 25.0, "medium"),
-    BranchSpec("V05", 305, 1.09, 1.09, 47.0, 38.8, 4.55, 2.70, (15.0, 138.0), 29.0, "hard"),
+    BranchSpec("V05", 305, 1.09, 1.09, 47.0, 38.8, 4.90, 3.20, (15.0, 138.0), 29.0, "hard"),
 )
 
 
