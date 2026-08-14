@@ -105,7 +105,10 @@ BRANCH_SPECS: Tuple[BranchSpec, ...] = (
 VALID_BRANCH_SPECS: Tuple[BranchSpec, ...] = (
     BranchSpec("V01", 301, 1.05, 1.28, 20.0, 16.0, 5.30, 3.70, (35.0, 90.0), 8.0, "easy"),
     BranchSpec("V02", 302, 1.14, 1.34, 28.0, 23.0, 5.00, 3.30, (28.0, 100.0), 15.0, "easy"),
-    BranchSpec("V03", 303, 1.18, 1.31, 36.0, 29.5, 5.10, 3.50, (22.0, 112.0), 22.0, "medium"),
+    # V03 v2: new seed and geometry envelope.  It remains the middle-difficulty
+    # held-out vessel, but no longer reuses the surface that contained a
+    # terminal-clipping sliver in the first V03 bundle.
+    BranchSpec("V03", 1303, 1.21, 1.29, 38.0, 31.0, 5.20, 3.60, (20.0, 118.0), 23.5, "medium"),
     BranchSpec("V04", 304, 1.13, 1.19, 41.0, 33.5, 4.70, 2.90, (18.0, 125.0), 25.0, "medium"),
     BranchSpec("V05", 305, 1.09, 1.09, 47.0, 38.8, 4.90, 3.20, (15.0, 138.0), 29.0, "hard"),
 )
@@ -945,6 +948,11 @@ def generate_branch_model(spec: BranchSpec, model_dir: Path, spacing_mm: float) 
         poly = next(poly for poly in polylines if poly["end"] == outlet)
         terminals.append((nodes[outlet], nodes[outlet] - poly["points"][-2], node_radii[outlet]))
     collision = remove_terminal_caps(collision_closed, terminals, collision_spacing_mm)
+    collision = clean_triangles(
+        collision,
+        min_edge_mm=1e-5,
+        min_area_mm2=2e-8,
+    )
 
     visual_spacing_mm = max(1.4, spacing_mm)
     visual_r = seg_r + 1.0
@@ -956,6 +964,11 @@ def generate_branch_model(spec: BranchSpec, model_dir: Path, spacing_mm: float) 
     )
     visual_terminals = [(p, d, r + 1.0) for p, d, r in terminals]
     visual = remove_terminal_caps(visual_closed, visual_terminals, visual_spacing_mm)
+    visual = clean_triangles(
+        visual,
+        min_edge_mm=1e-5,
+        min_area_mm2=2e-8,
+    )
 
     collision_path = model_dir / "collision_inner.stl"
     visual_path = model_dir / "visual_wall.stl"

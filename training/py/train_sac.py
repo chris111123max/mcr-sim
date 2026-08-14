@@ -50,6 +50,9 @@ from mcr_sim.training_config import (
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
     REWARD_OFF_TARGET_BRANCH,
+    REWARD_NO_PROGRESS,
+    REWARD_NO_PROGRESS_TERMINAL,
+    REWARD_RETRACTION,
     REWARD_STEP,
     REWARD_SUCCESS,
     REWARD_TARGET_APPROACH,
@@ -67,6 +70,7 @@ from mcr_sim.training_config import (
     SAC_GRADIENT_STEPS,
     SAC_LEARNING_RATE,
     SAC_LEARNING_STARTS,
+    SAC_MAX_GRAD_NORM,
     SAC_N_ENVS,
     SAC_STEPS_PER_EPOCH,
     SAC_TAU,
@@ -85,6 +89,7 @@ from mcr_sim.training_config import (
     VESSEL_SCALE_MIN,
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
+    reward_profile,
 )
 
 DEFAULT_LOG_ROOT = TRAINING_RUNS_DIR
@@ -227,6 +232,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "done_by_timeout": bool(info.get("done_by_timeout", False)),
             "done_by_out_of_vessel": bool(info.get("done_by_out_of_vessel", False)),
             "done_by_wrong_branch": bool(info.get("done_by_wrong_branch", False)),
+            "done_by_no_progress": bool(info.get("done_by_no_progress", False)),
             "done_by_non_finite": bool(info.get("done_by_non_finite", False)),
             "ep_len": self._safe_float(episode_info.get("l", np.nan)),
             "ep_reward": self._safe_float(episode_info.get("r", np.nan)),
@@ -273,7 +279,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             )
             + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0))
-            + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0)),
+            + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0))
+            + self._safe_float(info.get("episode_reward_no_progress_terminal_penalty", 0.0)),
             "reward_safety": self._safe_float(
                 info.get("episode_reward_wall_proximity_penalty", 0.0)
             )
@@ -283,7 +290,31 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
             ),
+            "reward_behavior": self._safe_float(
+                info.get("episode_reward_retraction_penalty", 0.0)
+            )
+            + self._safe_float(
+                info.get("episode_reward_no_progress_penalty", 0.0)
+            ),
             "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0)),
+            "insert_action_mean": self._safe_float(
+                info.get("insert_action_mean_episode", np.nan)
+            ),
+            "insert_positive_fraction": self._safe_float(
+                info.get("insert_positive_fraction_episode", np.nan)
+            ),
+            "insert_negative_fraction": self._safe_float(
+                info.get("insert_negative_fraction_episode", np.nan)
+            ),
+            "insert_near_zero_fraction": self._safe_float(
+                info.get("insert_near_zero_fraction_episode", np.nan)
+            ),
+            "inserted_length_final_m": self._safe_float(
+                info.get("inserted_length_final", np.nan)
+            ),
+            "inserted_length_max_m": self._safe_float(
+                info.get("inserted_length_max_episode", np.nan)
+            ),
         }
 
     def _on_step(self) -> bool:
@@ -335,6 +366,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"terminal/timeout_rate_w{self.window_size}", self._rate(ep["done_by_timeout"] for ep in recent))
             self.logger.record(f"terminal/out_of_vessel_rate_w{self.window_size}", self._rate(ep["done_by_out_of_vessel"] for ep in recent))
             self.logger.record(f"terminal/wrong_branch_rate_w{self.window_size}", self._rate(ep["done_by_wrong_branch"] for ep in recent))
+            self.logger.record(f"terminal/no_progress_rate_w{self.window_size}", self._rate(ep["done_by_no_progress"] for ep in recent))
             self.logger.record(f"terminal/non_finite_rate_w{self.window_size}", self._rate(ep["done_by_non_finite"] for ep in recent))
             self.logger.record(f"rollout_recent/safe_success_rate_w{self.window_size}", self._rate(ep["safe_success"] for ep in recent))
             self.logger.record(f"rollout_recent/contact_free_success_rate_w{self.window_size}", self._rate(ep["contact_free_success"] for ep in recent), exclude="stdout")
@@ -350,7 +382,14 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"reward_components/waypoints_w{self.window_size}", self._mean(ep["reward_waypoints"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/insert_mean_w{self.window_size}", self._mean(ep["insert_action_mean"] for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/insert_positive_fraction_w{self.window_size}", self._mean(ep["insert_positive_fraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/insert_negative_fraction_w{self.window_size}", self._mean(ep["insert_negative_fraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/insert_near_zero_fraction_w{self.window_size}", self._mean(ep["insert_near_zero_fraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/inserted_length_final_mm_w{self.window_size}", self._mean(ep["inserted_length_final_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"actions/inserted_length_max_mm_w{self.window_size}", self._mean(ep["inserted_length_max_m"] * 1000.0 for ep in recent), exclude="stdout")
 
         if self.total_episodes > 0:
             self.logger.record(f"rollout_cumulative/success_{self.success_label}", float(self.total_success_target / self.total_episodes))
@@ -380,6 +419,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             timeout_rate = self._rate(ep["done_by_timeout"] for ep in task_window)
             out_rate = self._rate(ep["done_by_out_of_vessel"] for ep in task_window)
             wrong_branch_rate = self._rate(ep["done_by_wrong_branch"] for ep in task_window)
+            no_progress_rate = self._rate(ep["done_by_no_progress"] for ep in task_window)
             non_finite_rate = self._rate(ep["done_by_non_finite"] for ep in task_window)
             final_dist_mm = self._mean(ep["final_dist_m"] * 1000.0 for ep in task_window)
             min_dist_mm = self._mean(ep["min_dist_m"] * 1000.0 for ep in task_window)
@@ -398,6 +438,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"{prefix}/timeout_rate_w{self.window_size}", timeout_rate, exclude="stdout")
             self.logger.record(f"{prefix}/out_of_vessel_rate_w{self.window_size}", out_rate, exclude="stdout")
             self.logger.record(f"{prefix}/wrong_branch_rate_w{self.window_size}", wrong_branch_rate, exclude="stdout")
+            self.logger.record(f"{prefix}/no_progress_rate_w{self.window_size}", no_progress_rate, exclude="stdout")
             self.logger.record(f"{prefix}/non_finite_rate_w{self.window_size}", non_finite_rate, exclude="stdout")
             self.logger.record(f"{prefix}/final_dist_mm_w{self.window_size}", final_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/min_dist_mm_w{self.window_size}", min_dist_mm, exclude="stdout")
@@ -1326,7 +1367,10 @@ def main():
             # All distributed ranks must enter the same all-reduce collectives.
             callback_list = episode_callback
 
-        algorithm_class = DistributedSAC if context.enabled else SAC
+        # Use the shared SAC implementation on one or many devices so gradient
+        # clipping and reward diagnostics have identical semantics everywhere.
+        # DistributedContext methods are no-ops when distributed=False.
+        algorithm_class = DistributedSAC
         tensorboard_log = str(tb_dir) if context.is_main else None
         sb3_verbose = int(args.sb3_verbose) if context.is_main else 0
 
@@ -1411,9 +1455,9 @@ def main():
                     device=args.resolved_device,
                     verbose=sb3_verbose,
                     replay_buffer_class=replay_buffer_class,
+                    distributed_context=context,
+                    max_grad_norm=SAC_MAX_GRAD_NORM,
                 )
-                if context.enabled:
-                    model_kwargs["distributed_context"] = context
                 return algorithm_class(**model_kwargs)
 
             model, args.npu_replay_buffer_enabled, replay_fallbacks = (
@@ -1461,6 +1505,9 @@ def main():
         args.npu_fused_adam_status = fused_status
         args.npu_fused_adam_enabled = fused_adam_enabled
         args.npu_replay_buffer_fallbacks = replay_fallbacks
+        args.reward_profile = reward_profile()
+        args.sac_max_grad_norm = float(SAC_MAX_GRAD_NORM)
+        model.max_grad_norm = float(SAC_MAX_GRAD_NORM)
 
         if context.is_main:
             write_run_config(
@@ -1479,8 +1526,8 @@ def main():
                 f"{getattr(model.replay_buffer, 'storage_bytes', 0) / 1e6:.1f}"
             )
 
+        model.set_distributed_context(context)
         if context.enabled:
-            model.set_distributed_context(context)
             model.synchronize_parameters()
 
         if context.is_main:
@@ -1515,8 +1562,11 @@ def main():
                 f"{REWARD_TARGET_APPROACH:g} waypoint={REWARD_WAYPOINT_REACHED:g} "
                 f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
                 f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
+                f"retract/no_progress={REWARD_RETRACTION:g}/{REWARD_NO_PROGRESS:g} "
                 f"success={REWARD_SUCCESS:g} out={REWARD_OUT_OF_VESSEL:g} "
-                f"timeout={REWARD_TIMEOUT:g} step={REWARD_STEP:g}"
+                f"timeout/no_progress_terminal={REWARD_TIMEOUT:g}/"
+                f"{REWARD_NO_PROGRESS_TERMINAL:g} step={REWARD_STEP:g} "
+                f"grad_clip={SAC_MAX_GRAD_NORM:g}"
             )
             print(
                 f"[MCR TRAIN] terminal SDF>{SDF_OUTSIDE_CENTER_TOLERANCE_M*1000.0:.1f}mm "

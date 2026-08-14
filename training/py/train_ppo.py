@@ -58,6 +58,7 @@ from mcr_sim.training_config import (
     VALID_VESSELS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
+    reward_profile,
 )
 
 # Reuse the established SOFA environment construction and detailed rollout
@@ -173,6 +174,7 @@ def _override_learning_rate(model: PPO, learning_rate: float) -> None:
 
 def main():
     args = parse_args()
+    args.reward_profile = reward_profile()
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(
         enabled=args.distributed,

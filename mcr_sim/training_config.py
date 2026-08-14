@@ -71,23 +71,69 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward shaping.  Dense progress is normalized by 1 mm.  Its unit weight and
-# the small one-shot waypoint bonus keep total route shaping below terminal
-# success/failure magnitudes even for the longest 495 mm route.  VTI clearance
-# supplies smooth wall-risk/penetration terms; the complete graph supplies a
-# continuous off-route term plus a separately confirmed wrong-branch terminal.
-REWARD_PROGRESS_NORMALIZATION_M = 0.001
+# Reward profile v2.  The previous terminal rewards were O(1000) while one
+# correct 0.2 mm insertion produced only +0.2.  That made a stationary timeout
+# cheaper than early exploration and drove SAC's critic/actor into saturation.
+# Normalize progress by one maximum insertion action so safe forward motion is
+# the dominant dense signal, while keeping every single-step/terminal target at
+# a numerically manageable O(1)..O(100) scale.
+REWARD_PROFILE_VERSION = 2
+REWARD_PROGRESS_NORMALIZATION_M = MAX_INSERTION_PER_ACTION_M
 REWARD_WAYPOINT_APPROACH = 1.0
-REWARD_WAYPOINT_REACHED = 2.0
+REWARD_WAYPOINT_REACHED = 5.0
 REWARD_TARGET_APPROACH = 1.0
-REWARD_WALL_PROXIMITY = -0.5
-REWARD_WALL_PENETRATION = -5.0
-REWARD_OFF_TARGET_BRANCH = -2.0
-REWARD_WRONG_BRANCH = -1000.0
-REWARD_SUCCESS = 1500.0
-REWARD_OUT_OF_VESSEL = -1500.0
-REWARD_TIMEOUT = -1000.0
-REWARD_STEP = -0.01
+REWARD_WALL_PROXIMITY = -0.10
+REWARD_WALL_PENETRATION = -1.0
+REWARD_OFF_TARGET_BRANCH = -0.25
+REWARD_RETRACTION = -0.05
+REWARD_NO_PROGRESS = -0.025
+REWARD_WRONG_BRANCH = -100.0
+REWARD_SUCCESS = 100.0
+REWARD_OUT_OF_VESSEL = -100.0
+REWARD_TIMEOUT = -75.0
+REWARD_NO_PROGRESS_TERMINAL = -75.0
+REWARD_STEP = -0.005
+
+# A policy that stays at the insertion lower bound must not fill the replay
+# buffer with 4096-step timeout episodes.  Net ordered-waypoint approach is
+# measured over a long window so normal magnetic steering pauses are allowed.
+# Only sustained stagnation after the window is full becomes terminal.
+NO_PROGRESS_WINDOW_STEPS = 256
+NO_PROGRESS_GRACE_STEPS = 256
+NO_PROGRESS_CONFIRM_STEPS = 512
+NO_PROGRESS_MIN_NET_APPROACH_M = 0.001
+
+# SAC has no gradient clipping in upstream SB3.  The shared distributed SAC
+# implementation applies this bound after cross-rank averaging and before the
+# optimizer step.  PPO retains its own PPO_MAX_GRAD_NORM below.
+SAC_MAX_GRAD_NORM = 10.0
+
+
+def reward_profile() -> dict:
+    """Return the exact shared reward/no-progress settings for run metadata."""
+
+    return {
+        "version": REWARD_PROFILE_VERSION,
+        "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
+        "waypoint_approach": REWARD_WAYPOINT_APPROACH,
+        "waypoint_reached": REWARD_WAYPOINT_REACHED,
+        "target_approach": REWARD_TARGET_APPROACH,
+        "wall_proximity": REWARD_WALL_PROXIMITY,
+        "wall_penetration": REWARD_WALL_PENETRATION,
+        "off_target_branch": REWARD_OFF_TARGET_BRANCH,
+        "retraction": REWARD_RETRACTION,
+        "no_progress": REWARD_NO_PROGRESS,
+        "wrong_branch": REWARD_WRONG_BRANCH,
+        "success": REWARD_SUCCESS,
+        "out_of_vessel": REWARD_OUT_OF_VESSEL,
+        "timeout": REWARD_TIMEOUT,
+        "no_progress_terminal": REWARD_NO_PROGRESS_TERMINAL,
+        "step": REWARD_STEP,
+        "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
+        "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
+        "no_progress_confirm_steps": NO_PROGRESS_CONFIRM_STEPS,
+        "no_progress_min_net_approach_m": NO_PROGRESS_MIN_NET_APPROACH_M,
+    }
 
 # Collision/contact defaults.  Catheter Line/Point primitives represent their
 # physical radius through proximity.  Vessel collision remains triangle-only.
@@ -177,28 +223,22 @@ def validate_training_defaults() -> None:
         and REWARD_OUT_OF_VESSEL < 0.0
         and REWARD_WRONG_BRANCH < 0.0
         and REWARD_TIMEOUT < 0.0
+        and REWARD_NO_PROGRESS_TERMINAL < 0.0
     ):
         raise ValueError("Terminal reward signs are invalid.")
-    dense_progress_upper = (
-        longest_scaled_route
-        / REWARD_PROGRESS_NORMALIZATION_M
-        * max(REWARD_WAYPOINT_APPROACH, REWARD_TARGET_APPROACH)
-    )
-    waypoint_bonus_upper = (
-        math.ceil(longest_scaled_route / WAYPOINT_SPACING_M)
-        * REWARD_WAYPOINT_REACHED
-    )
-    shaping_upper = dense_progress_upper + waypoint_bonus_upper
-    terminal_magnitude_floor = min(
-        REWARD_SUCCESS,
-        abs(REWARD_OUT_OF_VESSEL),
-        abs(REWARD_WRONG_BRANCH),
-        abs(REWARD_TIMEOUT),
-    )
-    if terminal_magnitude_floor <= shaping_upper:
-        raise ValueError(
-            "Terminal rewards must dominate the longest-route shaping upper bound."
-        )
+    if REWARD_PROGRESS_NORMALIZATION_M > MAX_INSERTION_PER_ACTION_M:
+        raise ValueError("One full insertion action must yield at least one progress unit.")
+    if abs(REWARD_WALL_PROXIMITY) >= REWARD_WAYPOINT_APPROACH:
+        raise ValueError("Near-wall shaping must not outweigh one safe full progress step.")
+    if not (
+        NO_PROGRESS_WINDOW_STEPS > 0
+        and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS
+        and NO_PROGRESS_CONFIRM_STEPS > 0
+        and NO_PROGRESS_MIN_NET_APPROACH_M > 0.0
+    ):
+        raise ValueError("Invalid no-progress detection settings.")
+    if SAC_MAX_GRAD_NORM <= 0.0:
+        raise ValueError("SAC_MAX_GRAD_NORM must be positive.")
     if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:

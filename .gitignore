@@ -12,6 +12,7 @@ __pycache__/
 lastUsedGUI.ini
 
 # Training outputs
+.diagnostics/
 run_mul/
 runs/
 models/

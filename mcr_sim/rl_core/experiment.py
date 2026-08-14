@@ -71,6 +71,18 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_wrong_branch_count = 0
         self._epoch_non_finite_count = 0
         self._epoch_timeout_count = 0
+        self._epoch_no_progress_count = 0
+        self._epoch_reward_progress_sum = 0.0
+        self._epoch_reward_waypoints_sum = 0.0
+        self._epoch_reward_terminal_sum = 0.0
+        self._epoch_reward_safety_sum = 0.0
+        self._epoch_reward_behavior_sum = 0.0
+        self._epoch_reward_step_sum = 0.0
+        self._epoch_insert_action_mean_sum = 0.0
+        self._epoch_insert_positive_fraction_sum = 0.0
+        self._epoch_insert_negative_fraction_sum = 0.0
+        self._epoch_inserted_length_final_sum = 0.0
+        self._epoch_waypoint_ratio_sum = 0.0
         self._pending_episode_events = []
         self.best_valid_success_rate = -1.0
         self.best_epoch = 0
@@ -90,12 +102,43 @@ class EpochExperimentCallback(BaseCallback):
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        events = np.zeros((len(dones), 8), dtype=np.float32)
+        events = np.zeros((len(dones), 20), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
             info = infos[index]
             episode_info = info.get("episode", {})
+            waypoint_count = float(info.get("waypoint_reached_count_episode", 0.0))
+            waypoint_num = float(info.get("waypoint_num", 0.0))
+            waypoint_ratio = (
+                float(np.clip(waypoint_count / max(1.0, waypoint_num - 1.0), 0.0, 1.0))
+                if waypoint_num > 1.0
+                else 0.0
+            )
+            reward_progress = float(info.get("episode_reward_waypoint_approach", 0.0)) + float(
+                info.get("episode_reward_target_approach", 0.0)
+            )
+            reward_terminal = sum(
+                float(info.get(key, 0.0))
+                for key in (
+                    "episode_reward_successful_task",
+                    "episode_reward_out_of_vessel_penalty",
+                    "episode_reward_wrong_branch_penalty",
+                    "episode_reward_timeout_penalty",
+                    "episode_reward_no_progress_terminal_penalty",
+                )
+            )
+            reward_safety = sum(
+                float(info.get(key, 0.0))
+                for key in (
+                    "episode_reward_wall_proximity_penalty",
+                    "episode_reward_wall_penetration_penalty",
+                    "episode_reward_off_target_branch_penalty",
+                )
+            )
+            reward_behavior = float(info.get("episode_reward_retraction_penalty", 0.0)) + float(
+                info.get("episode_reward_no_progress_penalty", 0.0)
+            )
             events[index] = [
                 1.0,
                 float(bool(info.get("done_by_target", False))),
@@ -105,6 +148,18 @@ class EpochExperimentCallback(BaseCallback):
                 float(bool(info.get("done_by_wrong_branch", False))),
                 float(bool(info.get("done_by_non_finite", False))),
                 float(bool(info.get("TimeLimit.truncated", False) or info.get("terminal_reason") == "timeout")),
+                float(bool(info.get("done_by_no_progress", False))),
+                reward_progress,
+                float(info.get("episode_reward_waypoint_reached", 0.0)),
+                reward_terminal,
+                reward_safety,
+                reward_behavior,
+                float(info.get("episode_reward_step_penalty", 0.0)),
+                float(info.get("insert_action_mean_episode", 0.0)),
+                float(info.get("insert_positive_fraction_episode", 0.0)),
+                float(info.get("insert_negative_fraction_episode", 0.0)),
+                float(info.get("inserted_length_final", 0.0)),
+                1.0 if bool(info.get("done_by_target", False)) else waypoint_ratio,
             ]
         return events
 
@@ -268,6 +323,20 @@ class EpochExperimentCallback(BaseCallback):
         train_episode_steps_mean = float(
             self._epoch_episode_steps_sum / self.episodes_per_epoch
         )
+        epoch_divisor = float(self.episodes_per_epoch)
+        reward_progress_mean = self._epoch_reward_progress_sum / epoch_divisor
+        reward_waypoints_mean = self._epoch_reward_waypoints_sum / epoch_divisor
+        reward_terminal_mean = self._epoch_reward_terminal_sum / epoch_divisor
+        reward_safety_mean = self._epoch_reward_safety_sum / epoch_divisor
+        reward_behavior_mean = self._epoch_reward_behavior_sum / epoch_divisor
+        reward_step_mean = self._epoch_reward_step_sum / epoch_divisor
+        insert_action_mean = self._epoch_insert_action_mean_sum / epoch_divisor
+        insert_positive_fraction = self._epoch_insert_positive_fraction_sum / epoch_divisor
+        insert_negative_fraction = self._epoch_insert_negative_fraction_sum / epoch_divisor
+        inserted_length_final_mean_mm = (
+            self._epoch_inserted_length_final_sum / epoch_divisor * 1000.0
+        )
+        waypoint_reached_ratio_mean = self._epoch_waypoint_ratio_sum / epoch_divisor
         self._record_model_metadata(epoch, train_success_rate)
         checkpoint_path = self._checkpoint_path(epoch)
         if self.context.is_main:
@@ -275,12 +344,24 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/success_rate", train_success_rate)
             self.logger.record("train/reward_mean", train_reward_mean)
             self.logger.record("train/episode_steps_mean", train_episode_steps_mean)
+            self.logger.record("train/no_progress_rate", self._epoch_no_progress_count / epoch_divisor)
+            self.logger.record("train/reward_progress_mean", reward_progress_mean, exclude="stdout")
+            self.logger.record("train/reward_waypoints_mean", reward_waypoints_mean, exclude="stdout")
+            self.logger.record("train/reward_terminal_mean", reward_terminal_mean, exclude="stdout")
+            self.logger.record("train/reward_safety_mean", reward_safety_mean, exclude="stdout")
+            self.logger.record("train/reward_behavior_mean", reward_behavior_mean, exclude="stdout")
+            self.logger.record("train/reward_step_mean", reward_step_mean, exclude="stdout")
+            self.logger.record("train/insert_action_mean", insert_action_mean, exclude="stdout")
+            self.logger.record("train/insert_positive_fraction", insert_positive_fraction, exclude="stdout")
+            self.logger.record("train/insert_negative_fraction", insert_negative_fraction, exclude="stdout")
+            self.logger.record("train/inserted_length_final_mean_mm", inserted_length_final_mean_mm, exclude="stdout")
+            self.logger.record("train/waypoint_reached_ratio_mean", waypoint_reached_ratio_mean, exclude="stdout")
             self.logger.record("train/episodes", float(self.episodes_per_epoch), exclude="stdout")
             self.logger.record("train/global_completed_episodes", float(self.global_completed_episodes), exclude="stdout")
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_step_mean", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -292,6 +373,18 @@ class EpochExperimentCallback(BaseCallback):
                     "wrong_branch_count": self._epoch_wrong_branch_count,
                     "non_finite_count": self._epoch_non_finite_count,
                     "timeout_count": self._epoch_timeout_count,
+                    "no_progress_count": self._epoch_no_progress_count,
+                    "reward_progress_mean": reward_progress_mean,
+                    "reward_waypoints_mean": reward_waypoints_mean,
+                    "reward_terminal_mean": reward_terminal_mean,
+                    "reward_safety_mean": reward_safety_mean,
+                    "reward_behavior_mean": reward_behavior_mean,
+                    "reward_step_mean": reward_step_mean,
+                    "insert_action_mean": insert_action_mean,
+                    "insert_positive_fraction": insert_positive_fraction,
+                    "insert_negative_fraction": insert_negative_fraction,
+                    "inserted_length_final_mean_mm": inserted_length_final_mean_mm,
+                    "waypoint_reached_ratio_mean": waypoint_reached_ratio_mean,
                     "global_completed_episodes": self.global_completed_episodes,
                     "global_env_steps": self.model.global_env_steps,
                     "checkpoint": str(checkpoint_path) + ".zip",
@@ -318,6 +411,18 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_wrong_branch_count = 0
         self._epoch_non_finite_count = 0
         self._epoch_timeout_count = 0
+        self._epoch_no_progress_count = 0
+        self._epoch_reward_progress_sum = 0.0
+        self._epoch_reward_waypoints_sum = 0.0
+        self._epoch_reward_terminal_sum = 0.0
+        self._epoch_reward_safety_sum = 0.0
+        self._epoch_reward_behavior_sum = 0.0
+        self._epoch_reward_step_sum = 0.0
+        self._epoch_insert_action_mean_sum = 0.0
+        self._epoch_insert_positive_fraction_sum = 0.0
+        self._epoch_insert_negative_fraction_sum = 0.0
+        self._epoch_inserted_length_final_sum = 0.0
+        self._epoch_waypoint_ratio_sum = 0.0
 
     def _on_step(self) -> bool:
         self._pending_episode_events.append(self._local_episode_events())
@@ -356,6 +461,18 @@ class EpochExperimentCallback(BaseCallback):
             self._epoch_wrong_branch_count += int(accepted[:, 5].sum())
             self._epoch_non_finite_count += int(accepted[:, 6].sum())
             self._epoch_timeout_count += int(accepted[:, 7].sum())
+            self._epoch_no_progress_count += int(accepted[:, 8].sum())
+            self._epoch_reward_progress_sum += float(accepted[:, 9].sum())
+            self._epoch_reward_waypoints_sum += float(accepted[:, 10].sum())
+            self._epoch_reward_terminal_sum += float(accepted[:, 11].sum())
+            self._epoch_reward_safety_sum += float(accepted[:, 12].sum())
+            self._epoch_reward_behavior_sum += float(accepted[:, 13].sum())
+            self._epoch_reward_step_sum += float(accepted[:, 14].sum())
+            self._epoch_insert_action_mean_sum += float(accepted[:, 15].sum())
+            self._epoch_insert_positive_fraction_sum += float(accepted[:, 16].sum())
+            self._epoch_insert_negative_fraction_sum += float(accepted[:, 17].sum())
+            self._epoch_inserted_length_final_sum += float(accepted[:, 18].sum())
+            self._epoch_waypoint_ratio_sum += float(accepted[:, 19].sum())
             cursor += take
             if (
                 self.next_epoch <= self.epochs

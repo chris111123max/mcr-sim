@@ -21,13 +21,20 @@ from .training_config import (
     LOCAL_FIELD_ACTION_ANGLE_RAD,
     MAX_ACTION_DELTA,
     MAX_EPISODE_STEPS,
+    NO_PROGRESS_CONFIRM_STEPS,
+    NO_PROGRESS_GRACE_STEPS,
+    NO_PROGRESS_MIN_NET_APPROACH_M,
+    NO_PROGRESS_WINDOW_STEPS,
     OUT_OF_VESSEL_FALLBACK_DISTANCE_M,
     OUT_OF_VESSEL_SAFETY_RATIO,
     PRE_TARGET_WAYPOINT_OFFSET_M,
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
     REWARD_OFF_TARGET_BRANCH,
+    REWARD_NO_PROGRESS,
+    REWARD_NO_PROGRESS_TERMINAL,
     REWARD_PROGRESS_NORMALIZATION_M,
+    REWARD_RETRACTION,
     REWARD_STEP,
     REWARD_SUCCESS,
     REWARD_TARGET_APPROACH,
@@ -128,10 +135,13 @@ class MCREnv(SofaEnv):
                 "wall_proximity_penalty": REWARD_WALL_PROXIMITY,
                 "wall_penetration_penalty": REWARD_WALL_PENETRATION,
                 "off_target_branch_penalty": REWARD_OFF_TARGET_BRANCH,
+                "retraction_penalty": REWARD_RETRACTION,
+                "no_progress_penalty": REWARD_NO_PROGRESS,
                 "wrong_branch_penalty": REWARD_WRONG_BRANCH,
                 "successful_task": REWARD_SUCCESS,
                 "out_of_vessel_penalty": REWARD_OUT_OF_VESSEL,
                 "timeout_penalty": REWARD_TIMEOUT,
+                "no_progress_terminal_penalty": REWARD_NO_PROGRESS_TERMINAL,
                 "step_penalty": REWARD_STEP,
             }
 
@@ -275,6 +285,24 @@ class MCREnv(SofaEnv):
             create_scene_kwargs.get(
                 "reward_progress_normalization",
                 REWARD_PROGRESS_NORMALIZATION_M,
+            )
+        )
+        self.no_progress_window_steps = max(
+            1,
+            int(create_scene_kwargs.get("no_progress_window_steps", NO_PROGRESS_WINDOW_STEPS)),
+        )
+        self.no_progress_grace_steps = max(
+            self.no_progress_window_steps,
+            int(create_scene_kwargs.get("no_progress_grace_steps", NO_PROGRESS_GRACE_STEPS)),
+        )
+        self.no_progress_confirm_steps = max(
+            1,
+            int(create_scene_kwargs.get("no_progress_confirm_steps", NO_PROGRESS_CONFIRM_STEPS)),
+        )
+        self.no_progress_min_net_approach = float(
+            create_scene_kwargs.get(
+                "no_progress_min_net_approach",
+                NO_PROGRESS_MIN_NET_APPROACH_M,
             )
         )
 
@@ -431,6 +459,18 @@ class MCREnv(SofaEnv):
         # Action diagnostics used by observation/info.
         self.current_raw_insert = 0.0
         self.current_effective_insert = 0.0
+        self.insert_action_sum_episode = 0.0
+        self.insert_positive_steps_episode = 0
+        self.insert_negative_steps_episode = 0
+        self.insert_near_zero_steps_episode = 0
+        self.max_inserted_length_episode = 0.0
+
+        # Ordered-waypoint stagnation diagnostics/termination.
+        self.no_progress_counter = 0
+        self.no_progress_failure = False
+        self.no_progress_net_approach = 0.0
+        self.no_progress_feature = 0.0
+        self._no_progress_deltas = deque(maxlen=self.no_progress_window_steps)
 
         # Low-level action rate limiter.
         # Prevents rapid magnetic command reversal in high-curvature sections.
@@ -894,6 +934,16 @@ class MCREnv(SofaEnv):
 
         self.current_raw_insert = 0.0
         self.current_effective_insert = 0.0
+        self.insert_action_sum_episode = 0.0
+        self.insert_positive_steps_episode = 0
+        self.insert_negative_steps_episode = 0
+        self.insert_near_zero_steps_episode = 0
+        self.max_inserted_length_episode = 0.0
+        self.no_progress_counter = 0
+        self.no_progress_failure = False
+        self.no_progress_net_approach = 0.0
+        self.no_progress_feature = 0.0
+        self._no_progress_deltas = deque(maxlen=self.no_progress_window_steps)
         self._last_smoothed_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._prev_smoothed_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._last_actor_tip_pos = None
@@ -978,6 +1028,7 @@ class MCREnv(SofaEnv):
             self.episode_success
             or self.out_of_vessel_failure
             or self.wrong_branch_failure
+            or self.no_progress_failure
             or self.non_finite_failure
         )
         truncated = (self._elapsed_steps >= self.max_episode_steps) and (not terminated)
@@ -1172,6 +1223,54 @@ class MCREnv(SofaEnv):
         )
         reached = self._update_waypoint_progress(tip_pos, valid_inside_vessel=valid_inside_vessel)
 
+        # Detect sustained lack of ordered progress without confusing normal
+        # short steering pauses with failure.  A true waypoint hit starts a new
+        # window because distances on the two sides of a waypoint switch are
+        # not comparable.  Net approach (rather than positive-only motion)
+        # prevents back-and-forth oscillation from looking productive.
+        approach_delta = float(self.current_waypoint_approach_delta)
+        if reached:
+            self._no_progress_deltas.clear()
+            self.no_progress_counter = 0
+            self.no_progress_net_approach = 0.0
+            self.no_progress_feature = 0.0
+        else:
+            self._no_progress_deltas.append(approach_delta)
+            self.no_progress_net_approach = float(sum(self._no_progress_deltas))
+            eligible = bool(
+                self._elapsed_steps >= self.no_progress_grace_steps
+                and len(self._no_progress_deltas) >= self.no_progress_window_steps
+            )
+            if eligible:
+                threshold = max(float(self.no_progress_min_net_approach), 1e-9)
+                self.no_progress_feature = float(
+                    np.clip(
+                        (threshold - self.no_progress_net_approach) / threshold,
+                        0.0,
+                        1.0,
+                    )
+                )
+                if self.no_progress_net_approach <= 0.1 * threshold:
+                    self.no_progress_counter += 1
+                else:
+                    self.no_progress_counter = 0
+            else:
+                self.no_progress_feature = 0.0
+                self.no_progress_counter = 0
+        self.no_progress_failure = bool(
+            self.no_progress_counter >= self.no_progress_confirm_steps
+        )
+
+        try:
+            inserted_length = float(self.mcr_controller_sofa._getXTipValue())
+        except Exception:
+            inserted_length = float(getattr(self, "current_sdf_inserted_length", 0.0))
+        if np.isfinite(inserted_length):
+            self.max_inserted_length_episode = max(
+                float(self.max_inserted_length_episode),
+                max(0.0, inserted_length),
+            )
+
         wp_points = getattr(self, "waypoint_points", None)
         if wp_points is not None and len(wp_points) > 0:
             in_final_target_phase = int(self.current_waypoint_idx) >= len(wp_points) - 1
@@ -1186,10 +1285,9 @@ class MCREnv(SofaEnv):
         # Centreline geometry is retained for ordered navigation.  Wall risk and
         # out-of-vessel termination come from the VTI SDF whenever it is present.
         # Continuous potential-style progress feature.  One feature unit is
-        # 1 mm of actual approach, clipped to keep rare solver jumps bounded.
-        # A micron-scale numerical change therefore no longer receives the
-        # same reward as a full insertion step.
-        approach_delta = float(self.current_waypoint_approach_delta)
+        # one maximum insertion action (0.2 mm by default), so correct forward
+        # motion outweighs the bounded near-wall shaping term.  Rare solver
+        # jumps remain clipped.
         approach_feature = float(
             np.clip(
                 approach_delta
@@ -1246,9 +1344,12 @@ class MCREnv(SofaEnv):
             "wall_proximity_penalty": near_wall_feature,
             "wall_penetration_penalty": penetration_feature,
             "off_target_branch_penalty": float(self.current_off_target_branch_feature),
+            "retraction_penalty": float(max(-self.current_effective_insert, 0.0)),
+            "no_progress_penalty": float(self.no_progress_feature),
             "wrong_branch_penalty": 1.0 if self.current_wrong_branch else 0.0,
             "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
             "timeout_penalty": 0.0,
+            "no_progress_terminal_penalty": 1.0 if self.no_progress_failure else 0.0,
             "step_penalty": 1.0,
             "successful_task": 0.0,
         }
@@ -1305,6 +1406,7 @@ class MCREnv(SofaEnv):
             getattr(self, "episode_success", False)
             or getattr(self, "out_of_vessel_failure", False)
             or getattr(self, "wrong_branch_failure", False)
+            or getattr(self, "no_progress_failure", False)
             or getattr(self, "non_finite_failure", False)
         )
 
@@ -1319,6 +1421,8 @@ class MCREnv(SofaEnv):
             if self.out_of_vessel_failure
             else "wrong_branch"
             if self.wrong_branch_failure
+            else "no_progress"
+            if self.no_progress_failure
             else "non_finite"
             if self.non_finite_failure
             else "other"
@@ -1343,6 +1447,7 @@ class MCREnv(SofaEnv):
             "done_by_timeout": bool(truncated),
             "done_by_out_of_vessel": bool(self.out_of_vessel_failure),
             "done_by_wrong_branch": bool(self.wrong_branch_failure),
+            "done_by_no_progress": bool(self.no_progress_failure),
             "done_by_non_finite": bool(self.non_finite_failure),
             "terminal_reason": terminal_reason,
             "min_dist_to_goal": float(self.min_dist_this_episode),
@@ -1492,6 +1597,28 @@ class MCREnv(SofaEnv):
             "wrong_branch_confirm_steps": int(self.wrong_branch_confirm_steps),
             "raw_insert": float(self.current_raw_insert),
             "effective_insert": float(self.current_effective_insert),
+            "insert_action_mean_episode": float(
+                self.insert_action_sum_episode / max(1, self._elapsed_steps)
+            ),
+            "insert_positive_fraction_episode": float(
+                self.insert_positive_steps_episode / max(1, self._elapsed_steps)
+            ),
+            "insert_negative_fraction_episode": float(
+                self.insert_negative_steps_episode / max(1, self._elapsed_steps)
+            ),
+            "insert_near_zero_fraction_episode": float(
+                self.insert_near_zero_steps_episode / max(1, self._elapsed_steps)
+            ),
+            "inserted_length_final": float(
+                max(0.0, self.mcr_controller_sofa._getXTipValue())
+            ),
+            "inserted_length_max_episode": float(self.max_inserted_length_episode),
+            "no_progress_counter": int(self.no_progress_counter),
+            "no_progress_failure": bool(self.no_progress_failure),
+            "no_progress_net_approach": float(self.no_progress_net_approach),
+            "no_progress_feature": float(self.no_progress_feature),
+            "no_progress_window_steps": int(self.no_progress_window_steps),
+            "no_progress_confirm_steps": int(self.no_progress_confirm_steps),
             "insert_negative_limit": float(getattr(self, "insert_negative_limit", -1.0)),
             "actor_obs_dim": int(self.actor_observation_dim),
         }
@@ -2555,6 +2682,13 @@ class MCREnv(SofaEnv):
         raw_insert = float(action[2]) if action.shape[0] > 2 else 0.0
 
         effective_insert = self._apply_insert_safety_shield(raw_insert)
+        self.insert_action_sum_episode += float(effective_insert)
+        if effective_insert > 0.05:
+            self.insert_positive_steps_episode += 1
+        elif effective_insert < -0.05:
+            self.insert_negative_steps_episode += 1
+        else:
+            self.insert_near_zero_steps_episode += 1
         self._apply_local_magnetic_action(rot_n, rot_b)
         self.mcr_controller_sofa.insertRetract(effective_insert)
 

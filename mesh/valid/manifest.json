@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "source_units": "mm",
+  "sofa_scale": 0.001,
+  "catheter_outer_diameter_mm": 1.33,
+  "models": [
+    {
+      "model_id": "V03",
+      "family": "branching",
+      "metadata": "V03/metadata.json"
+    }
+  ]
+}

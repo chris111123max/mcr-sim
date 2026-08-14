@@ -13,6 +13,7 @@ from stable_baselines3.common.utils import polyak_update
 
 from .context import DistributedContext
 from .npu_performance import zero_optimizer_grad
+from ..training_config import SAC_MAX_GRAD_NORM
 
 
 class DistributedSAC(SAC):
@@ -26,6 +27,7 @@ class DistributedSAC(SAC):
 
     def __init__(self, *args, distributed_context: Optional[DistributedContext] = None, **kwargs):
         self.distributed_context = distributed_context
+        self.max_grad_norm = float(kwargs.pop("max_grad_norm", SAC_MAX_GRAD_NORM))
         super().__init__(*args, **kwargs)
 
     def set_distributed_context(self, context: DistributedContext) -> None:
@@ -73,6 +75,7 @@ class DistributedSAC(SAC):
 
         ent_coef_losses, ent_coefs = [], []
         actor_losses, critic_losses = [], []
+        actor_grad_norms, critic_grad_norms = [], []
 
         for gradient_step in range(gradient_steps):
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
@@ -120,6 +123,12 @@ class DistributedSAC(SAC):
             zero_optimizer_grad(self.critic.optimizer)
             critic_loss.backward()
             context.average_gradients(self.critic.parameters())
+            critic_grad_norms.append(
+                th.nn.utils.clip_grad_norm_(
+                    self.critic.parameters(),
+                    max_norm=self.max_grad_norm,
+                ).detach()
+            )
             self.critic.optimizer.step()
 
             # The actor needs dQ/da, but never updates critic parameters in
@@ -142,6 +151,12 @@ class DistributedSAC(SAC):
                 zero_optimizer_grad(self.actor.optimizer)
                 actor_loss.backward()
                 context.average_gradients(self.actor.parameters())
+                actor_grad_norms.append(
+                    th.nn.utils.clip_grad_norm_(
+                        self.actor.parameters(),
+                        max_norm=self.max_grad_norm,
+                    ).detach()
+                )
                 self.actor.optimizer.step()
             finally:
                 for parameter, requires_grad in zip(
@@ -166,6 +181,8 @@ class DistributedSAC(SAC):
                 th.stack(actor_losses).mean(),
                 th.stack(critic_losses).mean(),
                 th.stack(ent_coef_losses).mean() if ent_coef_losses else zero,
+                th.stack(actor_grad_norms).mean(),
+                th.stack(critic_grad_norms).mean(),
             ]
         )
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
@@ -175,9 +192,18 @@ class DistributedSAC(SAC):
             interval=64,
         )
         if metric_values is not None:
-            ent_coef_mean, actor_loss_mean, critic_loss_mean, ent_coef_loss_mean = metric_values
+            (
+                ent_coef_mean,
+                actor_loss_mean,
+                critic_loss_mean,
+                ent_coef_loss_mean,
+                actor_grad_norm_mean,
+                critic_grad_norm_mean,
+            ) = metric_values
             self.logger.record("train/ent_coef", ent_coef_mean)
             self.logger.record("train/actor_loss", actor_loss_mean)
             self.logger.record("train/critic_loss", critic_loss_mean)
             if len(ent_coef_losses) > 0:
                 self.logger.record("train/ent_coef_loss", ent_coef_loss_mean)
+            self.logger.record("train/actor_grad_norm", actor_grad_norm_mean)
+            self.logger.record("train/critic_grad_norm", critic_grad_norm_mean)

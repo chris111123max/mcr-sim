@@ -22,7 +22,7 @@ if str(PYTHON_ROOT) not in sys.path:
 from mcr_sim.paths import TRAIN_MESH_DIR
 
 
-MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [f"B{i:02d}" for i in range(1, 6)]
+TRAIN_MODEL_IDS = [f"C{i:02d}" for i in range(1, 6)] + [f"B{i:02d}" for i in range(1, 6)]
 REQUIRED = (
     "collision_inner.stl",
     "Segmentation.stl",
@@ -124,7 +124,8 @@ def validate_model(root: Path, model_id: str) -> dict:
         raise FileNotFoundError(f"{model_id}: missing {missing}")
 
     metadata = json.loads((model_dir / "metadata.json").read_text(encoding="utf-8"))
-    expected_openings = 7 if model_id.startswith("B") else 2
+    is_branching = model_id.startswith(("B", "V"))
+    expected_openings = 7 if is_branching else 2
     triangles = validate_stl(
         model_dir / "collision_inner.stl", expected_openings=expected_openings
     )
@@ -137,7 +138,7 @@ def validate_model(root: Path, model_id: str) -> dict:
         raise ValueError(f"{model_id}: collision STL contains degenerate triangles")
 
     targets = sorted(model_dir.glob("target_*_centerline.vtk"))
-    expected_targets = 6 if model_id.startswith("B") else 0
+    expected_targets = 6 if is_branching else 0
     if len(targets) != expected_targets:
         raise ValueError(f"{model_id}: expected {expected_targets} targets, got {len(targets)}")
     dims = validate_vti(model_dir / "vessel_sdf.vti")
@@ -147,9 +148,16 @@ def validate_model(root: Path, model_id: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=TRAIN_MESH_DIR)
+    parser.add_argument(
+        "--models",
+        nargs="*",
+        default=[],
+        help="Model IDs to validate. Default: C01..C05 and B01..B05.",
+    )
     args = parser.parse_args()
 
-    rows = [validate_model(args.root.resolve(), model_id) for model_id in MODEL_IDS]
+    model_ids = list(args.models or TRAIN_MODEL_IDS)
+    rows = [validate_model(args.root.resolve(), model_id) for model_id in model_ids]
     for row in rows:
         print(
             f"[OK] {row['model']}: triangles={row['triangles']} "
