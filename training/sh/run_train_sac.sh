@@ -6,6 +6,70 @@ PYTHON_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd)"
 PROJECT_ROOT="$(cd -- "$PYTHON_ROOT/.." && pwd)"
 WORKSPACE_ROOT="$(cd -- "$PROJECT_ROOT/../.." && pwd)"
 
+# ``--nohup`` is owned by this launcher, not train_sac.py. It creates the
+# exact run directory up front and captures torchrun/native output alongside
+# the per-rank Python logs written later by the training process.
+MANAGED_NOHUP=0
+FORWARD_ARGS=()
+for arg in "$@"; do
+    if [[ "$arg" == "--nohup" ]]; then
+        MANAGED_NOHUP=1
+    else
+        FORWARD_ARGS+=("$arg")
+    fi
+done
+set -- "${FORWARD_ARGS[@]}"
+
+if ((MANAGED_NOHUP == 1)) && [[ "${MCR_MANAGED_NOHUP_CHILD:-0}" != "1" ]]; then
+    EXP_NAME_ARG=""
+    LOG_ROOT_ARG="$PROJECT_ROOT/training_runs"
+    FORCE_MODEL_ARG=""
+    ARGS=("$@")
+    for ((i = 0; i < ${#ARGS[@]}; i++)); do
+        case "${ARGS[$i]}" in
+            --exp-name)
+                if ((i + 1 >= ${#ARGS[@]})); then echo "[ERROR] --exp-name requires a value"; exit 2; fi
+                EXP_NAME_ARG="${ARGS[$((i + 1))]}" ;;
+            --exp-name=*) EXP_NAME_ARG="${ARGS[$i]#*=}" ;;
+            --log-root)
+                if ((i + 1 >= ${#ARGS[@]})); then echo "[ERROR] --log-root requires a value"; exit 2; fi
+                LOG_ROOT_ARG="${ARGS[$((i + 1))]}" ;;
+            --log-root=*) LOG_ROOT_ARG="${ARGS[$i]#*=}" ;;
+            --force-model)
+                if ((i + 1 >= ${#ARGS[@]})); then echo "[ERROR] --force-model requires a value"; exit 2; fi
+                FORCE_MODEL_ARG="${ARGS[$((i + 1))]}" ;;
+            --force-model=*) FORCE_MODEL_ARG="${ARGS[$i]#*=}" ;;
+        esac
+    done
+    if [[ -z "$EXP_NAME_ARG" ]]; then
+        echo "[ERROR] Managed --nohup requires an explicit --exp-name."
+        exit 2
+    fi
+    if [[ ! "$EXP_NAME_ARG" =~ ^[A-Za-z0-9._-]+$ ]]; then
+        echo "[ERROR] --exp-name may contain only letters, digits, dot, underscore, and hyphen."
+        exit 2
+    fi
+    if [[ "$LOG_ROOT_ARG" != /* ]]; then
+        LOG_ROOT_ARG="$PROJECT_ROOT/$LOG_ROOT_ARG"
+    fi
+    RUN_TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+    FORCED_TAG=""
+    if [[ -n "$FORCE_MODEL_ARG" ]]; then FORCED_TAG="_${FORCE_MODEL_ARG}_only"; fi
+    RUN_DIR="$LOG_ROOT_ARG/${EXP_NAME_ARG}${FORCED_TAG}_${RUN_TIMESTAMP}"
+    mkdir -p "$RUN_DIR/logs"
+    LAUNCHER_LOG="$RUN_DIR/logs/launcher.log"
+    nohup env \
+        MCR_MANAGED_NOHUP_CHILD=1 \
+        MCR_RUN_TIMESTAMP="$RUN_TIMESTAMP" \
+        bash "$SCRIPT_DIR/run_train_sac.sh" "$@" \
+        >"$LAUNCHER_LOG" 2>&1 </dev/null &
+    TRAIN_PID=$!
+    echo "[STARTED] algorithm=sac pid=$TRAIN_PID"
+    echo "[STARTED] run_dir=$RUN_DIR"
+    echo "[STARTED] launcher_log=$LAUNCHER_LOG"
+    exit 0
+fi
+
 # The setup script and SOFA tree are outside this Git repository but have a
 # known relationship to it on the BIT server.  Every path remains overridable.
 SETUP_MCR_SOFA="${SETUP_MCR_SOFA:-$WORKSPACE_ROOT/setup_mcr_sofa.sh}"

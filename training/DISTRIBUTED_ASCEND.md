@@ -73,8 +73,9 @@ Every run directory contains three persistent output groups:
 - `tb/`: TensorBoard event files;
 - `models/`: per-epoch, best-validation, and final model checkpoints.
 
-The console capture is performed by the training process itself, so these logs
-remain available when the outer `nohup` output is redirected to `/dev/null`.
+The console capture is performed by the training process itself. The launchers'
+managed `--nohup` mode additionally writes outer torchrun, HCCL, and native
+runtime output to `logs/launcher.log` in the same timestamped run directory.
 `run_config.json` and the `[MCR NPU]` startup line record the requested and
 actually enabled optimizer/execution paths. Use `--no-npu-fused-adam` or
 `--no-npu-fast-execution` to obtain an explicit standard-path comparison.
@@ -99,6 +100,7 @@ The normal launcher inserts `torchrun` automatically:
 
 ```bash
 ./training/sh/run_train_sac.sh \
+  --nohup \
   --device npu \
   --distributed \
   --world-size 4 \
@@ -117,7 +119,10 @@ The normal launcher inserts `torchrun` automatically:
 Single-device CPU, CUDA, and NPU commands remain supported by omitting
 `--distributed`. `--device auto` prefers CUDA, then Ascend NPU, then CPU.
 
-The equivalent PPO launcher is `training/sh/run_train_ppo.sh`. Both launchers
+The launcher-owned `--nohup` flag requires an explicit `--exp-name`, starts the
+job in the background, and prints its PID and run directory. Do not combine it
+with shell-level `nohup`, `&`, or output redirection. The equivalent PPO launcher
+is `training/sh/run_train_ppo.sh` and implements the same managed mode. Both launchers
 validate all five unseen vessels twice each after epochs 2, 4, ..., 50. The ten
 fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then gathered
 through the active distributed backend. Rank 0 alone writes the unchanged CSV

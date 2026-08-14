@@ -98,13 +98,14 @@ replay buffer，避免每次更新重复搬运大批量 observation；不支持�
 | 全局/local batch（四卡） | 2048 / 512 | 每卡独立采样，梯度同步后等效全局 2048 |
 | replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
 | learning starts | 每卡 50000 | 先收集较多、多血管经验再更新 |
-| gradient steps | 2 | 每轮执行 2 次同步更新；与 2048 batch 组合后保持旧单卡的 replay 样本利用比例 |
+| gradient steps | 4 | 64 环境下每轮执行 4 次同步更新；与全局 2048 batch 组合后保持 32 环境配置的训练强度 |
 | gamma / tau / lr | 0.995 / 0.005 / 3e-4 | 更长视野，同时保留标准 SAC 软更新和学习率 |
 
 推荐四卡启动方式：
 
 ```bash
 bash training/sh/run_train_sac.sh \
+  --nohup \
   --device npu \
   --distributed \
   --world-size 4 \
@@ -114,8 +115,14 @@ bash training/sh/run_train_sac.sh \
   --epochs 50 \
   --episodes-per-epoch 100 \
   --render headless \
-  --exp-name sac_b_c_scale090_100
+  --exp-name sac_base_dr090_100_64env
 ```
+
+`--nohup` 由启动脚本处理，不会传入 Python。它自动创建带时间戳的统一运行目录，
+在 `logs/launcher.log` 保存 nohup、torchrun、HCCL 和原生运行时输出，同时保留
+`console*.log`、CSV、`tb/` 和 `models/`。使用该模式必须显式提供 `--exp-name`；
+脚本启动后会直接打印后台 PID、运行目录和 launcher 日志路径，不需要再手写
+`nohup`、`&` 或输出重定向。
 
 旧的 `--timesteps` 仍可使用，并会切换到 transition-budget 模式，以兼容已有
 启动命令。第一次上服务器应先运行短 smoke test，例如
