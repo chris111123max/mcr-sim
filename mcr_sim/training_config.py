@@ -148,7 +148,7 @@ CONSTRAINT_MAX_ITERATIONS = 20000
 
 # Shared formal experiment protocol.  Training episode counts are global
 # across every distributed rank, not per-rank budgets.
-NUM_EPOCHS = 50
+NUM_EPOCHS = 100
 TRAIN_EPISODES_PER_EPOCH = 100
 CHECKPOINT_INTERVAL = 1
 VALID_INTERVAL = 2

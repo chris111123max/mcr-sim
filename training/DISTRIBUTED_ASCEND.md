@@ -51,7 +51,7 @@ SAC, and never uses the SAC replay buffer.
   native ND matrix format through APIs provided by the installed torch_npu.
   Missing version-specific APIs are recorded and safely skipped.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
-  The formal default is 50 x 100 = 5,000 completed episodes. All ranks participate
+  The formal default is 100 x 100 = 10,000 completed episodes. All ranks participate
   in the episode counter and rank 0 saves one checkpoint per epoch.
 - `--steps-per-epoch`: legacy transition-budget setting, used only when
   `--timesteps` is supplied.
@@ -72,6 +72,11 @@ Every run directory contains three persistent output groups:
   `run_config.json`, and train/validation CSV summaries;
 - `tb/`: TensorBoard event files;
 - `models/`: per-epoch, best-validation, and final model checkpoints.
+
+`logs/run_config.json` is generated from the final effective arguments for each
+run; it is not a hand-maintained template. A formal default run records
+`epochs=100`, `episodes_per_epoch=100`, and the corresponding upper-bound
+`timesteps=40960000`. Explicit CLI values still override these defaults.
 
 The console capture is performed by the training process itself. The launchers'
 managed `--nohup` mode additionally writes outer torchrun, HCCL, and native
@@ -107,7 +112,7 @@ The normal launcher inserts `torchrun` automatically:
   --n-envs 64 \
   --batch-size 2048 \
   --gradient-steps 4 \
-  --epochs 50 \
+  --epochs 100 \
   --episodes-per-epoch 100 \
   --target-threshold 0.003 \
   --time-step 0.01 \
@@ -123,7 +128,7 @@ The launcher-owned `--nohup` flag requires an explicit `--exp-name`, starts the
 job in the background, and prints its PID and run directory. Do not combine it
 with shell-level `nohup`, `&`, or output redirection. The equivalent PPO launcher
 is `training/sh/run_train_ppo.sh` and implements the same managed mode. Both launchers
-validate all five unseen vessels twice each after epochs 2, 4, ..., 50. The ten
+validate all five unseen vessels twice each after epochs 2, 4, ..., 100. The ten
 fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then gathered
 through the active distributed backend. Rank 0 alone writes the unchanged CSV
 summaries and checkpoints. `best_valid.zip` is replaced only when

@@ -90,7 +90,7 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 
 ## SAC 与 epoch 语义
 
-一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 50 epoch，即 5000 个回合。
+一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 100 epoch，即 10000 个回合。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
 每 2 个 epoch 在 `mesh/valid` 的 5 条 unseen 血管上各运行 2 个确定性回合。四卡将
@@ -100,7 +100,7 @@ replay buffer，避免每次更新重复搬运大批量 observation；不支持�
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| epoch / episodes per epoch | 50 / 100 | 正式训练预算与保存周期 |
+| epoch / episodes per epoch | 100 / 100 | 正式训练预算与保存周期 |
 | 全局环境数 | 32 | 四卡时每卡 8 个 SOFA 环境 |
 | 全局/local batch（四卡） | 2048 / 512 | 每卡独立采样，梯度同步后等效全局 2048 |
 | replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
@@ -119,7 +119,7 @@ bash training/sh/run_train_sac.sh \
   --n-envs 64 \
   --batch-size 2048 \
   --gradient-steps 4 \
-  --epochs 50 \
+  --epochs 100 \
   --episodes-per-epoch 100 \
   --render headless \
   --exp-name sac_base_dr090_100_64env
@@ -130,6 +130,11 @@ bash training/sh/run_train_sac.sh \
 `console*.log`、CSV、`tb/` 和 `models/`。使用该模式必须显式提供 `--exp-name`；
 脚本启动后会直接打印后台 PID、运行目录和 launcher 日志路径，不需要再手写
 `nohup`、`&` 或输出重定向。
+
+`logs/run_config.json` 不是固定模板，而是在每次运行时根据最终生效参数自动生成。
+正式默认运行会记录 `"epochs": 100`、`"episodes_per_epoch": 100` 和上限
+`"timesteps": 40960000`；命令行显式传入的值仍会覆盖默认值。已有 50 epoch
+模型仅需再训练 50 epoch 的续训任务属于一次性例外。
 
 旧的 `--timesteps` 仍可使用，并会切换到 transition-budget 模式，以兼容已有
 启动命令。第一次上服务器应先运行短 smoke test，例如

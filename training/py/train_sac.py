@@ -723,7 +723,7 @@ def parse_args():
         default=SAC_EPOCHS,
         help=(
             "Number of training epochs. In the default episode mode, one epoch "
-            "contains --episodes-per-epoch completed episodes (formal default: 50 epochs)."
+            "contains --episodes-per-epoch completed episodes (formal default: 100 epochs)."
         ),
     )
     parser.add_argument(
