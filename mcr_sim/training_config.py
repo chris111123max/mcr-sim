@@ -71,28 +71,33 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v2.  The previous terminal rewards were O(1000) while one
-# correct 0.2 mm insertion produced only +0.2.  That made a stationary timeout
-# cheaper than early exploration and drove SAC's critic/actor into saturation.
-# Normalize progress by one maximum insertion action so safe forward motion is
-# the dominant dense signal, while keeping every single-step/terminal target at
-# a numerically manageable O(1)..O(100) scale.
-REWARD_PROFILE_VERSION = 2
-REWARD_PROGRESS_NORMALIZATION_M = MAX_INSERTION_PER_ACTION_M
-REWARD_WAYPOINT_APPROACH = 1.0
-REWARD_WAYPOINT_REACHED = 5.0
-REWARD_TARGET_APPROACH = 1.0
-REWARD_WALL_PROXIMITY = -0.10
-REWARD_WALL_PENETRATION = -1.0
-REWARD_OFF_TARGET_BRANCH = -0.25
-REWARD_RETRACTION = -0.05
-REWARD_NO_PROGRESS = -0.025
-REWARD_WRONG_BRANCH = -100.0
-REWARD_SUCCESS = 100.0
-REWARD_OUT_OF_VESSEL = -100.0
-REWARD_TIMEOUT = -75.0
-REWARD_NO_PROGRESS_TERMINAL = -75.0
-REWARD_STEP = -0.005
+# Reward profile v3.  Dense navigation credit is normalized by the sampled
+# start-to-target route length, not by one 0.2 mm action.  Positive approach
+# credit is capped at one complete route and waypoint bonuses are distributed
+# over the ordered waypoint sequence.  Consequently every failed trajectory
+# remains negative even if it crashes immediately before the target, while a
+# successful full route remains strongly positive.  All magnitudes stay at
+# O(1)..O(100), avoiding the critic saturation caused by the legacy O(1000)
+# terminal scale.
+REWARD_PROFILE_VERSION = 3
+REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
+REWARD_PROGRESS_BUDGET = 100.0
+REWARD_WAYPOINT_BUDGET = 20.0
+REWARD_WAYPOINT_APPROACH = REWARD_PROGRESS_BUDGET
+REWARD_WAYPOINT_REACHED = REWARD_WAYPOINT_BUDGET
+REWARD_TARGET_APPROACH = REWARD_PROGRESS_BUDGET
+REWARD_WALL_PROXIMITY = -0.02
+REWARD_WALL_PENETRATION = -0.50
+REWARD_OFF_TARGET_BRANCH = -0.10
+REWARD_RETRACTION = -0.03
+REWARD_NO_PROGRESS = -0.02
+REWARD_WRONG_BRANCH = -150.0
+REWARD_SUCCESS = 150.0
+REWARD_OUT_OF_VESSEL = -150.0
+REWARD_NON_FINITE = -150.0
+REWARD_TIMEOUT = -120.0
+REWARD_NO_PROGRESS_TERMINAL = -120.0
+REWARD_STEP = -0.002
 
 # A policy that stays at the insertion lower bound must not fill the replay
 # buffer with 4096-step timeout episodes.  Net ordered-waypoint approach is
@@ -114,7 +119,10 @@ def reward_profile() -> dict:
 
     return {
         "version": REWARD_PROFILE_VERSION,
+        "progress_normalization": "sampled_route_length",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
+        "progress_budget": REWARD_PROGRESS_BUDGET,
+        "waypoint_budget": REWARD_WAYPOINT_BUDGET,
         "waypoint_approach": REWARD_WAYPOINT_APPROACH,
         "waypoint_reached": REWARD_WAYPOINT_REACHED,
         "target_approach": REWARD_TARGET_APPROACH,
@@ -126,6 +134,7 @@ def reward_profile() -> dict:
         "wrong_branch": REWARD_WRONG_BRANCH,
         "success": REWARD_SUCCESS,
         "out_of_vessel": REWARD_OUT_OF_VESSEL,
+        "non_finite": REWARD_NON_FINITE,
         "timeout": REWARD_TIMEOUT,
         "no_progress_terminal": REWARD_NO_PROGRESS_TERMINAL,
         "step": REWARD_STEP,
@@ -134,6 +143,40 @@ def reward_profile() -> dict:
         "no_progress_confirm_steps": NO_PROGRESS_CONFIRM_STEPS,
         "no_progress_min_net_approach_m": NO_PROGRESS_MIN_NET_APPROACH_M,
     }
+
+
+def bounded_progress_feature(raw_feature: float, positive_fraction_awarded: float):
+    """Cap lifetime positive route credit without hiding negative regression."""
+
+    raw_feature = float(raw_feature)
+    positive_fraction_awarded = min(max(float(positive_fraction_awarded), 0.0), 1.0)
+    if raw_feature <= 0.0:
+        return raw_feature, positive_fraction_awarded
+    awarded = min(raw_feature, 1.0 - positive_fraction_awarded)
+    return awarded, min(1.0, positive_fraction_awarded + awarded)
+
+
+def bounded_waypoint_feature(rewardable_waypoints: int, fraction_awarded: float):
+    """Distribute one bounded waypoint budget over the ordered route."""
+
+    rewardable_waypoints = max(1, int(rewardable_waypoints))
+    fraction_awarded = min(max(float(fraction_awarded), 0.0), 1.0)
+    awarded = min(1.0 / float(rewardable_waypoints), 1.0 - fraction_awarded)
+    return awarded, min(1.0, fraction_awarded + awarded)
+
+
+def update_validation_unlocked(
+    previously_unlocked: bool,
+    train_success_rate: float,
+    minimum_train_success_rate: float,
+) -> bool:
+    """Latch validation on once the shared training-success gate is reached."""
+
+    return bool(
+        previously_unlocked
+        or float(minimum_train_success_rate) <= 0.0
+        or float(train_success_rate) >= float(minimum_train_success_rate)
+    )
 
 # Collision/contact defaults.  Catheter Line/Point primitives represent their
 # physical radius through proximity.  Vessel collision remains triangle-only.
@@ -152,6 +195,7 @@ NUM_EPOCHS = 100
 TRAIN_EPISODES_PER_EPOCH = 100
 CHECKPOINT_INTERVAL = 1
 VALID_INTERVAL = 2
+VALID_MIN_TRAIN_SUCCESS_RATE = 0.20
 VALID_VESSELS = 5
 VALID_EPISODES_PER_VESSEL = 2
 VALID_EPISODES_TOTAL = VALID_VESSELS * VALID_EPISODES_PER_VESSEL
@@ -222,14 +266,29 @@ def validate_training_defaults() -> None:
         REWARD_SUCCESS > 0.0
         and REWARD_OUT_OF_VESSEL < 0.0
         and REWARD_WRONG_BRANCH < 0.0
+        and REWARD_NON_FINITE < 0.0
         and REWARD_TIMEOUT < 0.0
         and REWARD_NO_PROGRESS_TERMINAL < 0.0
     ):
         raise ValueError("Terminal reward signs are invalid.")
-    if REWARD_PROGRESS_NORMALIZATION_M > MAX_INSERTION_PER_ACTION_M:
-        raise ValueError("One full insertion action must yield at least one progress unit.")
-    if abs(REWARD_WALL_PROXIMITY) >= REWARD_WAYPOINT_APPROACH:
-        raise ValueError("Near-wall shaping must not outweigh one safe full progress step.")
+    maximum_navigation_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET
+    if not (
+        REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
+        and REWARD_WRONG_BRANCH < -maximum_navigation_credit
+        and REWARD_NON_FINITE < -maximum_navigation_credit
+        and REWARD_TIMEOUT <= -maximum_navigation_credit
+        and REWARD_NO_PROGRESS_TERMINAL <= -maximum_navigation_credit
+    ):
+        raise ValueError("Every failed trajectory must remain negative after maximum navigation credit.")
+    longest_route_forward_reward = (
+        REWARD_PROGRESS_BUDGET
+        * MAX_INSERTION_PER_ACTION_M
+        / TRAIN_ROUTE_MAX_LENGTH_M
+        + REWARD_WALL_PROXIMITY
+        + REWARD_STEP
+    )
+    if longest_route_forward_reward <= 0.0:
+        raise ValueError("Safe full insertion must remain positive on the longest route.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS

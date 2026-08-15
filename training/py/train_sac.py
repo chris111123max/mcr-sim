@@ -52,6 +52,7 @@ from mcr_sim.training_config import (
     REWARD_OFF_TARGET_BRANCH,
     REWARD_NO_PROGRESS,
     REWARD_NO_PROGRESS_TERMINAL,
+    REWARD_NON_FINITE,
     REWARD_RETRACTION,
     REWARD_STEP,
     REWARD_SUCCESS,
@@ -84,6 +85,7 @@ from mcr_sim.training_config import (
     TARGET_WINDOW_DISTANCE_M,
     VALID_EPISODES_PER_VESSEL,
     VALID_INTERVAL,
+    VALID_MIN_TRAIN_SUCCESS_RATE,
     VALID_VESSELS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
@@ -279,6 +281,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             )
             + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0))
+            + self._safe_float(info.get("episode_reward_non_finite_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_no_progress_terminal_penalty", 0.0)),
             "reward_safety": self._safe_float(
@@ -314,6 +317,13 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             ),
             "inserted_length_max_m": self._safe_float(
                 info.get("inserted_length_max_episode", np.nan)
+            ),
+            "positive_failure_return": bool(info.get("positive_failure_return", False)),
+            "positive_progress_fraction": self._safe_float(
+                info.get("positive_progress_fraction_awarded", 0.0)
+            ),
+            "waypoint_bonus_fraction": self._safe_float(
+                info.get("waypoint_bonus_fraction_awarded", 0.0)
             ),
         }
 
@@ -368,6 +378,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"terminal/wrong_branch_rate_w{self.window_size}", self._rate(ep["done_by_wrong_branch"] for ep in recent))
             self.logger.record(f"terminal/no_progress_rate_w{self.window_size}", self._rate(ep["done_by_no_progress"] for ep in recent))
             self.logger.record(f"terminal/non_finite_rate_w{self.window_size}", self._rate(ep["done_by_non_finite"] for ep in recent))
+            self.logger.record(f"terminal/positive_failure_rate_w{self.window_size}", self._rate(ep["positive_failure_return"] for ep in recent))
             self.logger.record(f"rollout_recent/safe_success_rate_w{self.window_size}", self._rate(ep["safe_success"] for ep in recent))
             self.logger.record(f"rollout_recent/contact_free_success_rate_w{self.window_size}", self._rate(ep["contact_free_success"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
@@ -384,6 +395,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/progress_fraction_w{self.window_size}", self._mean(ep["positive_progress_fraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/waypoint_bonus_fraction_w{self.window_size}", self._mean(ep["waypoint_bonus_fraction"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_mean_w{self.window_size}", self._mean(ep["insert_action_mean"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_positive_fraction_w{self.window_size}", self._mean(ep["insert_positive_fraction"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_negative_fraction_w{self.window_size}", self._mean(ep["insert_negative_fraction"] for ep in recent), exclude="stdout")
@@ -1010,6 +1023,15 @@ def parse_args():
         help="Validation vessel root (default: PROJECT_ROOT/mesh/valid).",
     )
     parser.add_argument(
+        "--valid-min-train-success-rate",
+        type=float,
+        default=VALID_MIN_TRAIN_SUCCESS_RATE,
+        help=(
+            "Unlock periodic validation only after an epoch reaches this global "
+            "training success rate (default: 0.20)."
+        ),
+    )
+    parser.add_argument(
         "--skip-validation",
         action="store_true",
         help="Explicit smoke-test mode only; formal training validates every two epochs.",
@@ -1057,6 +1079,8 @@ def parse_args():
         args.save_freq = int(args.steps_per_epoch)
     if args.max_episode_steps <= 0:
         parser.error("--max-episode-steps must be a positive integer")
+    if not (0.0 <= args.valid_min_train_success_rate <= 1.0):
+        parser.error("--valid-min-train-success-rate must be in [0, 1]")
     if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
         parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
     if args.start_window_mm < 0.0 or args.target_window_mm < 0.0:
@@ -1322,6 +1346,7 @@ def main():
                 model_dir=model_dir,
                 run_dir=log_dir,
                 validation_interval=VALID_INTERVAL,
+                validation_min_train_success_rate=args.valid_min_train_success_rate,
                 validation_fn=None if args.skip_validation else run_validation,
                 resume_progress=not args.reset_num_timesteps,
             )
@@ -1563,7 +1588,8 @@ def main():
                 f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
                 f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
                 f"retract/no_progress={REWARD_RETRACTION:g}/{REWARD_NO_PROGRESS:g} "
-                f"success={REWARD_SUCCESS:g} out={REWARD_OUT_OF_VESSEL:g} "
+                f"success={REWARD_SUCCESS:g} out/non_finite="
+                f"{REWARD_OUT_OF_VESSEL:g}/{REWARD_NON_FINITE:g} "
                 f"timeout/no_progress_terminal={REWARD_TIMEOUT:g}/"
                 f"{REWARD_NO_PROGRESS_TERMINAL:g} step={REWARD_STEP:g} "
                 f"grad_clip={SAC_MAX_GRAD_NORM:g}"

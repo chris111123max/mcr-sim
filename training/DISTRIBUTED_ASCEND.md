@@ -114,6 +114,7 @@ The normal launcher inserts `torchrun` automatically:
   --gradient-steps 4 \
   --epochs 100 \
   --episodes-per-epoch 100 \
+  --valid-min-train-success-rate 0.20 \
   --target-threshold 0.003 \
   --time-step 0.01 \
   --frame-skip 1 \
@@ -128,7 +129,10 @@ The launcher-owned `--nohup` flag requires an explicit `--exp-name`, starts the
 job in the background, and prints its PID and run directory. Do not combine it
 with shell-level `nohup`, `&`, or output redirection. The equivalent PPO launcher
 is `training/sh/run_train_ppo.sh` and implements the same managed mode. Both launchers
-validate all five unseen vessels twice each after epochs 2, 4, ..., 100. The ten
+keep validation locked until a completed training epoch first reaches success rate
+`0.20`. The gate stays unlocked; validation starts immediately when that epoch is
+even, otherwise on the next even epoch, then runs every two epochs.
+The ten
 fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then gathered
 through the active distributed backend. Rank 0 alone writes the unchanged CSV
 summaries and checkpoints. `best_valid.zip` is replaced only when

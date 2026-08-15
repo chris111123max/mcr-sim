@@ -55,6 +55,7 @@ from mcr_sim.training_config import (
     TARGET_WINDOW_DISTANCE_M,
     VALID_EPISODES_PER_VESSEL,
     VALID_INTERVAL,
+    VALID_MIN_TRAIN_SUCCESS_RATE,
     VALID_VESSELS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
@@ -146,6 +147,11 @@ def parse_args():
     parser.add_argument("--resume-from", default="")
     parser.add_argument("--reset-num-timesteps", action="store_true")
     parser.add_argument("--valid-dir", default=str(VALID_MESH_DIR))
+    parser.add_argument(
+        "--valid-min-train-success-rate",
+        type=float,
+        default=VALID_MIN_TRAIN_SUCCESS_RATE,
+    )
     parser.add_argument("--skip-validation", action="store_true")
     parser.add_argument("--progress-bar", action="store_true")
     parser.add_argument("--sb3-verbose", type=int, choices=[0, 1, 2], default=1)
@@ -158,6 +164,8 @@ def parse_args():
         parser.error("PPO rollout/update sizes must be positive")
     if args.max_episode_steps <= 0:
         parser.error("--max-episode-steps must be positive")
+    if not (0.0 <= args.valid_min_train_success_rate <= 1.0):
+        parser.error("--valid-min-train-success-rate must be in [0, 1]")
     if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
         parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
     args.steps_per_epoch = args.episodes_per_epoch * args.max_episode_steps
@@ -287,6 +295,7 @@ def main():
             model_dir=model_dir,
             run_dir=log_dir,
             validation_interval=VALID_INTERVAL,
+            validation_min_train_success_rate=args.valid_min_train_success_rate,
             validation_fn=None if args.skip_validation else run_validation,
             resume_progress=not args.reset_num_timesteps,
         )

@@ -33,6 +33,7 @@ from .training_config import (
     REWARD_OFF_TARGET_BRANCH,
     REWARD_NO_PROGRESS,
     REWARD_NO_PROGRESS_TERMINAL,
+    REWARD_NON_FINITE,
     REWARD_PROGRESS_NORMALIZATION_M,
     REWARD_RETRACTION,
     REWARD_STEP,
@@ -66,6 +67,8 @@ from .training_config import (
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
     WRONG_BRANCH_OBSERVATION_SCALE_M,
+    bounded_progress_feature,
+    bounded_waypoint_feature,
 )
 
 MCR_SIM_DIR = Path(__file__).resolve().parent
@@ -140,6 +143,7 @@ class MCREnv(SofaEnv):
                 "wrong_branch_penalty": REWARD_WRONG_BRANCH,
                 "successful_task": REWARD_SUCCESS,
                 "out_of_vessel_penalty": REWARD_OUT_OF_VESSEL,
+                "non_finite_penalty": REWARD_NON_FINITE,
                 "timeout_penalty": REWARD_TIMEOUT,
                 "no_progress_terminal_penalty": REWARD_NO_PROGRESS_TERMINAL,
                 "step_penalty": REWARD_STEP,
@@ -361,6 +365,8 @@ class MCREnv(SofaEnv):
         self.reward_info = {}
         self.reward_features = {}
         self.episode_reward_totals = defaultdict(float)
+        self.episode_positive_progress_fraction = 0.0
+        self.episode_waypoint_bonus_fraction = 0.0
 
         # Centerline / waypoint buffers.
         self.centerline_points = None
@@ -951,6 +957,8 @@ class MCREnv(SofaEnv):
         self.reward_info = {}
         self.reward_features = {}
         self.episode_reward_totals = defaultdict(float)
+        self.episode_positive_progress_fraction = 0.0
+        self.episode_waypoint_bonus_fraction = 0.0
 
         self.mcr_controller_sofa.reset()
         if bool(single_vessel_mode and getattr(self, "soft_randomize_single_vessel", True)):
@@ -1023,6 +1031,14 @@ class MCREnv(SofaEnv):
             non_finite_failure = True
         if non_finite_failure:
             self.non_finite_failure = True
+            non_finite_penalty = float(self.reward_amount_dict["non_finite_penalty"])
+            if np.isfinite(non_finite_penalty):
+                reward += non_finite_penalty
+                self.reward_features["non_finite_penalty"] = 1.0
+                self.reward_info["non_finite_penalty"] = 1.0
+                self.reward_info["reward_non_finite_penalty"] = non_finite_penalty
+                self.reward_info["reward"] = float(reward)
+                self.episode_reward_totals["non_finite_penalty"] += non_finite_penalty
 
         terminated = bool(
             self.episode_success
@@ -1288,7 +1304,7 @@ class MCREnv(SofaEnv):
         # one maximum insertion action (0.2 mm by default), so correct forward
         # motion outweighs the bounded near-wall shaping term.  Rare solver
         # jumps remain clipped.
-        approach_feature = float(
+        raw_approach_feature = float(
             np.clip(
                 approach_delta
                 / max(float(self.reward_progress_normalization), 1e-9),
@@ -1296,6 +1312,21 @@ class MCREnv(SofaEnv):
                 1.0,
             )
         )
+        approach_feature, self.episode_positive_progress_fraction = (
+            bounded_progress_feature(
+                raw_approach_feature,
+                self.episode_positive_progress_fraction,
+            )
+        )
+
+        waypoint_bonus_feature = 0.0
+        if reached:
+            waypoint_bonus_feature, self.episode_waypoint_bonus_fraction = (
+                bounded_waypoint_feature(
+                    len(self.waypoint_points) - 1,
+                    self.episode_waypoint_bonus_fraction,
+                )
+            )
 
         if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
             # Dense wall shaping is tip-only.  The flexible body may rest on or
@@ -1339,7 +1370,7 @@ class MCREnv(SofaEnv):
 
         reward_features = {
             "waypoint_approach": 0.0 if in_final_target_phase else approach_feature,
-            "waypoint_reached": 1.0 if reached else 0.0,
+            "waypoint_reached": waypoint_bonus_feature,
             "target_approach": approach_feature if in_final_target_phase else 0.0,
             "wall_proximity_penalty": near_wall_feature,
             "wall_penetration_penalty": penetration_feature,
@@ -1348,6 +1379,7 @@ class MCREnv(SofaEnv):
             "no_progress_penalty": float(self.no_progress_feature),
             "wrong_branch_penalty": 1.0 if self.current_wrong_branch else 0.0,
             "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
+            "non_finite_penalty": 0.0,
             "timeout_penalty": 0.0,
             "no_progress_terminal_penalty": 1.0 if self.no_progress_failure else 0.0,
             "step_penalty": 1.0,
@@ -1461,6 +1493,13 @@ class MCREnv(SofaEnv):
             "waypoint_distance": float(self.current_waypoint_distance),
             "waypoint_approach_delta": float(self.current_waypoint_approach_delta),
             "reward_progress_normalization": float(self.reward_progress_normalization),
+            "reward_route_length": float(self.reward_progress_normalization),
+            "positive_progress_fraction_awarded": float(
+                self.episode_positive_progress_fraction
+            ),
+            "waypoint_bonus_fraction_awarded": float(
+                self.episode_waypoint_bonus_fraction
+            ),
             "waypoint_reached_this_step": bool(self.current_waypoint_reached_this_step),
             "waypoint_reached_count_episode": int(self.current_waypoint_reached_count_episode),
             "waypoint_handoff_counter": int(
@@ -1626,6 +1665,14 @@ class MCREnv(SofaEnv):
             f"episode_reward_{key}": float(value)
             for key, value in self.episode_reward_totals.items()
         }
+        episode_reward_total_components = float(
+            sum(float(value) for value in self.episode_reward_totals.values())
+        )
+        failed_episode = bool((terminated or truncated) and not self.episode_success)
+        info["episode_reward_total_components"] = episode_reward_total_components
+        info["positive_failure_return"] = bool(
+            failed_episode and episode_reward_total_components > 1e-6
+        )
         return {
             **info,
             **self.reward_info,
@@ -2295,6 +2342,14 @@ class MCREnv(SofaEnv):
 
         self.current_waypoint_start_progress = float(start_progress)
         self.current_waypoint_target_progress = float(target_progress)
+        # Reward v3 uses the actual randomized start-to-target route length.
+        # This bounds total positive approach credit independently of vessel
+        # length and keeps B/C vessel rewards directly comparable.
+        self.reward_progress_normalization = max(
+            float(target_progress - start_progress),
+            float(self.waypoint_spacing),
+            1e-6,
+        )
 
         spacing = max(float(self.waypoint_spacing), 1e-6)
         pre_target_offset = max(float(getattr(self, "pre_target_waypoint_offset", 0.001)), 0.0)
