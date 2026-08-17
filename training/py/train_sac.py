@@ -995,7 +995,10 @@ def parse_args():
         "--training-curriculum",
         dest="training_curriculum",
         action="store_true",
-        help="Expand the training vessel pool after 5% and 10% epoch success.",
+        help=(
+            "Expand the four-stage vessel pool only after three consecutive "
+            "epochs reach 10% training success."
+        ),
     )
     curriculum.add_argument(
         "--no-training-curriculum",
@@ -1587,6 +1590,12 @@ def main():
             model.synchronize_parameters()
 
         if context.is_main:
+            if args.force_model:
+                model_label = args.force_model
+            elif args.training_curriculum:
+                model_label = "curriculum_stage0(B01,B02)"
+            else:
+                model_label = "uniform(B01-B05,C01-C05)"
             print(
                 f"[MCR TRAIN] device={context.device.resolved} "
                 f"distributed={context.enabled} backend={context.backend} "
@@ -1595,7 +1604,7 @@ def main():
             )
             print(
                 f"[MCR TRAIN] task={args.env_type} "
-                f"model={args.force_model or 'uniform(B01-B05,C01-C05)'} "
+                f"model={model_label} "
                 f"obs={env.observation_space.shape} action={env.action_space.shape}"
             )
             print(
@@ -1611,7 +1620,8 @@ def main():
                 f"updates_per_rollout={effective_gradient_steps} "
                 f"replay_samples_per_new_transition="
                 f"{args.replay_samples_per_new_transition:g} "
-                f"buffer_per_rank={args.buffer_size} ent_coef={args.ent_coef}"
+                f"buffer_per_rank={args.buffer_size} ent_coef={args.ent_coef} "
+                f"min_ent_coef={args.min_ent_coef:g}"
             )
             print(
                 f"[MCR TRAIN] reward progress={REWARD_WAYPOINT_APPROACH:g}/"

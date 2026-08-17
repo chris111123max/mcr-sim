@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
@@ -13,6 +14,7 @@ from stable_baselines3.common.utils import explained_variance
 
 from .context import DistributedContext
 from .npu_performance import zero_optimizer_grad
+from ..training_config import PPO_MAX_ACTION_STD, PPO_MIN_ACTION_STD
 
 
 class DistributedPPO(PPO):
@@ -25,6 +27,10 @@ class DistributedPPO(PPO):
 
     def __init__(self, *args, distributed_context: Optional[DistributedContext] = None, **kwargs):
         self.distributed_context = distributed_context
+        self.min_action_std = float(kwargs.pop("min_action_std", PPO_MIN_ACTION_STD))
+        self.max_action_std = float(kwargs.pop("max_action_std", PPO_MAX_ACTION_STD))
+        if not (0.0 < self.min_action_std <= self.max_action_std):
+            raise ValueError("PPO action std bounds must satisfy 0 < min <= max.")
         super().__init__(*args, **kwargs)
         if distributed_context is not None:
             self.set_distributed_context(distributed_context)
@@ -132,6 +138,7 @@ class DistributedPPO(PPO):
                 context.average_gradients(self.policy.parameters())
                 th.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.policy.optimizer.step()
+                self.clamp_action_std()
 
             self._n_updates += 1
             if not continue_training:
@@ -177,6 +184,18 @@ class DistributedPPO(PPO):
         self.logger.record("train/clip_range", clip_range)
         if clip_range_vf is not None:
             self.logger.record("train/clip_range_vf", clip_range_vf)
+
+    def clamp_action_std(self) -> None:
+        """Keep Gaussian exploration useful inside the normalized action box."""
+
+        log_std = getattr(self.policy, "log_std", None)
+        if log_std is None:
+            return
+        with th.no_grad():
+            log_std.clamp_(
+                min=math.log(self.min_action_std),
+                max=math.log(self.max_action_std),
+            )
 
     def synchronize_parameters(self) -> None:
         context = self.distributed_context

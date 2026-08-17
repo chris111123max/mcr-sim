@@ -15,7 +15,7 @@ from .evaluation import (
     merge_validation_json,
     validation_result_to_json,
 )
-from ..training_config import update_curriculum_stage, update_validation_unlocked
+from ..training_config import update_curriculum_progress, update_validation_unlocked
 
 
 def _append_csv(path: Path, fieldnames, row) -> None:
@@ -72,6 +72,7 @@ class EpochExperimentCallback(BaseCallback):
         self.resume_progress = bool(resume_progress)
         self.training_curriculum_enabled = bool(training_curriculum_enabled)
         self.curriculum_stage = 0
+        self.curriculum_success_streak = 0
         self.episode_sync_interval_steps = max(1, int(episode_sync_interval_steps))
         self.performance_log_interval_steps = max(
             1, int(performance_log_interval_steps)
@@ -125,6 +126,9 @@ class EpochExperimentCallback(BaseCallback):
                 self.next_epoch = saved_epoch + 1
                 self.global_completed_episodes = saved_episodes
             self.curriculum_stage = int(getattr(self.model, "curriculum_stage", 0))
+            self.curriculum_success_streak = int(
+                getattr(self.model, "curriculum_success_streak", 0)
+            )
         self._apply_curriculum_stage(self.curriculum_stage)
 
     def _apply_curriculum_stage(self, stage: int) -> None:
@@ -240,6 +244,7 @@ class EpochExperimentCallback(BaseCallback):
             self.validation_min_train_success_rate
         )
         self.model.curriculum_stage = int(self.curriculum_stage)
+        self.model.curriculum_success_streak = int(self.curriculum_success_streak)
         self.model.distributed_world_size_at_save = int(self.context.world_size)
 
     def _run_validation(self, epoch: int, checkpoint_path: Path) -> None:
@@ -394,13 +399,17 @@ class EpochExperimentCallback(BaseCallback):
         positive_failure_rate = self._epoch_positive_failure_count / epoch_divisor
         reward_component_total_mean = self._epoch_reward_component_total_sum / epoch_divisor
         route_potential_final_mean = self._epoch_route_potential_sum / epoch_divisor
-        next_curriculum_stage = update_curriculum_stage(
-            self.curriculum_stage,
-            train_success_rate,
-        )
-        if next_curriculum_stage != self.curriculum_stage:
-            self.curriculum_stage = next_curriculum_stage
-            self._apply_curriculum_stage(self.curriculum_stage)
+        if self.training_curriculum_enabled:
+            next_curriculum_stage, self.curriculum_success_streak = (
+                update_curriculum_progress(
+                    self.curriculum_stage,
+                    self.curriculum_success_streak,
+                    train_success_rate,
+                )
+            )
+            if next_curriculum_stage != self.curriculum_stage:
+                self.curriculum_stage = next_curriculum_stage
+                self._apply_curriculum_stage(self.curriculum_stage)
         self.validation_unlocked = update_validation_unlocked(
             self.validation_unlocked,
             train_success_rate,
@@ -429,12 +438,16 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/reward_component_total_mean", reward_component_total_mean, exclude="stdout")
             self.logger.record("train/route_potential_final_mean", route_potential_final_mean, exclude="stdout")
             self.logger.record("train/curriculum_stage", float(self.curriculum_stage))
+            self.logger.record(
+                "train/curriculum_success_streak",
+                float(self.curriculum_success_streak),
+            )
             self.logger.record("train/episodes", float(self.episodes_per_epoch), exclude="stdout")
             self.logger.record("train/global_completed_episodes", float(self.global_completed_episodes), exclude="stdout")
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage", "curriculum_success_streak", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -458,6 +471,7 @@ class EpochExperimentCallback(BaseCallback):
                     "reward_component_total_mean": reward_component_total_mean,
                     "route_potential_final_mean": route_potential_final_mean,
                     "curriculum_stage": self.curriculum_stage,
+                    "curriculum_success_streak": self.curriculum_success_streak,
                     "insert_action_mean": insert_action_mean,
                     "insert_positive_fraction": insert_positive_fraction,
                     "insert_negative_fraction": insert_negative_fraction,
@@ -476,6 +490,7 @@ class EpochExperimentCallback(BaseCallback):
                 f"train_episode_steps_mean={train_episode_steps_mean:.1f} "
                 f"positive_failure_rate={positive_failure_rate:.6f} "
                 f"curriculum_stage={self.curriculum_stage} "
+                f"curriculum_success_streak={self.curriculum_success_streak} "
                 f"global_completed_episodes={self.global_completed_episodes} "
                 f"global_env_steps={self.model.global_env_steps} "
                 f"checkpoint={checkpoint_path}.zip"

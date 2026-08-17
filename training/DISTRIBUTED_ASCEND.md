@@ -44,12 +44,13 @@ SAC, and never uses the SAC replay buffer.
   default is 4. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
 - `--training-curriculum` (default): keep domain randomization active while the
-  geometry pool expands B01/B02 -> all B plus C01/C02 -> all B/C at global epoch
-  success rates 5% and 10%. The stage is shared by all ranks and saved in each
-  checkpoint; forced vessels and validation bypass it.
+  geometry pool expands B01/B02 -> all B -> all B plus C01/C02 -> all B/C.
+  Every promotion requires three consecutive global epochs at 10% training
+  success; the stage and streak are shared by all ranks and saved in each
+  checkpoint. Forced vessels and validation bypass it.
 - `--min-ent-coef`: lower bound for SAC automatic entropy tuning (default 0.02).
-  PPO uses a small fixed entropy bonus (`ent_coef=0.005`) for the same reason:
-  prevent exploration collapse before a successful navigation policy exists.
+  PPO uses `ent_coef=0.001` and clamps Gaussian action std to `0.25..1.0`,
+  preventing both premature exploration collapse and saturated random actions.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
   Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
   older installations. A disposable optimizer step is tested first; all ranks

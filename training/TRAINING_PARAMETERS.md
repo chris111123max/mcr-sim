@@ -59,7 +59,8 @@ Reward profile v4 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`�
 | 每步代价 | -0.002 | 鼓励更短路径，但不压倒最长路线上的安全连续进度 |
 
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`，自动熵系数下限为 `0.02`；
-PPO 使用 `max_grad_norm=0.5` 和 `ent_coef=0.005`，避免成功策略形成前探索坍缩。
+PPO 使用 `max_grad_norm=0.5` 和 `ent_coef=0.001`，并把高斯动作标准差限制在
+`0.25–1.0`，同时避免探索坍缩和大量动作被裁剪到 `[-1,1]` 边界。
 `run_config.json` 会完整保存 Reward v4，`train_summary.csv`
 同时记录奖励分项、正回报失败率、终止路线势、课程阶段、无进展次数、
 正负插入比例和最终插入长度。正式训练中 `positive_failure_rate` 必须保持为 0。
@@ -96,9 +97,10 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 ## SAC 与 epoch 语义
 
 一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 100 epoch，即 10000 个回合。
-训练默认启用三阶段血管课程，域随机化在所有阶段均保持开启：阶段 0 使用 B01/B02；
-epoch 成功率达到 5% 后扩展到全部 B 与 C01/C02；达到 10% 后扩展到全部 B/C。
-阶段只前进不回退，并保存在 checkpoint；强制单血管和 V01..V05 validation 不受影响。
+训练默认启用四阶段血管课程，域随机化在所有阶段均保持开启：`B01/B02 → 全部B
+→ 全部B+C01/C02 → 全部B/C`。每一级都必须连续 3 个全局 epoch 达到 10% 成功率
+才会升级；任一 epoch 未达标就清零连续计数。阶段和连续计数都保存在 checkpoint，
+只前进不回退；强制单血管和 V01..V05 validation 不受影响。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
 训练成功率第一次达到 `0.20` 前不创建 valid 环境；达到后永久解锁，该轮若为偶数

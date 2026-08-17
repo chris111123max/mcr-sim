@@ -16,7 +16,6 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 import numpy as np
-from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.utils import get_schedule_fn
 
@@ -43,6 +42,8 @@ from mcr_sim.training_config import (
     PPO_GAMMA,
     PPO_LEARNING_RATE,
     PPO_MAX_GRAD_NORM,
+    PPO_MAX_ACTION_STD,
+    PPO_MIN_ACTION_STD,
     PPO_N_ENVS,
     PPO_N_EPOCHS,
     PPO_N_STEPS,
@@ -112,6 +113,8 @@ def parse_args():
     parser.add_argument("--ent-coef", type=float, default=PPO_ENT_COEF)
     parser.add_argument("--vf-coef", type=float, default=PPO_VF_COEF)
     parser.add_argument("--max-grad-norm", type=float, default=PPO_MAX_GRAD_NORM)
+    parser.add_argument("--min-action-std", type=float, default=PPO_MIN_ACTION_STD)
+    parser.add_argument("--max-action-std", type=float, default=PPO_MAX_ACTION_STD)
 
     parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
     parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
@@ -181,6 +184,8 @@ def parse_args():
         parser.error("--valid-min-train-success-rate must be in [0, 1]")
     if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
         parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
+    if not (0.0 < args.min_action_std <= args.max_action_std):
+        parser.error("PPO action std bounds must satisfy 0 < min <= max")
     args.steps_per_epoch = args.episodes_per_epoch * args.max_episode_steps
     args.episode_mode = True
     return args
@@ -331,7 +336,9 @@ def main():
                 ]
             )
         callback = CallbackList(callbacks) if len(callbacks) > 1 else callbacks[0]
-        algorithm_class = DistributedPPO if context.enabled else PPO
+        # Use the shared implementation on one or many devices so exploration
+        # bounds and optimizer semantics remain identical.
+        algorithm_class = DistributedPPO
         tensorboard_log = str(tb_dir) if context.is_main else None
         verbose = args.sb3_verbose if context.is_main else 0
 
@@ -362,6 +369,9 @@ def main():
             model.verbose = verbose
             model.seed = int(args.rank_seed)
             model.set_random_seed(int(args.rank_seed))
+            model.min_action_std = float(args.min_action_std)
+            model.max_action_std = float(args.max_action_std)
+            model.clamp_action_std()
             _override_learning_rate(model, args.learning_rate)
             reset_num_timesteps = args.reset_num_timesteps
             saved_world_size = max(
@@ -390,9 +400,10 @@ def main():
                 seed=args.rank_seed,
                 device=args.resolved_device,
                 verbose=verbose,
+                distributed_context=context,
+                min_action_std=args.min_action_std,
+                max_action_std=args.max_action_std,
             )
-            if context.enabled:
-                kwargs["distributed_context"] = context
             model = algorithm_class(**kwargs)
             reset_num_timesteps = True
 
@@ -437,7 +448,10 @@ def main():
             )
             print(
                 f"[MCR TRAIN][PPO] n_steps={args.n_steps} n_epochs={args.n_epochs} "
-                f"batch={global_batch_size}/{local_batch_size} output={run_dir}"
+                f"batch={global_batch_size}/{local_batch_size} "
+                f"ent_coef={args.ent_coef:g} "
+                f"action_std={args.min_action_std:g}-{args.max_action_std:g} "
+                f"output={run_dir}"
             )
         model.learn(
             total_timesteps=local_total_timesteps,

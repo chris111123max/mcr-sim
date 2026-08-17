@@ -24,9 +24,11 @@ from mcr_sim.training_config import (
     REWARD_WRONG_BRANCH,
     SAC_MIN_ENT_COEF,
     TRAIN_ROUTE_MAX_LENGTH_M,
+    PPO_MAX_ACTION_STD,
+    PPO_MIN_ACTION_STD,
     TRAINING_CURRICULUM_MODELS,
     ordered_route_potential,
-    update_curriculum_stage,
+    update_curriculum_progress,
 )
 
 
@@ -64,17 +66,31 @@ class RewardProfileTest(unittest.TestCase):
         total = sum(1.0 / rewardable_waypoints for _ in range(rewardable_waypoints))
         self.assertAlmostEqual(total, 1.0)
 
-    def test_curriculum_advances_one_stage_and_latches(self) -> None:
-        self.assertEqual(update_curriculum_stage(0, 0.049), 0)
-        self.assertEqual(update_curriculum_stage(0, 0.05), 1)
-        self.assertEqual(update_curriculum_stage(1, 0.10), 2)
-        self.assertEqual(update_curriculum_stage(2, 1.0), 2)
+    def test_curriculum_requires_three_consecutive_successful_epochs(self) -> None:
+        stage, streak = update_curriculum_progress(0, 0, 0.10)
+        self.assertEqual((stage, streak), (0, 1))
+        stage, streak = update_curriculum_progress(stage, streak, 0.10)
+        self.assertEqual((stage, streak), (0, 2))
+        stage, streak = update_curriculum_progress(stage, streak, 0.099)
+        self.assertEqual((stage, streak), (0, 0))
+        for _ in range(3):
+            stage, streak = update_curriculum_progress(stage, streak, 0.10)
+        self.assertEqual((stage, streak), (1, 0))
+
+    def test_curriculum_advances_only_one_of_four_stages(self) -> None:
+        stage, streak = update_curriculum_progress(2, 2, 1.0)
+        self.assertEqual((stage, streak), (3, 0))
+        stage, streak = update_curriculum_progress(stage, streak, 1.0)
+        self.assertEqual((stage, streak), (3, 0))
         self.assertLess(len(TRAINING_CURRICULUM_MODELS[0]), len(TRAINING_CURRICULUM_MODELS[1]))
         self.assertLess(len(TRAINING_CURRICULUM_MODELS[1]), len(TRAINING_CURRICULUM_MODELS[2]))
+        self.assertLess(len(TRAINING_CURRICULUM_MODELS[2]), len(TRAINING_CURRICULUM_MODELS[3]))
 
     def test_exploration_defaults_are_nonzero(self) -> None:
         self.assertGreater(SAC_MIN_ENT_COEF, 0.0)
         self.assertGreater(PPO_ENT_COEF, 0.0)
+        self.assertLess(PPO_MIN_ACTION_STD, PPO_MAX_ACTION_STD)
+        self.assertLessEqual(PPO_MAX_ACTION_STD, 1.0)
 
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET

@@ -187,20 +187,33 @@ def ordered_route_potential(
 TRAINING_CURRICULUM_ENABLED = True
 TRAINING_CURRICULUM_MODELS = (
     ("B01", "B02"),
+    ("B01", "B02", "B03", "B04", "B05"),
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02"),
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02", "C03", "C04", "C05"),
 )
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.05, 0.10)
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.10, 0.10, 0.10)
+TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
 
 
-def update_curriculum_stage(current_stage: int, train_success_rate: float) -> int:
-    """Advance at most one latched curriculum stage from global epoch results."""
+def update_curriculum_progress(
+    current_stage: int,
+    consecutive_success_epochs: int,
+    train_success_rate: float,
+):
+    """Update the stable-success streak and advance at most one stage."""
 
     stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
-    if stage < len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
-        if float(train_success_rate) >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
+    streak = max(int(consecutive_success_epochs), 0)
+    if stage >= len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
+        return stage, 0
+    if float(train_success_rate) >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
+        streak += 1
+        if streak >= TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS:
             stage += 1
-    return stage
+            streak = 0
+    else:
+        streak = 0
+    return stage, streak
 
 
 def update_validation_unlocked(
@@ -269,9 +282,11 @@ PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.95
 PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.005
+PPO_ENT_COEF = 0.001
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
+PPO_MIN_ACTION_STD = 0.25
+PPO_MAX_ACTION_STD = 1.0
 
 
 def validate_training_defaults() -> None:
@@ -340,6 +355,10 @@ def validate_training_defaults() -> None:
         raise ValueError("SAC_MIN_ENT_COEF must be positive.")
     if len(TRAINING_CURRICULUM_MODELS) != len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS) + 1:
         raise ValueError("Curriculum stages and thresholds are inconsistent.")
+    if TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS < 1:
+        raise ValueError("Curriculum consecutive epoch count must be positive.")
+    if not (0.0 < PPO_MIN_ACTION_STD <= PPO_MAX_ACTION_STD):
+        raise ValueError("Invalid PPO action standard-deviation bounds.")
     if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:
