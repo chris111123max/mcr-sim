@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import time
 from typing import Optional
 
@@ -13,7 +14,7 @@ from stable_baselines3.common.utils import polyak_update
 
 from .context import DistributedContext
 from .npu_performance import zero_optimizer_grad
-from ..training_config import SAC_MAX_GRAD_NORM
+from ..training_config import SAC_MAX_GRAD_NORM, SAC_MIN_ENT_COEF
 
 
 class DistributedSAC(SAC):
@@ -28,6 +29,9 @@ class DistributedSAC(SAC):
     def __init__(self, *args, distributed_context: Optional[DistributedContext] = None, **kwargs):
         self.distributed_context = distributed_context
         self.max_grad_norm = float(kwargs.pop("max_grad_norm", SAC_MAX_GRAD_NORM))
+        self.min_ent_coef = float(kwargs.pop("min_ent_coef", SAC_MIN_ENT_COEF))
+        if self.min_ent_coef <= 0.0:
+            raise ValueError("min_ent_coef must be positive.")
         super().__init__(*args, **kwargs)
 
     def set_distributed_context(self, context: DistributedContext) -> None:
@@ -102,6 +106,10 @@ class DistributedSAC(SAC):
                 ent_coef_loss.backward()
                 context.average_tensor_gradient(self.log_ent_coef)
                 self.ent_coef_optimizer.step()
+                # Automatic entropy tuning may otherwise collapse exploration
+                # long before a sparse navigation policy is established.
+                with th.no_grad():
+                    self.log_ent_coef.clamp_(min=math.log(self.min_ent_coef))
 
             with th.no_grad():
                 next_actions, next_log_prob = self.actor.action_log_prob(

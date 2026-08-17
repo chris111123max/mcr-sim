@@ -72,6 +72,7 @@ from mcr_sim.training_config import (
     SAC_LEARNING_RATE,
     SAC_LEARNING_STARTS,
     SAC_MAX_GRAD_NORM,
+    SAC_MIN_ENT_COEF,
     SAC_N_ENVS,
     SAC_STEPS_PER_EPOCH,
     SAC_TAU,
@@ -91,6 +92,7 @@ from mcr_sim.training_config import (
     VESSEL_SCALE_MIN,
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
+    TRAINING_CURRICULUM_ENABLED,
     reward_profile,
 )
 
@@ -319,12 +321,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 info.get("inserted_length_max_episode", np.nan)
             ),
             "positive_failure_return": bool(info.get("positive_failure_return", False)),
-            "positive_progress_fraction": self._safe_float(
-                info.get("positive_progress_fraction_awarded", 0.0)
-            ),
-            "waypoint_bonus_fraction": self._safe_float(
-                info.get("waypoint_bonus_fraction_awarded", 0.0)
-            ),
+            "route_potential": self._safe_float(info.get("route_potential", 0.0)),
+            "curriculum_stage": self._safe_float(info.get("curriculum_stage", 0.0)),
         }
 
     def _on_step(self) -> bool:
@@ -395,8 +393,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/progress_fraction_w{self.window_size}", self._mean(ep["positive_progress_fraction"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/waypoint_bonus_fraction_w{self.window_size}", self._mean(ep["waypoint_bonus_fraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/route_potential_w{self.window_size}", self._mean(ep["route_potential"] for ep in recent), exclude="stdout")
+            self.logger.record(f"rollout_recent/curriculum_stage_w{self.window_size}", self._mean(ep["curriculum_stage"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_mean_w{self.window_size}", self._mean(ep["insert_action_mean"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_positive_fraction_w{self.window_size}", self._mean(ep["insert_positive_fraction"] for ep in recent), exclude="stdout")
             self.logger.record(f"actions/insert_negative_fraction_w{self.window_size}", self._mean(ep["insert_negative_fraction"] for ep in recent), exclude="stdout")
@@ -636,7 +634,11 @@ def _force_auto_ent_coef(model: SAC, ent_coef_arg: Union[str, float], announce: 
     else:
         init_value = _current_ent_coef_value(model, fallback=1.0)
 
-    init_value = max(float(init_value), 1e-12)
+    init_value = max(
+        float(init_value),
+        float(getattr(model, "min_ent_coef", SAC_MIN_ENT_COEF)),
+        1e-12,
+    )
 
     model.ent_coef = ent_coef_arg
     model.log_ent_coef = th.log(th.ones(1, device=model.device) * init_value).requires_grad_(True)
@@ -869,6 +871,12 @@ def parse_args():
         default="auto",
         help="Entropy coefficient: 'auto', 'auto_0.001', or fixed float such as 0.001",
     )
+    parser.add_argument(
+        "--min-ent-coef",
+        type=float,
+        default=SAC_MIN_ENT_COEF,
+        help="Lower bound for automatically tuned SAC entropy (default: 0.02).",
+    )
     parser.add_argument("--gamma", type=float, default=SAC_GAMMA)
 
     parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
@@ -982,6 +990,19 @@ def parse_args():
         default=VESSEL_SCALE_MAX,
         help="Maximum isotropic vessel scale sampled per episode (default: 1.00).",
     )
+    curriculum = parser.add_mutually_exclusive_group()
+    curriculum.add_argument(
+        "--training-curriculum",
+        dest="training_curriculum",
+        action="store_true",
+        help="Expand the training vessel pool after 5% and 10% epoch success.",
+    )
+    curriculum.add_argument(
+        "--no-training-curriculum",
+        dest="training_curriculum",
+        action="store_false",
+    )
+    parser.set_defaults(training_curriculum=TRAINING_CURRICULUM_ENABLED)
 
     # All-vessel local-observation curriculum runs.
     parser.add_argument(
@@ -1096,6 +1117,8 @@ def parse_args():
             "use --start-window-mm/--target-window-mm."
         )
     args.ent_coef = _parse_ent_coef(args.ent_coef)
+    if args.min_ent_coef <= 0.0:
+        parser.error("--min-ent-coef must be positive")
     if not args.episode_mode and not args.skip_validation:
         parser.error("legacy --timesteps mode requires explicit --skip-validation")
     return args
@@ -1134,6 +1157,9 @@ def build_env(args):
                 "soft_randomize_single_vessel": bool(args.soft_randomize_single_vessel),
                 "vessel_scale_min": float(args.vessel_scale_min),
                 "vessel_scale_max": float(args.vessel_scale_max),
+                "training_curriculum_enabled": bool(
+                    getattr(args, "training_curriculum", TRAINING_CURRICULUM_ENABLED)
+                ),
                 "verbose_scene": bool(args.scene_verbose),
             }
             # If running with GUI (human), enable debug_rendering so the scene
@@ -1318,6 +1344,7 @@ def main():
                     valid_args.distributed_rank = 0
                     valid_args.render = "headless"
                     valid_args.seed = int(args.seed) + 100_000
+                    valid_args.training_curriculum = False
                     return build_env(valid_args)
 
                 was_training = bool(current_model.policy.training)
@@ -1349,6 +1376,7 @@ def main():
                 validation_min_train_success_rate=args.valid_min_train_success_rate,
                 validation_fn=None if args.skip_validation else run_validation,
                 resume_progress=not args.reset_num_timesteps,
+                training_curriculum_enabled=args.training_curriculum,
             )
         else:
             episode_callback = None
@@ -1451,6 +1479,7 @@ def main():
                 print(f"Original ent_coef from checkpoint: {_current_ent_coef_value(model):.6g}")
 
             _override_learning_rate(model, args.learning_rate, announce=context.is_main)
+            model.min_ent_coef = float(args.min_ent_coef)
             if isinstance(args.ent_coef, str) and args.ent_coef.startswith("auto"):
                 _force_auto_ent_coef(model, args.ent_coef, announce=context.is_main)
             else:
@@ -1482,6 +1511,7 @@ def main():
                     replay_buffer_class=replay_buffer_class,
                     distributed_context=context,
                     max_grad_norm=SAC_MAX_GRAD_NORM,
+                    min_ent_coef=args.min_ent_coef,
                 )
                 return algorithm_class(**model_kwargs)
 
@@ -1532,6 +1562,7 @@ def main():
         args.npu_replay_buffer_fallbacks = replay_fallbacks
         args.reward_profile = reward_profile()
         args.sac_max_grad_norm = float(SAC_MAX_GRAD_NORM)
+        args.sac_min_ent_coef = float(args.min_ent_coef)
         model.max_grad_norm = float(SAC_MAX_GRAD_NORM)
 
         if context.is_main:

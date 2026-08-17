@@ -71,15 +71,13 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v3.  Dense navigation credit is normalized by the sampled
-# start-to-target route length, not by one 0.2 mm action.  Positive approach
-# credit is capped at one complete route and waypoint bonuses are distributed
-# over the ordered waypoint sequence.  Consequently every failed trajectory
-# remains negative even if it crashes immediately before the target, while a
-# successful full route remains strongly positive.  All magnitudes stay at
-# O(1)..O(100), avoiding the critic saturation caused by the legacy O(1000)
-# terminal scale.
-REWARD_PROFILE_VERSION = 3
+# Reward profile v4.  Dense navigation credit is the difference of an ordered
+# route potential in [0, 1].  It therefore telescopes over a trajectory:
+# forward/backward oscillation cannot farm reward, while progress credit becomes
+# available again after a necessary correction in a tight bend.  Ordered
+# waypoint hits remain one-shot by construction.  Every failed trajectory still
+# remains negative and all magnitudes stay at O(1)..O(100).
+REWARD_PROFILE_VERSION = 4
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_BUDGET = 100.0
 REWARD_WAYPOINT_BUDGET = 20.0
@@ -112,6 +110,7 @@ NO_PROGRESS_MIN_NET_APPROACH_M = 0.001
 # implementation applies this bound after cross-rank averaging and before the
 # optimizer step.  PPO retains its own PPO_MAX_GRAD_NORM below.
 SAC_MAX_GRAD_NORM = 10.0
+SAC_MIN_ENT_COEF = 0.02
 
 
 def reward_profile() -> dict:
@@ -119,7 +118,7 @@ def reward_profile() -> dict:
 
     return {
         "version": REWARD_PROFILE_VERSION,
-        "progress_normalization": "sampled_route_length",
+        "progress_normalization": "ordered_route_potential_difference",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "waypoint_budget": REWARD_WAYPOINT_BUDGET,
@@ -145,24 +144,63 @@ def reward_profile() -> dict:
     }
 
 
-def bounded_progress_feature(raw_feature: float, positive_fraction_awarded: float):
-    """Cap lifetime positive route credit without hiding negative regression."""
+def ordered_route_potential(
+    start_progress: float,
+    target_progress: float,
+    waypoint_progress,
+    active_waypoint_index: int,
+    active_waypoint_distance: float,
+) -> float:
+    """Return bounded progress through the strictly ordered waypoint task.
 
-    raw_feature = float(raw_feature)
-    positive_fraction_awarded = min(max(float(positive_fraction_awarded), 0.0), 1.0)
-    if raw_feature <= 0.0:
-        return raw_feature, positive_fraction_awarded
-    awarded = min(raw_feature, 1.0 - positive_fraction_awarded)
-    return awarded, min(1.0, positive_fraction_awarded + awarded)
+    The completed prefix comes from the active waypoint index.  Progress inside
+    the active segment comes only from Euclidean approach to that waypoint, so
+    the reward never exposes a privileged global centerline projection to the
+    policy and cannot jump to an unrelated branch.
+    """
+
+    start = float(start_progress)
+    target = float(target_progress)
+    route_length = target - start
+    points = [float(value) for value in waypoint_progress]
+    if not points or not math.isfinite(route_length) or route_length <= 1e-9:
+        return 0.0
+
+    index = min(max(int(active_waypoint_index), 0), len(points) - 1)
+    active = min(max(points[index], start), target)
+    previous = start if index == 0 else min(max(points[index - 1], start), target)
+    segment_length = max(active - previous, 0.0)
+    distance = float(active_waypoint_distance)
+    if not math.isfinite(distance):
+        completion = 0.0
+    elif segment_length <= 1e-9:
+        completion = 0.0
+    else:
+        completion = min(max(1.0 - distance / segment_length, 0.0), 1.0)
+    travelled = max(previous - start, 0.0) + segment_length * completion
+    return min(max(travelled / route_length, 0.0), 1.0)
 
 
-def bounded_waypoint_feature(rewardable_waypoints: int, fraction_awarded: float):
-    """Distribute one bounded waypoint budget over the ordered route."""
+# Training-only vessel curriculum.  Domain randomization remains enabled in
+# every stage; only the geometry pool expands.  Validation always uses V01..V05
+# directly and is never simplified by this curriculum.
+TRAINING_CURRICULUM_ENABLED = True
+TRAINING_CURRICULUM_MODELS = (
+    ("B01", "B02"),
+    ("B01", "B02", "B03", "B04", "B05", "C01", "C02"),
+    ("B01", "B02", "B03", "B04", "B05", "C01", "C02", "C03", "C04", "C05"),
+)
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.05, 0.10)
 
-    rewardable_waypoints = max(1, int(rewardable_waypoints))
-    fraction_awarded = min(max(float(fraction_awarded), 0.0), 1.0)
-    awarded = min(1.0 / float(rewardable_waypoints), 1.0 - fraction_awarded)
-    return awarded, min(1.0, fraction_awarded + awarded)
+
+def update_curriculum_stage(current_stage: int, train_success_rate: float) -> int:
+    """Advance at most one latched curriculum stage from global epoch results."""
+
+    stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
+    if stage < len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
+        if float(train_success_rate) >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
+            stage += 1
+    return stage
 
 
 def update_validation_unlocked(
@@ -231,7 +269,7 @@ PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.95
 PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.0
+PPO_ENT_COEF = 0.005
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
 
@@ -298,6 +336,10 @@ def validate_training_defaults() -> None:
         raise ValueError("Invalid no-progress detection settings.")
     if SAC_MAX_GRAD_NORM <= 0.0:
         raise ValueError("SAC_MAX_GRAD_NORM must be positive.")
+    if SAC_MIN_ENT_COEF <= 0.0:
+        raise ValueError("SAC_MIN_ENT_COEF must be positive.")
+    if len(TRAINING_CURRICULUM_MODELS) != len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS) + 1:
+        raise ValueError("Curriculum stages and thresholds are inconsistent.")
     if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:

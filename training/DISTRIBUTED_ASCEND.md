@@ -41,8 +41,15 @@ SAC, and never uses the SAC replay buffer.
 - `--n-envs`: global SOFA environment count; must divide by world size.
 - `--batch-size`: global SAC batch; must divide by world size.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
-  default is 2. `-1` follows SB3's rank-local collected-transition count and is
+  default is 4. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
+- `--training-curriculum` (default): keep domain randomization active while the
+  geometry pool expands B01/B02 -> all B plus C01/C02 -> all B/C at global epoch
+  success rates 5% and 10%. The stage is shared by all ranks and saved in each
+  checkpoint; forced vessels and validation bypass it.
+- `--min-ent-coef`: lower bound for SAC automatic entropy tuning (default 0.02).
+  PPO uses a small fixed entropy bonus (`ent_coef=0.005`) for the same reason:
+  prevent exploration collapse before a successful navigation policy exists.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
   Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
   older installations. A disposable optimizer step is tested first; all ranks

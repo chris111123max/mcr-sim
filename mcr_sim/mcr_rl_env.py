@@ -67,8 +67,9 @@ from .training_config import (
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
     WRONG_BRANCH_OBSERVATION_SCALE_M,
-    bounded_progress_feature,
-    bounded_waypoint_feature,
+    TRAINING_CURRICULUM_ENABLED,
+    TRAINING_CURRICULUM_MODELS,
+    ordered_route_potential,
 )
 
 MCR_SIM_DIR = Path(__file__).resolve().parent
@@ -337,10 +338,23 @@ class MCREnv(SofaEnv):
         self.actor_observation_dim = self.actor_current_geometry_dim + self.actor_dynamic_history_dim
         self._actor_dynamic_history = deque(maxlen=self.actor_history_steps)
 
-        # Uniform multi-vessel sampling. No priority sampling.
-        self.training_models = [f"C{i:02d}" for i in range(1, 6)] + [
-            f"B{i:02d}" for i in range(1, 6)
-        ]
+        # Training-only curriculum.  A forced model (including every validation
+        # vessel) bypasses this pool entirely.
+        self.training_curriculum_enabled = bool(
+            create_scene_kwargs.get(
+                "training_curriculum_enabled",
+                TRAINING_CURRICULUM_ENABLED,
+            )
+        )
+        requested_stage = int(create_scene_kwargs.get("training_curriculum_stage", 0))
+        self.curriculum_stage = min(
+            max(requested_stage, 0), len(TRAINING_CURRICULUM_MODELS) - 1
+        )
+        self.training_models = list(
+            TRAINING_CURRICULUM_MODELS[
+                self.curriculum_stage if self.training_curriculum_enabled else -1
+            ]
+        )
 
         if self.observation_type == ObservationType.STATE:
             self.observation_space = spaces.Box(
@@ -365,8 +379,9 @@ class MCREnv(SofaEnv):
         self.reward_info = {}
         self.reward_features = {}
         self.episode_reward_totals = defaultdict(float)
-        self.episode_positive_progress_fraction = 0.0
-        self.episode_waypoint_bonus_fraction = 0.0
+        self.previous_route_potential = 0.0
+        self.current_route_potential = 0.0
+        self.current_route_potential_delta = 0.0
 
         # Centerline / waypoint buffers.
         self.centerline_points = None
@@ -643,6 +658,16 @@ class MCREnv(SofaEnv):
         chosen = str(self._sampler_rng.choice(list(self.training_models)))
         self.create_scene_kwargs["force_model"] = chosen
         self.current_sampling_model = chosen
+
+    def set_curriculum_stage(self, stage: int) -> int:
+        """Set the latched training geometry stage for future episode resets."""
+
+        if not self.training_curriculum_enabled or self._explicit_force_model:
+            return int(self.curriculum_stage)
+        stage = min(max(int(stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
+        self.curriculum_stage = stage
+        self.training_models = list(TRAINING_CURRICULUM_MODELS[stage])
+        return int(self.curriculum_stage)
 
     def _capture_soft_reset_reference_pose(self) -> None:
         if getattr(self, "_soft_reset_base_start_sim", None) is not None:
@@ -957,8 +982,9 @@ class MCREnv(SofaEnv):
         self.reward_info = {}
         self.reward_features = {}
         self.episode_reward_totals = defaultdict(float)
-        self.episode_positive_progress_fraction = 0.0
-        self.episode_waypoint_bonus_fraction = 0.0
+        self.previous_route_potential = 0.0
+        self.current_route_potential = 0.0
+        self.current_route_potential_delta = 0.0
 
         self.mcr_controller_sofa.reset()
         if bool(single_vessel_mode and getattr(self, "soft_randomize_single_vessel", True)):
@@ -982,6 +1008,8 @@ class MCREnv(SofaEnv):
                 print("[REAL_TIP_AFTER_RESET_CHECK][WARN]", e)
 
         self._initialize_waypoint_progress_from_current_tip()
+        self.current_route_potential = self._ordered_route_potential()
+        self.previous_route_potential = self.current_route_potential
         return self._get_observation(image_observation=self._maybe_update_rgb_buffer()), {}
 
     # ------------------------------------------------------------------
@@ -1300,33 +1328,21 @@ class MCREnv(SofaEnv):
         #   - timeout terminal penalty is added in step() after truncated is known.
         # Centreline geometry is retained for ordered navigation.  Wall risk and
         # out-of-vessel termination come from the VTI SDF whenever it is present.
-        # Continuous potential-style progress feature.  One feature unit is
-        # one maximum insertion action (0.2 mm by default), so correct forward
-        # motion outweighs the bounded near-wall shaping term.  Rare solver
-        # jumps remain clipped.
-        raw_approach_feature = float(
-            np.clip(
-                approach_delta
-                / max(float(self.reward_progress_normalization), 1e-9),
-                -1.0,
-                1.0,
-            )
+        # Potential-difference shaping telescopes over the whole trajectory.
+        # Corrections restore their earlier negative credit when the tip moves
+        # forward again, while oscillation has zero net progress reward.
+        self.current_route_potential = self._ordered_route_potential()
+        self.current_route_potential_delta = float(
+            self.current_route_potential - self.previous_route_potential
         )
-        approach_feature, self.episode_positive_progress_fraction = (
-            bounded_progress_feature(
-                raw_approach_feature,
-                self.episode_positive_progress_fraction,
-            )
-        )
+        self.previous_route_potential = self.current_route_potential
+        approach_feature = self.current_route_potential_delta
 
         waypoint_bonus_feature = 0.0
         if reached:
-            waypoint_bonus_feature, self.episode_waypoint_bonus_fraction = (
-                bounded_waypoint_feature(
-                    len(self.waypoint_points) - 1,
-                    self.episode_waypoint_bonus_fraction,
-                )
-            )
+            # The ordered index advances only once, so this is already bounded
+            # without a second lifetime accumulator.
+            waypoint_bonus_feature = 1.0 / max(1, len(self.waypoint_points) - 1)
 
         if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
             # Dense wall shaping is tip-only.  The flexible body may rest on or
@@ -1494,12 +1510,9 @@ class MCREnv(SofaEnv):
             "waypoint_approach_delta": float(self.current_waypoint_approach_delta),
             "reward_progress_normalization": float(self.reward_progress_normalization),
             "reward_route_length": float(self.reward_progress_normalization),
-            "positive_progress_fraction_awarded": float(
-                self.episode_positive_progress_fraction
-            ),
-            "waypoint_bonus_fraction_awarded": float(
-                self.episode_waypoint_bonus_fraction
-            ),
+            "route_potential": float(self.current_route_potential),
+            "route_potential_delta": float(self.current_route_potential_delta),
+            "curriculum_stage": int(self.curriculum_stage),
             "waypoint_reached_this_step": bool(self.current_waypoint_reached_this_step),
             "waypoint_reached_count_episode": int(self.current_waypoint_reached_count_episode),
             "waypoint_handoff_counter": int(
@@ -2342,9 +2355,8 @@ class MCREnv(SofaEnv):
 
         self.current_waypoint_start_progress = float(start_progress)
         self.current_waypoint_target_progress = float(target_progress)
-        # Reward v3 uses the actual randomized start-to-target route length.
-        # This bounds total positive approach credit independently of vessel
-        # length and keeps B/C vessel rewards directly comparable.
+        # Reward v4 uses the actual randomized start-to-target route length to
+        # normalize the ordered route potential across B/C vessels.
         self.reward_progress_normalization = max(
             float(target_progress - start_progress),
             float(self.waypoint_spacing),
@@ -2479,6 +2491,20 @@ class MCREnv(SofaEnv):
         self.current_waypoint_handoff_counter = 0
         self.current_waypoint_handoff_this_step = False
         self.current_waypoint_handoff_count_episode = 0
+
+    def _ordered_route_potential(self) -> float:
+        points = getattr(self, "waypoint_progress", None)
+        if points is None or len(points) == 0:
+            return 0.0
+        return ordered_route_potential(
+            start_progress=float(getattr(self, "current_waypoint_start_progress", 0.0)),
+            target_progress=float(getattr(self, "current_waypoint_target_progress", 0.0)),
+            waypoint_progress=points,
+            active_waypoint_index=int(getattr(self, "current_waypoint_idx", 0)),
+            active_waypoint_distance=float(
+                getattr(self, "current_waypoint_distance", float("nan"))
+            ),
+        )
 
     def _initialize_waypoint_progress_from_current_tip(self) -> None:
         """Start every episode from the first waypoint.

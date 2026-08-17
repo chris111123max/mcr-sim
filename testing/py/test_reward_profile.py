@@ -13,6 +13,7 @@ from mcr_sim.training_config import (
     REWARD_NO_PROGRESS,
     REWARD_NO_PROGRESS_TERMINAL,
     REWARD_OUT_OF_VESSEL,
+    PPO_ENT_COEF,
     REWARD_PROGRESS_BUDGET,
     REWARD_RETRACTION,
     REWARD_SUCCESS,
@@ -21,9 +22,11 @@ from mcr_sim.training_config import (
     REWARD_WALL_PROXIMITY,
     REWARD_WAYPOINT_BUDGET,
     REWARD_WRONG_BRANCH,
+    SAC_MIN_ENT_COEF,
     TRAIN_ROUTE_MAX_LENGTH_M,
-    bounded_progress_feature,
-    bounded_waypoint_feature,
+    TRAINING_CURRICULUM_MODELS,
+    ordered_route_potential,
+    update_curriculum_stage,
 )
 
 
@@ -38,32 +41,40 @@ class RewardProfileTest(unittest.TestCase):
         )
         self.assertGreater(reward, 0.0)
 
-    def test_positive_progress_and_waypoint_credit_are_hard_capped(self) -> None:
-        progress_fraction = 0.0
-        progress_total = 0.0
-        for _ in range(10_000):
-            feature, progress_fraction = bounded_progress_feature(0.001, progress_fraction)
-            progress_total += feature
-        self.assertAlmostEqual(progress_fraction, 1.0)
-        self.assertAlmostEqual(progress_total, 1.0)
+    def test_route_potential_is_bounded_and_ordered(self) -> None:
+        waypoints = [0.0, 0.005, 0.010]
+        self.assertEqual(ordered_route_potential(0.0, 0.010, waypoints, 0, 0.0), 0.0)
+        self.assertAlmostEqual(
+            ordered_route_potential(0.0, 0.010, waypoints, 1, 0.003),
+            0.2,
+        )
+        self.assertAlmostEqual(
+            ordered_route_potential(0.0, 0.010, waypoints, 2, 0.0),
+            1.0,
+        )
 
-        waypoint_fraction = 0.0
-        waypoint_total = 0.0
-        for _ in range(100):
-            feature, waypoint_fraction = bounded_waypoint_feature(20, waypoint_fraction)
-            waypoint_total += feature
-        self.assertAlmostEqual(waypoint_fraction, 1.0)
-        self.assertAlmostEqual(waypoint_total, 1.0)
+    def test_potential_difference_restores_credit_after_correction(self) -> None:
+        potentials = [0.0, 0.3, 0.2, 0.3, 0.7]
+        deltas = [b - a for a, b in zip(potentials, potentials[1:])]
+        self.assertAlmostEqual(sum(deltas), potentials[-1] - potentials[0])
+        self.assertAlmostEqual(deltas[1] + deltas[2], 0.0)
 
-    def test_regression_does_not_restore_positive_credit(self) -> None:
-        fraction = 0.0
-        total = 0.0
-        for _ in range(20):
-            positive, fraction = bounded_progress_feature(0.1, fraction)
-            negative, fraction = bounded_progress_feature(-0.1, fraction)
-            total += positive + negative
-        self.assertAlmostEqual(fraction, 1.0)
-        self.assertLess(total, 0.0)
+    def test_ordered_waypoint_bonus_is_naturally_bounded(self) -> None:
+        rewardable_waypoints = 20
+        total = sum(1.0 / rewardable_waypoints for _ in range(rewardable_waypoints))
+        self.assertAlmostEqual(total, 1.0)
+
+    def test_curriculum_advances_one_stage_and_latches(self) -> None:
+        self.assertEqual(update_curriculum_stage(0, 0.049), 0)
+        self.assertEqual(update_curriculum_stage(0, 0.05), 1)
+        self.assertEqual(update_curriculum_stage(1, 0.10), 2)
+        self.assertEqual(update_curriculum_stage(2, 1.0), 2)
+        self.assertLess(len(TRAINING_CURRICULUM_MODELS[0]), len(TRAINING_CURRICULUM_MODELS[1]))
+        self.assertLess(len(TRAINING_CURRICULUM_MODELS[1]), len(TRAINING_CURRICULUM_MODELS[2]))
+
+    def test_exploration_defaults_are_nonzero(self) -> None:
+        self.assertGreater(SAC_MIN_ENT_COEF, 0.0)
+        self.assertGreater(PPO_ENT_COEF, 0.0)
 
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET

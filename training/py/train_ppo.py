@@ -53,6 +53,7 @@ from mcr_sim.training_config import (
     START_WINDOW_DISTANCE_M,
     TARGET_THRESHOLD_M,
     TARGET_WINDOW_DISTANCE_M,
+    TRAINING_CURRICULUM_ENABLED,
     VALID_EPISODES_PER_VESSEL,
     VALID_INTERVAL,
     VALID_MIN_TRAIN_SUCCESS_RATE,
@@ -139,6 +140,18 @@ def parse_args():
     parser.set_defaults(soft_randomize_single_vessel=True)
     parser.add_argument("--vessel-scale-min", type=float, default=VESSEL_SCALE_MIN)
     parser.add_argument("--vessel-scale-max", type=float, default=VESSEL_SCALE_MAX)
+    curriculum = parser.add_mutually_exclusive_group()
+    curriculum.add_argument(
+        "--training-curriculum",
+        dest="training_curriculum",
+        action="store_true",
+    )
+    curriculum.add_argument(
+        "--no-training-curriculum",
+        dest="training_curriculum",
+        action="store_false",
+    )
+    parser.set_defaults(training_curriculum=TRAINING_CURRICULUM_ENABLED)
 
     parser.add_argument("--log-root", default=str(TRAINING_RUNS_DIR))
     parser.add_argument("--variant", default="base")
@@ -269,6 +282,7 @@ def main():
                 valid_args.distributed_rank = 0
                 valid_args.render = "headless"
                 valid_args.seed = int(args.seed) + 100_000
+                valid_args.training_curriculum = False
                 return build_env(valid_args)
 
             was_training = bool(current_model.policy.training)
@@ -298,6 +312,7 @@ def main():
             validation_min_train_success_rate=args.valid_min_train_success_rate,
             validation_fn=None if args.skip_validation else run_validation,
             resume_progress=not args.reset_num_timesteps,
+            training_curriculum_enabled=args.training_curriculum,
         )
         callbacks = [epoch_callback]
         if context.is_main:
