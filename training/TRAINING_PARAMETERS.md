@@ -155,3 +155,30 @@ bash training/sh/run_train_sac.sh \
 启动命令。第一次上服务器应先运行短 smoke test，例如
 `--epochs 1 --episodes-per-epoch 2`，确认 SOFA、HCCL、日志和 checkpoint 后再开始
 完整训练。
+
+## LSTM-PPO 对照实验
+
+LSTM-PPO 使用官方 SB3-Contrib 2.4 的 `RecurrentPPO`、`MlpLstmPolicy`、
+`RecurrentRolloutBuffer` 和 `RNNStates`，分布式更新仍复用项目的 HCCL
+梯度平均。现有 MLP-PPO 的 reward、环境、课程、验证和所有共同 PPO 参数不变。
+
+| 参数 | MLP-PPO | LSTM-PPO |
+|---|---:|---:|
+| policy | `MlpPolicy` | `MlpLstmPolicy` |
+| learning rate | 3e-4 | 3e-4 |
+| n_steps | 512 | 512 |
+| global/local batch（四卡） | 512 / 128 | 512 / 128 |
+| PPO n_epochs | 10 | 10 |
+| gamma / GAE lambda | 0.995 / 0.95 | 0.995 / 0.95 |
+| clip / entropy / value coef | 0.2 / 0.001 / 0.5 | 0.2 / 0.001 / 0.5 |
+| max grad norm | 0.5 | 0.5 |
+| action std bounds | 0.25–1.0 | 0.25–1.0 |
+| LSTM hidden/layers | N/A | 128 / 1 |
+| bidirectional | N/A | false |
+
+训练时每个 rank 的 actor 与 critic state 分别为
+`(n_lstm_layers, envs_per_rank, hidden_size)`；正式四卡 64 环境配置下即
+`(1, 16, 128)`。rollout buffer 另外保存每一步的 actor/critic hidden 和 cell
+state，形状为 `(512, 1, 16, 128)`。minibatch 参数仍是每 rank 128 个真实
+transition；官方 buffer 内部产生的 padding 只通过 mask 排除，不会静默改写
+`batch_size`。

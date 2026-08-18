@@ -192,6 +192,14 @@ def evaluate_policy(
                             if isinstance(reset_result, tuple) and len(reset_result) == 2
                             else reset_result
                         )
+                        # Recurrent predictors expose an episode-local reset
+                        # hook. Plain MLP callables do not, so their validation
+                        # behavior is unchanged.
+                        reset_action_state = getattr(
+                            deterministic_action, "reset", None
+                        )
+                        if callable(reset_action_state):
+                            reset_action_state()
                         final_info = {}
                         done = False
                         for step_count in range(1, int(max_episode_steps) + 1):

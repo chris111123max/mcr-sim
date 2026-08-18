@@ -5,6 +5,7 @@ Target platform:
 - Debian 12, aarch64, 88 CPU cores
 - four process-visible logical devices: `npu:0` through `npu:3`
 - Python 3.8.20, SOFA 21.12, Gymnasium 1.0.0, SB3 2.4.0
+- SB3-Contrib 2.4.x for LSTM-PPO only; SAC/MLP-PPO do not import it
 - a CANN-compatible `torch` and `torch_npu` pair
 
 The code never uses physical `npu-smi` indices. `torchrun` assigns one logical
@@ -36,10 +37,20 @@ rollout buffer; policy gradients are averaged before PPO gradient clipping and
 the optimizer step. PPO uses the same device-resident metric infrastructure as
 SAC, and never uses the SAC replay buffer.
 
+LSTM-PPO uses official SB3-Contrib 2.4 `RecurrentPPO`, `MlpLstmPolicy`,
+`RecurrentRolloutBuffer`, and `RNNStates`. The project-side
+`DistributedRecurrentPPO` changes only the optimizer step to reuse the same
+gradient averaging, clipping, fused Adam, and metric reduction as MLP-PPO.
+Actor and critic each have a one-layer, 128-unit, unidirectional LSTM. Official
+`episode_starts` reset only the completed environment's state; sequence padding
+and masks prevent padded samples, environment boundaries, and episode
+boundaries from entering the PPO loss.
+
 ## CLI semantics
 
 - `--n-envs`: global SOFA environment count; must divide by world size.
-- `--batch-size`: global SAC batch; must divide by world size.
+- `--batch-size`: global SAC/PPO optimizer minibatch; it must divide by world
+  size and is not changed to accommodate recurrent padding.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
   default is 4. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
@@ -138,7 +149,8 @@ Single-device CPU, CUDA, and NPU commands remain supported by omitting
 The launcher-owned `--nohup` flag requires an explicit `--exp-name`, starts the
 job in the background, and prints its PID and run directory. Do not combine it
 with shell-level `nohup`, `&`, or output redirection. The equivalent PPO launcher
-is `training/sh/run_train_ppo.sh` and implements the same managed mode. Both launchers
+is `training/sh/run_train_ppo.sh`; recurrent PPO uses
+`training/sh/run_train_lstm_ppo.sh`. All three implement the same managed mode. Both PPO launchers
 keep validation locked until a completed training epoch first reaches success rate
 `0.20`. The gate stays unlocked; validation starts immediately when that epoch is
 even, otherwise on the next even epoch, then runs every two epochs.
@@ -177,4 +189,6 @@ torchrun --standalone --nproc_per_node=2 \
 - SB3/PyTorch operations used by SAC on Ascend
 - four-rank SOFA subprocess stability and CPU/memory sizing
 - checkpoint save and distributed resume on the shared filesystem
+- LSTM operator forward/backward support on the installed torch_npu/CANN pair
+- recurrent state, padding/mask, and checkpoint round-trip under four-rank HCCL
 - throughput benchmark for 16, 32, 48, and 64 total environments

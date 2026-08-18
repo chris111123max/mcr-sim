@@ -1,13 +1,13 @@
-"""Four-device Ascend PPO baseline using the shared MCR experiment protocol."""
+"""Four-device Ascend LSTM-PPO using the shared MCR experiment protocol."""
 
 from __future__ import annotations
 
-import argparse
 import copy
 import math
 import os
 import sys
 from datetime import datetime
+from importlib import metadata
 from pathlib import Path
 
 TRAINING_PY_DIR = Path(__file__).resolve().parent
@@ -16,192 +16,163 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 import numpy as np
+import stable_baselines3
 from stable_baselines3.common.callbacks import CallbackList
 from stable_baselines3.common.utils import get_schedule_fn
 
 from mcr_sim.distributed import (
-    DistributedPPO,
     configure_npu_execution,
     convert_to_npu_fused_adam,
     initialize_distributed,
 )
-from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR, VALID_MESH_DIR
+try:
+    from mcr_sim.distributed.recurrent_ppo import DistributedRecurrentPPO
+except ModuleNotFoundError as exc:
+    if exc.name and exc.name.startswith("sb3_contrib"):
+        raise RuntimeError(
+            "LSTM-PPO requires the server-compatible sb3-contrib 2.4.x package."
+        ) from exc
+    raise
+from mcr_sim.paths import PROJECT_ROOT
 from mcr_sim.rl_core.evaluation import discover_validation_vessels, evaluate_policy
 from mcr_sim.rl_core.experiment import EpochExperimentCallback
 from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
 from mcr_sim.training_config import (
-    FRAME_SKIP,
-    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
-    MAX_EPISODE_STEPS,
-    PPO_BATCH_SIZE,
-    PPO_CLIP_RANGE,
-    PPO_ENT_COEF,
-    PPO_EPOCHS,
-    PPO_EPISODES_PER_EPOCH,
-    PPO_GAE_LAMBDA,
-    PPO_GAMMA,
-    PPO_LEARNING_RATE,
-    PPO_MAX_GRAD_NORM,
-    PPO_MAX_ACTION_STD,
-    PPO_MIN_ACTION_STD,
-    PPO_N_ENVS,
-    PPO_N_EPOCHS,
-    PPO_N_STEPS,
-    PPO_VF_COEF,
-    RADIUS_OBSERVATION_SCALE_M,
-    SETTLE_STEPS,
-    SOFA_TIME_STEP_S,
-    START_WINDOW_DISTANCE_M,
-    TARGET_THRESHOLD_M,
-    TARGET_WINDOW_DISTANCE_M,
-    TRAINING_CURRICULUM_ENABLED,
     VALID_EPISODES_PER_VESSEL,
     VALID_INTERVAL,
-    VALID_MIN_TRAIN_SUCCESS_RATE,
     VALID_VESSELS,
-    VESSEL_SCALE_MAX,
-    VESSEL_SCALE_MIN,
     reward_profile,
 )
 
-# Reuse the established SOFA environment construction and detailed rollout
-# logger instead of maintaining a second algorithm-specific environment path.
-from train_sac import (  # noqa: E402
-    ALL_MODEL_CHOICES,
+# Reuse the exact MLP-PPO common argument parser, environment construction,
+# callbacks, and learning-rate resume semantics.  Structural LSTM arguments are
+# parsed separately below and are the only formal-experiment additions.
+from train_ppo import (  # noqa: E402
     DistributedRuntimeCallback,
     ExtraRolloutMetricsCallback,
+    _override_learning_rate,
     build_env,
+    parse_args as parse_mlp_ppo_args,
 )
 
 
-def parse_args(configure_parser=None):
-    parser = argparse.ArgumentParser(description="Train MCR agent with PPO")
-    parser.add_argument("--env-type", choices=["aortic", "flat"], default="aortic")
-    parser.add_argument("--force-model", choices=ALL_MODEL_CHOICES, default="")
-    parser.add_argument("--epochs", type=int, default=PPO_EPOCHS)
-    parser.add_argument("--episodes-per-epoch", type=int, default=PPO_EPISODES_PER_EPOCH)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--device", type=str, default="auto")
-    fused_adam = parser.add_mutually_exclusive_group()
-    fused_adam.add_argument(
-        "--npu-fused-adam", dest="npu_fused_adam", action="store_true"
-    )
-    fused_adam.add_argument(
-        "--no-npu-fused-adam", dest="npu_fused_adam", action="store_false"
-    )
-    npu_execution = parser.add_mutually_exclusive_group()
-    npu_execution.add_argument(
-        "--npu-fast-execution", dest="npu_fast_execution", action="store_true"
-    )
-    npu_execution.add_argument(
-        "--no-npu-fast-execution", dest="npu_fast_execution", action="store_false"
-    )
-    parser.set_defaults(npu_fused_adam=True, npu_fast_execution=True)
-    parser.add_argument("--distributed", action="store_true")
-    parser.add_argument("--world-size", type=int, default=4)
-    parser.add_argument("--local-rank", "--local_rank", dest="local_rank", type=int, default=0)
-    parser.add_argument("--dist-backend", choices=["", "hccl", "nccl", "gloo"], default="")
-    parser.add_argument("--n-envs", type=int, default=PPO_N_ENVS)
+LSTM_HIDDEN_SIZE_DEFAULT = 128
+LSTM_NUM_LAYERS_DEFAULT = 1
+EXPECTED_SB3_MINOR = (2, 4)
+EXPECTED_SB3_CONTRIB_MINOR = (2, 4)
 
-    parser.add_argument("--learning-rate", type=float, default=PPO_LEARNING_RATE)
-    parser.add_argument("--n-steps", type=int, default=PPO_N_STEPS)
-    parser.add_argument("--batch-size", type=int, default=PPO_BATCH_SIZE)
-    parser.add_argument("--n-epochs", type=int, default=PPO_N_EPOCHS)
-    parser.add_argument("--gamma", type=float, default=PPO_GAMMA)
-    parser.add_argument("--gae-lambda", type=float, default=PPO_GAE_LAMBDA)
-    parser.add_argument("--clip-range", type=float, default=PPO_CLIP_RANGE)
-    parser.add_argument("--ent-coef", type=float, default=PPO_ENT_COEF)
-    parser.add_argument("--vf-coef", type=float, default=PPO_VF_COEF)
-    parser.add_argument("--max-grad-norm", type=float, default=PPO_MAX_GRAD_NORM)
-    parser.add_argument("--min-action-std", type=float, default=PPO_MIN_ACTION_STD)
-    parser.add_argument("--max-action-std", type=float, default=PPO_MAX_ACTION_STD)
 
-    parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
-    parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
-    parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS)
-    parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M)
-    parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS)
-    parser.add_argument("--radius-observation-scale", type=float, default=RADIUS_OBSERVATION_SCALE_M)
+def _major_minor(version_text: str):
+    parts = str(version_text).split("+", 1)[0].split(".")
+    try:
+        return int(parts[0]), int(parts[1])
+    except (IndexError, ValueError) as exc:
+        raise RuntimeError(f"Cannot parse package version {version_text!r}.") from exc
 
-    endpoints = parser.add_mutually_exclusive_group()
-    endpoints.add_argument("--randomize-start-target", dest="randomize_start_target", action="store_true")
-    endpoints.add_argument("--no-randomize-start-target", dest="randomize_start_target", action="store_false")
-    parser.set_defaults(randomize_start_target=True)
-    parser.add_argument("--start-window-mm", type=float, default=START_WINDOW_DISTANCE_M * 1000.0)
-    parser.add_argument("--target-window-mm", type=float, default=TARGET_WINDOW_DISTANCE_M * 1000.0)
-    parser.add_argument("--start-window-points", type=int, default=None, help=argparse.SUPPRESS)
-    parser.add_argument("--target-window-points", type=int, default=None, help=argparse.SUPPRESS)
 
-    orientation = parser.add_mutually_exclusive_group()
-    orientation.add_argument("--randomize-initial-orientation", dest="randomize_initial_orientation", action="store_true")
-    orientation.add_argument("--no-randomize-initial-orientation", dest="randomize_initial_orientation", action="store_false")
-    parser.set_defaults(randomize_initial_orientation=True)
-    parser.add_argument("--initial-orientation-max-angle-deg", type=float, default=INITIAL_ORIENTATION_MAX_ANGLE_DEG)
-    parser.add_argument("--entry-tangent-points", type=int, default=5)
-    parser.add_argument("--soft-randomize-single-vessel", dest="soft_randomize_single_vessel", action="store_true")
-    parser.add_argument("--no-soft-randomize-single-vessel", dest="soft_randomize_single_vessel", action="store_false")
-    parser.set_defaults(soft_randomize_single_vessel=True)
-    parser.add_argument("--vessel-scale-min", type=float, default=VESSEL_SCALE_MIN)
-    parser.add_argument("--vessel-scale-max", type=float, default=VESSEL_SCALE_MAX)
-    curriculum = parser.add_mutually_exclusive_group()
-    curriculum.add_argument(
-        "--training-curriculum",
-        dest="training_curriculum",
-        action="store_true",
-    )
-    curriculum.add_argument(
-        "--no-training-curriculum",
-        dest="training_curriculum",
-        action="store_false",
-    )
-    parser.set_defaults(training_curriculum=TRAINING_CURRICULUM_ENABLED)
+def _dependency_versions():
+    try:
+        contrib_version = metadata.version("sb3-contrib")
+    except metadata.PackageNotFoundError as exc:
+        raise RuntimeError(
+            "sb3-contrib is not installed. This implementation targets "
+            "sb3-contrib==2.4.0 paired with stable-baselines3==2.4.0."
+        ) from exc
+    sb3_version = str(stable_baselines3.__version__)
+    if _major_minor(sb3_version) != EXPECTED_SB3_MINOR:
+        raise RuntimeError(
+            f"Incompatible stable-baselines3={sb3_version}; expected 2.4.x."
+        )
+    if _major_minor(contrib_version) != EXPECTED_SB3_CONTRIB_MINOR:
+        raise RuntimeError(
+            f"Incompatible sb3-contrib={contrib_version}; expected 2.4.x."
+        )
+    return sb3_version, contrib_version
 
-    parser.add_argument("--log-root", default=str(TRAINING_RUNS_DIR))
-    parser.add_argument("--variant", default="base")
-    parser.add_argument("--exp-name", default="")
-    parser.add_argument("--render", choices=["headless", "human"], default="headless")
-    parser.add_argument("--resume-from", default="")
-    parser.add_argument("--reset-num-timesteps", action="store_true")
-    parser.add_argument("--valid-dir", default=str(VALID_MESH_DIR))
+
+def _configure_recurrent_parser(parser) -> None:
     parser.add_argument(
-        "--valid-min-train-success-rate",
-        type=float,
-        default=VALID_MIN_TRAIN_SUCCESS_RATE,
+        "--lstm-hidden-size",
+        type=int,
+        default=LSTM_HIDDEN_SIZE_DEFAULT,
     )
-    parser.add_argument("--skip-validation", action="store_true")
-    parser.add_argument("--progress-bar", action="store_true")
-    parser.add_argument("--sb3-verbose", type=int, choices=[0, 1, 2], default=1)
-    parser.add_argument("--scene-verbose", action="store_true")
-    if configure_parser is not None:
-        configure_parser(parser)
-    args = parser.parse_args()
+    parser.add_argument(
+        "--lstm-num-layers",
+        type=int,
+        default=LSTM_NUM_LAYERS_DEFAULT,
+    )
 
-    if args.epochs <= 0 or args.episodes_per_epoch <= 0:
-        parser.error("--epochs and --episodes-per-epoch must be positive")
-    if args.n_steps <= 0 or args.batch_size <= 0 or args.n_epochs <= 0:
-        parser.error("PPO rollout/update sizes must be positive")
-    if args.max_episode_steps <= 0:
-        parser.error("--max-episode-steps must be positive")
-    if not (0.0 <= args.valid_min_train_success_rate <= 1.0):
-        parser.error("--valid-min-train-success-rate must be in [0, 1]")
-    if not (0.5 <= args.vessel_scale_min <= args.vessel_scale_max <= 1.0):
-        parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
-    if not (0.0 < args.min_action_std <= args.max_action_std):
-        parser.error("PPO action std bounds must satisfy 0 < min <= max")
-    args.steps_per_epoch = args.episodes_per_epoch * args.max_episode_steps
-    args.episode_mode = True
+
+def parse_args():
+    """Reuse every MLP-PPO common option and add only LSTM structure."""
+
+    args = parse_mlp_ppo_args(configure_parser=_configure_recurrent_parser)
+    if args.lstm_hidden_size <= 0:
+        raise ValueError("--lstm-hidden-size must be positive")
+    if args.lstm_num_layers <= 0:
+        raise ValueError("--lstm-num-layers must be positive")
+    args.lstm_hidden_size = int(args.lstm_hidden_size)
+    args.lstm_num_layers = int(args.lstm_num_layers)
+    args.lstm_bidirectional = False
+    args.policy_type = "MlpLstmPolicy"
     return args
 
 
-def _override_learning_rate(model: PPO, learning_rate: float) -> None:
-    model.learning_rate = float(learning_rate)
-    model.lr_schedule = get_schedule_fn(float(learning_rate))
-    for group in model.policy.optimizer.param_groups:
-        group["lr"] = float(learning_rate)
+class RecurrentValidationPredictor:
+    """Maintain one actor LSTM state for a single validation environment."""
+
+    def __init__(self, model):
+        self.model = model
+        self.reset()
+
+    def reset(self) -> None:
+        self.lstm_state = None
+        self.episode_start = np.ones((1,), dtype=bool)
+
+    def __call__(self, observation):
+        action, self.lstm_state = self.model.predict(
+            observation,
+            state=self.lstm_state,
+            episode_start=self.episode_start,
+            deterministic=True,
+        )
+        self.episode_start.fill(False)
+        return action
+
+
+def _assert_loaded_lstm_architecture(model, hidden_size: int, num_layers: int):
+    actor_lstm = model.policy.lstm_actor
+    critic_lstm = model.policy.lstm_critic
+    if actor_lstm is None or critic_lstm is None:
+        raise RuntimeError("Formal LSTM-PPO requires separate actor and critic LSTMs.")
+    actual = (
+        int(actor_lstm.hidden_size),
+        int(actor_lstm.num_layers),
+        bool(actor_lstm.bidirectional),
+        int(critic_lstm.hidden_size),
+        int(critic_lstm.num_layers),
+        bool(critic_lstm.bidirectional),
+    )
+    expected = (
+        int(hidden_size),
+        int(num_layers),
+        False,
+        int(hidden_size),
+        int(num_layers),
+        False,
+    )
+    if actual != expected:
+        raise ValueError(
+            "Loaded recurrent checkpoint architecture does not match CLI: "
+            f"actual={actual} expected={expected}."
+        )
 
 
 def main():
     args = parse_args()
+    sb3_version, sb3_contrib_version = _dependency_versions()
+    args.stable_baselines3_version = sb3_version
+    args.sb3_contrib_version = sb3_contrib_version
     args.reward_profile = reward_profile()
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(
@@ -232,19 +203,32 @@ def main():
     local_rollout_size = int(args.n_steps) * int(args.local_n_envs)
     if local_rollout_size % local_batch_size:
         raise ValueError(
-            f"local rollout size {local_rollout_size} must be divisible by local batch {local_batch_size}"
+            f"local rollout size {local_rollout_size} must be divisible by "
+            f"local batch {local_batch_size}"
         )
+    args.global_batch_size = global_batch_size
+    args.local_batch_size = local_batch_size
     args.rank_seed = int(args.seed) + context.rank * args.local_n_envs
     local_total_timesteps = int(
-        math.ceil(args.epochs * args.episodes_per_epoch * args.max_episode_steps / context.world_size)
+        math.ceil(
+            args.epochs
+            * args.episodes_per_epoch
+            * args.max_episode_steps
+            / context.world_size
+        )
     )
 
     valid_dir = Path(args.valid_dir).expanduser()
     if not valid_dir.is_absolute():
         valid_dir = PROJECT_ROOT / valid_dir
     valid_dir = valid_dir.resolve()
-    valid_vessels = [] if args.skip_validation else discover_validation_vessels(
-        valid_dir, expected_vessels=VALID_VESSELS
+    valid_vessels = (
+        []
+        if args.skip_validation
+        else discover_validation_vessels(
+            valid_dir,
+            expected_vessels=VALID_VESSELS,
+        )
     )
 
     timestamp = os.environ.get("MCR_RUN_TIMESTAMP", "").strip()
@@ -253,12 +237,19 @@ def main():
     timestamp = context.broadcast_text(timestamp)
     if not args.exp_name:
         device_tag = f"{context.world_size}npu" if context.enabled else "1device"
-        args.exp_name = f"ppo_{args.variant}_{total_n_envs}env_{device_tag}_ep{args.episodes_per_epoch}"
+        args.exp_name = (
+            f"lstm_ppo_{args.variant}_{total_n_envs}env_{device_tag}_"
+            f"ep{args.episodes_per_epoch}"
+        )
     log_root = Path(args.log_root).expanduser()
     if not log_root.is_absolute():
         log_root = PROJECT_ROOT / log_root
     run_dir = log_root.resolve() / f"{args.exp_name}_{timestamp}"
-    model_dir, tb_dir, log_dir = run_dir / "models", run_dir / "tb", run_dir / "logs"
+    model_dir, tb_dir, log_dir = (
+        run_dir / "models",
+        run_dir / "tb",
+        run_dir / "logs",
+    )
     if context.is_main:
         model_dir.mkdir(parents=True, exist_ok=True)
         tb_dir.mkdir(parents=True, exist_ok=True)
@@ -270,7 +261,7 @@ def main():
         write_run_config(
             log_dir / "run_config.json",
             args,
-            algorithm="ppo",
+            algorithm="lstm_ppo",
             run_dir=run_dir,
             model_dir=model_dir,
             tensorboard_dir=tb_dir,
@@ -293,11 +284,12 @@ def main():
                 return build_env(valid_args)
 
             was_training = bool(current_model.policy.training)
+            predictor = RecurrentValidationPredictor(current_model)
             try:
                 return evaluate_policy(
                     valid_vessels,
                     env_factory,
-                    lambda observation: current_model.predict(observation, deterministic=True)[0],
+                    predictor,
                     episodes_per_vessel=VALID_EPISODES_PER_VESSEL,
                     max_episode_steps=args.max_episode_steps,
                     base_seed=int(args.seed) + 100_000,
@@ -309,7 +301,7 @@ def main():
 
         epoch_callback = EpochExperimentCallback(
             context=context,
-            algorithm_name="ppo",
+            algorithm_name="lstm_ppo",
             variant=args.variant,
             epochs=args.epochs,
             episodes_per_epoch=args.episodes_per_epoch,
@@ -325,7 +317,10 @@ def main():
         if context.is_main:
             callbacks.extend(
                 [
-                    ExtraRolloutMetricsCallback(window_size=50, success_label="target"),
+                    ExtraRolloutMetricsCallback(
+                        window_size=50,
+                        success_label="target",
+                    ),
                     DistributedRuntimeCallback(
                         context.world_size,
                         total_n_envs,
@@ -338,9 +333,6 @@ def main():
                 ]
             )
         callback = CallbackList(callbacks) if len(callbacks) > 1 else callbacks[0]
-        # Use the shared implementation on one or many devices so exploration
-        # bounds and optimizer semantics remain identical.
-        algorithm_class = DistributedPPO
         tensorboard_log = str(tb_dir) if context.is_main else None
         verbose = args.sb3_verbose if context.is_main else 0
 
@@ -351,7 +343,7 @@ def main():
             resume_path = resume_path.resolve()
             if not resume_path.is_file():
                 raise FileNotFoundError(f"Resume model not found: {resume_path}")
-            model = algorithm_class.load(
+            model = DistributedRecurrentPPO.load(
                 str(resume_path),
                 env=env,
                 device=args.resolved_device,
@@ -367,6 +359,11 @@ def main():
                     "max_grad_norm": args.max_grad_norm,
                 },
             )
+            _assert_loaded_lstm_architecture(
+                model,
+                args.lstm_hidden_size,
+                args.lstm_num_layers,
+            )
             model.tensorboard_log = tensorboard_log
             model.verbose = verbose
             model.seed = int(args.rank_seed)
@@ -377,7 +374,8 @@ def main():
             _override_learning_rate(model, args.learning_rate)
             reset_num_timesteps = args.reset_num_timesteps
             saved_world_size = max(
-                1, int(getattr(model, "distributed_world_size_at_save", 1))
+                1,
+                int(getattr(model, "distributed_world_size_at_save", 1)),
             )
             if not reset_num_timesteps and saved_world_size != context.world_size:
                 completed_global_steps = int(model.num_timesteps) * saved_world_size
@@ -385,8 +383,15 @@ def main():
                     math.ceil(completed_global_steps / context.world_size)
                 )
         else:
-            kwargs = dict(
-                policy="MlpPolicy",
+            policy_kwargs = {
+                "lstm_hidden_size": args.lstm_hidden_size,
+                "n_lstm_layers": args.lstm_num_layers,
+                "shared_lstm": False,
+                "enable_critic_lstm": True,
+                "lstm_kwargs": {"bidirectional": False},
+            }
+            model = DistributedRecurrentPPO(
+                policy="MlpLstmPolicy",
                 env=env,
                 learning_rate=args.learning_rate,
                 n_steps=args.n_steps,
@@ -398,6 +403,7 @@ def main():
                 ent_coef=args.ent_coef,
                 vf_coef=args.vf_coef,
                 max_grad_norm=args.max_grad_norm,
+                policy_kwargs=policy_kwargs,
                 tensorboard_log=tensorboard_log,
                 seed=args.rank_seed,
                 device=args.resolved_device,
@@ -406,9 +412,9 @@ def main():
                 min_action_std=args.min_action_std,
                 max_action_std=args.max_action_std,
             )
-            model = algorithm_class(**kwargs)
             reset_num_timesteps = True
 
+        recurrent_parameter_names = model.assert_recurrent_parameters_registered()
         fused_status = "not_requested"
         if args.npu_fused_adam and context.device.accelerator == "npu":
             original_optimizer = model.policy.optimizer
@@ -416,43 +422,59 @@ def main():
                 original_optimizer
             )
             local_fused = fused_status in ("enabled", "already_enabled")
-            globally_fused = context.average_metrics([float(local_fused)])[0] == 1.0
+            globally_fused = (
+                context.average_metrics([float(local_fused)])[0] == 1.0
+            )
             if globally_fused:
                 model.policy.optimizer = fused_optimizer
             else:
                 model.policy.optimizer = original_optimizer
                 fused_status = f"{fused_status};global_fallback"
         args.npu_fused_adam_status = fused_status
-        args.npu_fused_adam_enabled = fused_status in ("enabled", "already_enabled")
+        args.npu_fused_adam_enabled = fused_status in (
+            "enabled",
+            "already_enabled",
+        )
+        args.recurrent_parameter_names = recurrent_parameter_names
         if context.is_main:
             write_run_config(
                 log_dir / "run_config.json",
                 args,
-                algorithm="ppo",
+                algorithm="lstm_ppo",
                 run_dir=run_dir,
                 model_dir=model_dir,
                 tensorboard_dir=tb_dir,
             )
             print(
-                f"[MCR NPU][PPO] execution={args.npu_execution} "
+                f"[MCR NPU][LSTM-PPO] execution={args.npu_execution} "
                 f"fused_adam={args.npu_fused_adam_status}"
             )
         model.distributed_world_size_at_save = context.world_size
+        model.set_distributed_context(context)
         if context.enabled:
-            model.set_distributed_context(context)
             model.synchronize_parameters()
 
         if context.is_main:
-            print(
-                f"[MCR TRAIN][PPO] device={context.device.resolved} distributed={context.enabled} "
-                f"world={context.world_size} envs={total_n_envs} epochs={args.epochs} "
-                f"episodes_per_epoch={args.episodes_per_epoch} max_episode_steps={args.max_episode_steps}"
+            state_shape = (
+                args.lstm_num_layers,
+                args.local_n_envs,
+                args.lstm_hidden_size,
             )
             print(
-                f"[MCR TRAIN][PPO] n_steps={args.n_steps} n_epochs={args.n_epochs} "
+                f"[MCR TRAIN][LSTM-PPO] device={context.device.resolved} "
+                f"distributed={context.enabled} world={context.world_size} "
+                f"envs={total_n_envs} epochs={args.epochs} "
+                f"episodes_per_epoch={args.episodes_per_epoch} "
+                f"max_episode_steps={args.max_episode_steps}"
+            )
+            print(
+                f"[MCR TRAIN][LSTM-PPO] n_steps={args.n_steps} "
+                f"n_epochs={args.n_epochs} "
                 f"batch={global_batch_size}/{local_batch_size} "
                 f"ent_coef={args.ent_coef:g} "
                 f"action_std={args.min_action_std:g}-{args.max_action_std:g} "
+                f"lstm_state_shape={state_shape} actor_and_critic=True "
+                f"recurrent_parameters={len(recurrent_parameter_names)} "
                 f"output={run_dir}"
             )
         model.learn(
@@ -462,7 +484,10 @@ def main():
             progress_bar=bool(args.progress_bar and context.is_main),
         )
         context.barrier()
-        final_path = model_dir / f"ppo_{args.variant}_final_epoch_{args.epochs:03d}"
+        final_path = (
+            model_dir
+            / f"lstm_ppo_{args.variant}_final_epoch_{args.epochs:03d}"
+        )
         if context.is_main:
             model.save(str(final_path))
             print(f"[DONE] model={final_path}.zip")
