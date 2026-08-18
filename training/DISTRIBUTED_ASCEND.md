@@ -45,9 +45,11 @@ SAC, and never uses the SAC replay buffer.
   deliberately not multiplied by world size.
 - `--training-curriculum` (default): keep domain randomization active while the
   geometry pool expands B01/B02 -> all B -> all B plus C01/C02 -> all B/C.
-  Every promotion requires three consecutive global epochs at 10% training
-  success; the stage and streak are shared by all ranks and saved in each
-  checkpoint. Forced vessels and validation bypass it.
+  Every promotion requires every active vessel to reach 10% success in three
+  consecutive global epochs. A missing or under-threshold vessel resets the
+  streak, so easier vessels cannot hide an unlearned C vessel. Per-vessel
+  episode counts/rates, the stage, and the streak are synchronized, logged, and
+  saved with the checkpoint. Forced vessels and validation bypass it.
 - `--min-ent-coef`: lower bound for SAC automatic entropy tuning (default 0.02).
   PPO uses `ent_coef=0.001` and clamps Gaussian action std to `0.25..1.0`,
   preventing both premature exploration collapse and saturated random actions.

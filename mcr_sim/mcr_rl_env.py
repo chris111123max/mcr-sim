@@ -2355,7 +2355,7 @@ class MCREnv(SofaEnv):
 
         self.current_waypoint_start_progress = float(start_progress)
         self.current_waypoint_target_progress = float(target_progress)
-        # Reward v4 uses the actual randomized start-to-target route length to
+        # Reward v5 uses the actual randomized start-to-target route length to
         # normalize the ordered route potential across B/C vessels.
         self.reward_progress_normalization = max(
             float(target_progress - start_progress),

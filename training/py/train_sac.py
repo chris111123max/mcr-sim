@@ -295,6 +295,12 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
             ),
+            "reward_retraction": self._safe_float(
+                info.get("episode_reward_retraction_penalty", 0.0)
+            ),
+            "reward_no_progress_dense": self._safe_float(
+                info.get("episode_reward_no_progress_penalty", 0.0)
+            ),
             "reward_behavior": self._safe_float(
                 info.get("episode_reward_retraction_penalty", 0.0)
             )
@@ -392,6 +398,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/retraction_w{self.window_size}", self._mean(ep["reward_retraction"] for ep in recent), exclude="stdout")
+            self.logger.record(f"reward_components/no_progress_dense_w{self.window_size}", self._mean(ep["reward_no_progress_dense"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/route_potential_w{self.window_size}", self._mean(ep["route_potential"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/curriculum_stage_w{self.window_size}", self._mean(ep["curriculum_stage"] for ep in recent), exclude="stdout")

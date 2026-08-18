@@ -71,13 +71,14 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v4.  Dense navigation credit is the difference of an ordered
+# Reward profile v5.  Dense navigation credit is the difference of an ordered
 # route potential in [0, 1].  It therefore telescopes over a trajectory:
 # forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend.  Ordered
-# waypoint hits remain one-shot by construction.  Every failed trajectory still
-# remains negative and all magnitudes stay at O(1)..O(100).
-REWARD_PROFILE_VERSION = 4
+# available again after a necessary correction in a tight bend.  V5 keeps the
+# task and terminal rewards unchanged, but makes dense retraction/stagnation
+# costs secondary to progress instead of letting them dominate a long episode.
+# Sustained stagnation is still terminated and receives its -120 penalty.
+REWARD_PROFILE_VERSION = 5
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_BUDGET = 100.0
 REWARD_WAYPOINT_BUDGET = 20.0
@@ -87,8 +88,8 @@ REWARD_TARGET_APPROACH = REWARD_PROGRESS_BUDGET
 REWARD_WALL_PROXIMITY = -0.02
 REWARD_WALL_PENETRATION = -0.50
 REWARD_OFF_TARGET_BRANCH = -0.10
-REWARD_RETRACTION = -0.03
-REWARD_NO_PROGRESS = -0.02
+REWARD_RETRACTION = -0.005
+REWARD_NO_PROGRESS = -0.005
 REWARD_WRONG_BRANCH = -150.0
 REWARD_SUCCESS = 150.0
 REWARD_OUT_OF_VESSEL = -150.0
@@ -199,14 +200,32 @@ def update_curriculum_progress(
     current_stage: int,
     consecutive_success_epochs: int,
     train_success_rate: float,
+    per_model_success_rates=None,
 ):
-    """Update the stable-success streak and advance at most one stage."""
+    """Update the stable-success streak and advance at most one stage.
+
+    When per-vessel rates are available, every vessel in the current stage must
+    meet the threshold.  The aggregate rate is retained only as a compatibility
+    fallback for callers that do not yet have per-vessel episode statistics.
+    """
 
     stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
     streak = max(int(consecutive_success_epochs), 0)
     if stage >= len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
         return stage, 0
-    if float(train_success_rate) >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
+    mastery_success_rate = float(train_success_rate)
+    if per_model_success_rates is not None:
+        active_rates = []
+        for model_id in TRAINING_CURRICULUM_MODELS[stage]:
+            rate = per_model_success_rates.get(model_id)
+            if rate is None or not math.isfinite(float(rate)):
+                active_rates = []
+                mastery_success_rate = -math.inf
+                break
+            active_rates.append(float(rate))
+        if active_rates:
+            mastery_success_rate = min(active_rates)
+    if mastery_success_rate >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
         streak += 1
         if streak >= TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS:
             stage += 1
