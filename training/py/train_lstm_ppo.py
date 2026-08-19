@@ -270,6 +270,13 @@ def main():
     env = None
     try:
         env = build_env(args)
+        observation_shape = getattr(env.observation_space, "shape", None)
+        args.observation_space_shape = (
+            list(observation_shape) if observation_shape is not None else None
+        )
+        args.observation_space_dtype = str(
+            getattr(env.observation_space, "dtype", "unknown")
+        )
 
         def run_validation(current_model, epoch):
             def env_factory(vessel_id):

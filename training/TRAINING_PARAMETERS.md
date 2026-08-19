@@ -35,7 +35,7 @@
 
 ## 奖励
 
-Reward profile v4 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`，连续进度项为
+Reward profile v6 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`，连续进度项为
 `100 × (Phi_t-Phi_{t-1})`。它在整条轨迹上自动望远镜求和：往返振荡净奖励为 0，
 但大弯道中必要回退后再次前进会恢复奖励，不再被一次性正向额度永久截断。全部
 有序 waypoint 奖励仍自然封顶为 `+20`；handoff 不奖励。任何终止失败即使发生在
@@ -45,8 +45,8 @@ Reward profile v4 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`�
 |---|---:|---|
 | waypoint/目标连续接近 | 净额范围 -100..+100 | `100 × ΔPhi`；远离对称扣分，纠偏后可恢复，振荡净值为零 |
 | 到达中间 waypoint | 总额最多 +20 | 在全部有序 waypoint 之间平均分配，handoff 不奖励 |
-| tip 持续贴近管壁 | -0.02 | 保留风险提示；最长路线上的正确插入即使近壁仍为正 |
-| tip 表面穿壁 | -0.50 | 按 tip SDF 穿入深度/导管半径归一化扣分 |
+| tip/整段导管持续接近越界 | -0.02 | tip 贴壁与 whole-body 中心距越界阈值 0.5 mm 内取较大风险；安全插入仍为正 |
+| tip 穿壁/整段中心越界深度 | -0.50 | tip 穿入深度与 whole-body 中心越过管壁深度取较大归一化值 |
 | 偏离目标分支 | -0.10 | 选定路径与完整中心线图的距离差形成连续扣分 |
 | 请求回撤 | -0.005 | 按负插入动作幅度扣分；保留约束，但不再压倒长弯道中必要的纠偏 |
 | 持续无进展 | -0.005 | 256 步窗口净接近不足 1 mm 时逐步启用；持续 512 步仍由终止项处理 |
@@ -61,21 +61,21 @@ Reward profile v4 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`�
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`，自动熵系数下限为 `0.02`；
 PPO 使用 `max_grad_norm=0.5` 和 `ent_coef=0.001`，并把高斯动作标准差限制在
 `0.25–1.0`，同时避免探索坍缩和大量动作被裁剪到 `[-1,1]` 边界。
-`run_config.json` 会完整保存 Reward v5，`train_summary.csv`
+`run_config.json` 会完整保存 Reward v6、实际 observation shape/dtype，`train_summary.csv`
 同时记录奖励分项（包括独立的回撤/稠密无进展项）、正回报失败率、终止路线势、
 课程阶段、当前阶段每根血管的回合数与成功率、无进展次数、正负插入比例和最终插入长度。
 正式训练中 `positive_failure_rate` 必须保持为 0。
 
 B01..B05 和 C01..C05 全部使用 `vessel_sdf.vti` 直接判断管壁关系。
 每步从导管尖端向入口遍历已插入的导管段，并按不大于半个 VTI
-网格的间距加密采样。body 可以接触和依靠管壁滑动，body 贴壁或外缘轻微进入管壁
-不产生稠密惩罚；整段 SDF 只用于检测导管中心真正出界并终止。tip 的净空单独用于
-持续贴壁惩罚、穿壁惩罚和成功质量统计；
+网格的间距加密采样。body 可以接触和依靠管壁滑动；whole-body 警告从最差导管中心
+距管壁 0.5 mm 时开始线性启用，中心真正越过管壁后再启用较强穿透项，并与连续 3 步
+越界终止使用同一 SDF 状态。tip 净空仍用于贴壁/穿壁风险和成功质量统计；
 旧中心线安全比只作为缺少 VTI 的旧血管兼容后备，不参与这十条训练血管的判定。
 
-SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
-3 维方向，以及尖端前方 1/2/4 mm 的净空探针。这些特征让 SAC 在碰壁前就能
-获得可操作的方向信息。观测维度已从 54 变为 60，旧 checkpoint 不能直接续训。
+SDF 还向 62 维状态观测提供：tip 净空、whole-body 最小表面净空、连续越界确认进度、
+tip 指向内腔的 3 维方向，以及尖端前方 1/2/4 mm 的净空探针。PPO、LSTM-PPO、SAC
+都使用完全相同的状态。观测维度已从 60 变为 62，旧 checkpoint 不能直接续训。
 
 ## 碰撞模型
 
@@ -98,10 +98,14 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 ## SAC 与 epoch 语义
 
 一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 100 epoch，即 10000 个回合。
+不同算法即使 epoch 数相同，回合长度也可能不同，因此总 transition 数并不相同；比较
+MLP-PPO、LSTM-PPO 与其他策略的样本效率时，应以 `global_env_steps` 对齐或至少同时报告，
+不能只比较 epoch。
 训练默认启用四阶段血管课程，域随机化在所有阶段均保持开启：`B01/B02 → 全部B
-→ 全部B+C01/C02 → 全部B/C`。每一级都必须连续 3 个全局 epoch 中，当前阶段的
-每一根 active vessel 均达到 10% 成功率才会升级；缺少该血管样本或任一血管未达标
-都会清零连续计数。阶段、连续计数和逐血管成功率都保存在 checkpoint，
+→ 全部B+C01/C02 → 全部B/C`。每根血管保存最近 200 个 episode 的滚动结果；至少
+积累 100 个样本后，当前阶段每一根 active vessel 都达到 20%，并连续维持 5 个全局
+epoch 才会升级。缺少样本或任一血管未达标都会清零连续计数。阶段、连续计数、滚动
+结果和逐血管成功率都保存在 checkpoint，
 只前进不回退；强制单血管和 V01..V05 validation 不受影响。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
@@ -109,7 +113,9 @@ SDF 还向 60 维状态观测提供：tip 净空、tip 指向内腔的
 就立即验证，否则从下一个偶数 epoch 开始每 2 个 epoch 在 `mesh/valid` 的 5 条 unseen
 血管上各运行 2 个确定性回合。四卡将
 10 个固定种子验证任务按 3/3/2/2 并行执行，再由 rank 0 汇总；验证覆盖、CSV 与
-`best_valid.zip` 的严格提升规则不变。SAC 在 NPU 上默认使用每 rank accelerator-resident
+`best_valid.zip` 以成功率为第一排序；成功率相同时依次比较 waypoint ratio、route
+potential 和更小的 final distance，避免所有验证成功率都是 0 时永久保留第一次模型。
+`valid_episodes.csv` 同步记录这些指标。SAC 在 NPU 上默认使用每 rank accelerator-resident
 replay buffer，避免每次更新重复搬运大批量 observation；不支持时四个 rank 一致回退。
 
 | 参数 | 默认值 | 说明 |

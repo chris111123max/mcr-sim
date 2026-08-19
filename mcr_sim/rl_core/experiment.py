@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import deque
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -14,10 +15,13 @@ from stable_baselines3.common.callbacks import BaseCallback
 from .evaluation import (
     ValidationResult,
     merge_validation_json,
+    validation_selection_key,
     validation_result_to_json,
 )
 from ..training_config import (
+    TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_MODELS,
+    TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
     update_curriculum_progress,
     update_validation_unlocked,
 )
@@ -126,8 +130,17 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_model_success_counts = np.zeros(
             len(self._curriculum_model_ids), dtype=np.int64
         )
+        self._curriculum_outcome_windows = {
+            model_id: deque(
+                maxlen=TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+            )
+            for model_id in self._curriculum_model_ids
+        }
         self._pending_episode_events = []
         self.best_valid_success_rate = -1.0
+        self.best_valid_waypoint_reached_ratio = -1.0
+        self.best_valid_route_potential = -1.0
+        self.best_valid_final_distance_mm = float("inf")
         self.best_epoch = 0
 
     def _on_training_start(self) -> None:
@@ -136,6 +149,23 @@ class EpochExperimentCallback(BaseCallback):
                 getattr(self.model, "best_valid_success_rate", -1.0)
             )
             self.best_epoch = int(getattr(self.model, "best_epoch", 0))
+            self.best_valid_waypoint_reached_ratio = float(
+                getattr(
+                    self.model,
+                    "best_valid_waypoint_reached_ratio",
+                    -1.0,
+                )
+            )
+            self.best_valid_route_potential = float(
+                getattr(self.model, "best_valid_route_potential", -1.0)
+            )
+            self.best_valid_final_distance_mm = float(
+                getattr(
+                    self.model,
+                    "best_valid_final_distance_mm",
+                    float("inf"),
+                )
+            )
             self.validation_unlocked = bool(
                 getattr(
                     self.model,
@@ -153,6 +183,22 @@ class EpochExperimentCallback(BaseCallback):
             self.curriculum_success_streak = int(
                 getattr(self.model, "curriculum_success_streak", 0)
             )
+            saved_windows = getattr(
+                self.model,
+                "curriculum_rolling_outcomes",
+                {},
+            )
+            if isinstance(saved_windows, dict):
+                for model_id, outcomes in saved_windows.items():
+                    window = self._curriculum_outcome_windows.get(
+                        str(model_id).upper()
+                    )
+                    if window is None:
+                        continue
+                    try:
+                        window.extend(int(bool(value)) for value in outcomes)
+                    except TypeError:
+                        continue
         self._apply_curriculum_stage(self.curriculum_stage)
 
     def _apply_curriculum_stage(self, stage: int) -> None:
@@ -269,13 +315,52 @@ class EpochExperimentCallback(BaseCallback):
             f"episodes_{self.global_completed_episodes:05d}"
         )
 
+    def _rolling_curriculum_statistics(self, active_models):
+        counts = {
+            model_id: len(self._curriculum_outcome_windows[model_id])
+            for model_id in active_models
+        }
+        rates = {
+            model_id: (
+                float(sum(self._curriculum_outcome_windows[model_id]))
+                / float(counts[model_id])
+                if counts[model_id] > 0
+                else None
+            )
+            for model_id in active_models
+        }
+        ready = bool(
+            counts
+            and all(
+                count >= TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL
+                for count in counts.values()
+            )
+            and all(rate is not None for rate in rates.values())
+        )
+        mastery_rate = (
+            min(float(rate) for rate in rates.values()) if ready else 0.0
+        )
+        return rates, counts, ready, mastery_rate
+
     def _record_model_metadata(self, epoch: int, train_success_rate: float) -> None:
         self.model.epoch = int(epoch)
         self.model.global_completed_episodes = int(self.global_completed_episodes)
         self.model.global_env_steps = int(self.model.num_timesteps * self.context.world_size)
         self.model.train_success_rate = float(train_success_rate)
-        self.model.best_metric = "valid_success_rate"
+        self.model.best_metric = (
+            "valid_success_rate,waypoint_reached_ratio,"
+            "route_potential,-final_distance_mm"
+        )
         self.model.best_valid_success_rate = float(self.best_valid_success_rate)
+        self.model.best_valid_waypoint_reached_ratio = float(
+            self.best_valid_waypoint_reached_ratio
+        )
+        self.model.best_valid_route_potential = float(
+            self.best_valid_route_potential
+        )
+        self.model.best_valid_final_distance_mm = float(
+            self.best_valid_final_distance_mm
+        )
         self.model.best_epoch = int(self.best_epoch)
         self.model.validation_unlocked = bool(self.validation_unlocked)
         self.model.validation_min_train_success_rate = float(
@@ -283,6 +368,13 @@ class EpochExperimentCallback(BaseCallback):
         )
         self.model.curriculum_stage = int(self.curriculum_stage)
         self.model.curriculum_success_streak = int(self.curriculum_success_streak)
+        self.model.curriculum_rolling_outcomes = {
+            model_id: list(window)
+            for model_id, window in self._curriculum_outcome_windows.items()
+        }
+        self.model.curriculum_rolling_window_size = int(
+            TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+        )
         self.model.distributed_world_size_at_save = int(self.context.world_size)
 
     def _run_validation(self, epoch: int, checkpoint_path: Path) -> None:
@@ -339,31 +431,100 @@ class EpochExperimentCallback(BaseCallback):
             try:
                 result = merge_validation_json(payloads)
                 valid_success_rate = float(result.valid_success_rate)
-                is_new_best = valid_success_rate > self.best_valid_success_rate
+                candidate_key = validation_selection_key(result)
+                best_key = (
+                    float(self.best_valid_success_rate),
+                    float(self.best_valid_waypoint_reached_ratio),
+                    float(self.best_valid_route_potential),
+                    -float(self.best_valid_final_distance_mm),
+                )
+                is_new_best = candidate_key > best_key
                 if is_new_best:
                     self.best_valid_success_rate = valid_success_rate
+                    self.best_valid_waypoint_reached_ratio = float(
+                        result.valid_waypoint_reached_ratio_mean
+                    )
+                    self.best_valid_route_potential = float(
+                        result.valid_route_potential_mean
+                    )
+                    self.best_valid_final_distance_mm = float(
+                        result.valid_final_distance_mm_mean
+                    )
                     self.best_epoch = int(epoch)
                     self.model.best_valid_success_rate = valid_success_rate
+                    self.model.best_valid_waypoint_reached_ratio = float(
+                        self.best_valid_waypoint_reached_ratio
+                    )
+                    self.model.best_valid_route_potential = float(
+                        self.best_valid_route_potential
+                    )
+                    self.model.best_valid_final_distance_mm = float(
+                        self.best_valid_final_distance_mm
+                    )
                     self.model.best_epoch = int(epoch)
-                    self.model.best_metric = "valid_success_rate"
+                    self.model.best_metric = (
+                        "valid_success_rate,waypoint_reached_ratio,"
+                        "route_potential,-final_distance_mm"
+                    )
                     self.model.last_valid_success_rate = valid_success_rate
                     self.model.last_valid_epoch = int(epoch)
                     self.model.save(str(self.model_dir / "best_valid"))
                 else:
                     self.model.last_valid_success_rate = valid_success_rate
                     self.model.last_valid_epoch = int(epoch)
+                self.model.last_valid_waypoint_reached_ratio = float(
+                    result.valid_waypoint_reached_ratio_mean
+                )
+                self.model.last_valid_route_potential = float(
+                    result.valid_route_potential_mean
+                )
+                self.model.last_valid_final_distance_mm = float(
+                    result.valid_final_distance_mm_mean
+                )
+                self.model.last_valid_min_distance_mm = float(
+                    result.valid_min_distance_mm_mean
+                )
                 # Refresh the just-written epoch checkpoint with validation
                 # metadata so resuming from it preserves strict tie behavior.
                 self.model.best_valid_success_rate = float(self.best_valid_success_rate)
+                self.model.best_valid_waypoint_reached_ratio = float(
+                    self.best_valid_waypoint_reached_ratio
+                )
+                self.model.best_valid_route_potential = float(
+                    self.best_valid_route_potential
+                )
+                self.model.best_valid_final_distance_mm = float(
+                    self.best_valid_final_distance_mm
+                )
                 self.model.best_epoch = int(self.best_epoch)
                 self.model.save(str(checkpoint_path))
                 self.logger.record("valid/success_rate", valid_success_rate)
+                self.logger.record(
+                    "valid/waypoint_reached_ratio",
+                    float(result.valid_waypoint_reached_ratio_mean),
+                )
+                self.logger.record(
+                    "valid/route_potential",
+                    float(result.valid_route_potential_mean),
+                )
+                self.logger.record(
+                    "valid/final_distance_mm",
+                    float(result.valid_final_distance_mm_mean),
+                )
+                self.logger.record(
+                    "valid/min_distance_mm",
+                    float(result.valid_min_distance_mm_mean),
+                )
                 self.logger.record("valid/episodes", float(result.valid_episodes), exclude="stdout")
                 _append_csv(
                     self.run_dir / "valid_summary.csv",
                     [
                         "epoch", "valid_vessels", "valid_episodes", "valid_success_count",
-                        "valid_success_rate", "best_valid_success_rate", "is_new_best", "checkpoint",
+                        "valid_success_rate", "valid_waypoint_reached_ratio_mean",
+                        "valid_route_potential_mean", "valid_final_distance_mm_mean",
+                        "valid_min_distance_mm_mean", "best_valid_success_rate",
+                        "best_valid_waypoint_reached_ratio", "best_valid_route_potential",
+                        "best_valid_final_distance_mm", "is_new_best", "checkpoint",
                     ],
                     {
                         "epoch": epoch,
@@ -371,7 +532,14 @@ class EpochExperimentCallback(BaseCallback):
                         "valid_episodes": result.valid_episodes,
                         "valid_success_count": result.valid_success_count,
                         "valid_success_rate": valid_success_rate,
+                        "valid_waypoint_reached_ratio_mean": result.valid_waypoint_reached_ratio_mean,
+                        "valid_route_potential_mean": result.valid_route_potential_mean,
+                        "valid_final_distance_mm_mean": result.valid_final_distance_mm_mean,
+                        "valid_min_distance_mm_mean": result.valid_min_distance_mm_mean,
                         "best_valid_success_rate": self.best_valid_success_rate,
+                        "best_valid_waypoint_reached_ratio": self.best_valid_waypoint_reached_ratio,
+                        "best_valid_route_potential": self.best_valid_route_potential,
+                        "best_valid_final_distance_mm": self.best_valid_final_distance_mm,
                         "is_new_best": is_new_best,
                         "checkpoint": str(checkpoint_path) + ".zip",
                     },
@@ -381,7 +549,9 @@ class EpochExperimentCallback(BaseCallback):
                         self.run_dir / "valid_episodes.csv",
                         [
                             "epoch", "vessel_id", "episode_index", "seed", "success",
-                            "terminal_reason", "steps", "reward", "error",
+                            "terminal_reason", "steps", "reward",
+                            "waypoint_reached_ratio", "route_potential",
+                            "final_distance_mm", "min_distance_mm", "error",
                         ],
                         {
                             "epoch": epoch,
@@ -392,6 +562,10 @@ class EpochExperimentCallback(BaseCallback):
                             "terminal_reason": episode_result.terminal_reason,
                             "steps": episode_result.steps,
                             "reward": episode_result.reward,
+                            "waypoint_reached_ratio": episode_result.waypoint_reached_ratio,
+                            "route_potential": episode_result.route_potential,
+                            "final_distance_mm": episode_result.final_distance_mm,
+                            "min_distance_mm": episode_result.min_distance_mm,
                             "error": episode_result.error,
                         },
                     )
@@ -400,6 +574,10 @@ class EpochExperimentCallback(BaseCallback):
                     f"valid_episodes={result.valid_episodes} "
                     f"valid_success_count={result.valid_success_count} "
                     f"valid_success_rate={valid_success_rate:.6f} "
+                    f"valid_waypoint_reached_ratio={result.valid_waypoint_reached_ratio_mean:.6f} "
+                    f"valid_route_potential={result.valid_route_potential_mean:.6f} "
+                    f"valid_final_distance_mm={result.valid_final_distance_mm_mean:.3f} "
+                    f"valid_min_distance_mm={result.valid_min_distance_mm_mean:.3f} "
                     f"best_valid_success_rate={self.best_valid_success_rate:.6f} "
                     f"is_new_best={is_new_best}"
                 )
@@ -460,23 +638,23 @@ class EpochExperimentCallback(BaseCallback):
                 if episode_count > 0
                 else None
             )
-        finite_vessel_rates = [
-            rate
-            for rate in curriculum_vessel_success_rates.values()
-            if rate is not None
-        ]
-        curriculum_mastery_success_rate = (
-            min(finite_vessel_rates)
-            if len(finite_vessel_rates) == len(active_models)
-            else 0.0
-        )
+        (
+            curriculum_rolling_success_rates,
+            curriculum_rolling_episode_counts,
+            curriculum_mastery_ready,
+            curriculum_mastery_success_rate,
+        ) = self._rolling_curriculum_statistics(active_models)
+        curriculum_mastery_ready = bool(curriculum_mastery_ready)
+        if not curriculum_mastery_ready:
+            self.curriculum_success_streak = 0
         if self.training_curriculum_enabled:
             next_curriculum_stage, self.curriculum_success_streak = (
                 update_curriculum_progress(
                     self.curriculum_stage,
                     self.curriculum_success_streak,
                     train_success_rate,
-                    curriculum_vessel_success_rates,
+                    curriculum_rolling_success_rates,
+                    curriculum_rolling_episode_counts,
                 )
             )
             if next_curriculum_stage != self.curriculum_stage:
@@ -484,6 +662,13 @@ class EpochExperimentCallback(BaseCallback):
                 self._apply_curriculum_stage(self.curriculum_stage)
         self.model.curriculum_mastery_success_rate = float(
             curriculum_mastery_success_rate
+        )
+        self.model.curriculum_mastery_ready = bool(curriculum_mastery_ready)
+        self.model.curriculum_rolling_success_rates = dict(
+            curriculum_rolling_success_rates
+        )
+        self.model.curriculum_rolling_episode_counts = dict(
+            curriculum_rolling_episode_counts
         )
         self.model.curriculum_vessel_success_rates = dict(
             curriculum_vessel_success_rates
@@ -526,12 +711,16 @@ class EpochExperimentCallback(BaseCallback):
                 "train/curriculum_success_streak",
                 float(self.curriculum_success_streak),
             )
+            self.logger.record(
+                "train/curriculum_mastery_ready",
+                float(curriculum_mastery_ready),
+            )
             self.logger.record("train/episodes", float(self.episodes_per_epoch), exclude="stdout")
             self.logger.record("train/global_completed_episodes", float(self.global_completed_episodes), exclude="stdout")
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_success_streak", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -559,6 +748,7 @@ class EpochExperimentCallback(BaseCallback):
                     "curriculum_stage_used": curriculum_stage_used,
                     "curriculum_stage": self.curriculum_stage,
                     "curriculum_success_streak": self.curriculum_success_streak,
+                    "curriculum_mastery_ready": curriculum_mastery_ready,
                     "curriculum_mastery_success_rate": curriculum_mastery_success_rate,
                     "curriculum_vessel_success_rates": json.dumps(
                         curriculum_vessel_success_rates,
@@ -567,6 +757,16 @@ class EpochExperimentCallback(BaseCallback):
                     ),
                     "curriculum_vessel_episode_counts": json.dumps(
                         curriculum_vessel_episode_counts,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "curriculum_rolling_success_rates": json.dumps(
+                        curriculum_rolling_success_rates,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "curriculum_rolling_episode_counts": json.dumps(
+                        curriculum_rolling_episode_counts,
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
@@ -589,8 +789,11 @@ class EpochExperimentCallback(BaseCallback):
                 f"positive_failure_rate={positive_failure_rate:.6f} "
                 f"curriculum_stage_used={curriculum_stage_used} "
                 f"curriculum_stage={self.curriculum_stage} "
+                f"curriculum_mastery_ready={curriculum_mastery_ready} "
                 f"curriculum_mastery_success_rate={curriculum_mastery_success_rate:.6f} "
                 f"curriculum_vessel_success_rates={json.dumps(curriculum_vessel_success_rates, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_rolling_success_rates={json.dumps(curriculum_rolling_success_rates, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_rolling_episode_counts={json.dumps(curriculum_rolling_episode_counts, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_success_streak={self.curriculum_success_streak} "
                 f"global_completed_episodes={self.global_completed_episodes} "
                 f"global_env_steps={self.model.global_env_steps} "
@@ -685,9 +888,10 @@ class EpochExperimentCallback(BaseCallback):
                 model_index = int(round(float(event[23])))
                 if 0 <= model_index < len(self._curriculum_model_ids):
                     self._epoch_model_episode_counts[model_index] += 1
-                    self._epoch_model_success_counts[model_index] += int(
-                        event[1] > 0.5
-                    )
+                    success = int(event[1] > 0.5)
+                    self._epoch_model_success_counts[model_index] += success
+                    model_id = self._curriculum_model_ids[model_index]
+                    self._curriculum_outcome_windows[model_id].append(success)
             cursor += take
             if (
                 self.next_epoch <= self.epochs

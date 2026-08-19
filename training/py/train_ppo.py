@@ -148,6 +148,10 @@ def parse_args(configure_parser=None):
         "--training-curriculum",
         dest="training_curriculum",
         action="store_true",
+        help=(
+            "Expand the four-stage vessel pool after every active vessel has "
+            "at least 100 rolling samples and 20% success for five consecutive epochs."
+        ),
     )
     curriculum.add_argument(
         "--no-training-curriculum",
@@ -279,6 +283,13 @@ def main():
     env = None
     try:
         env = build_env(args)
+        observation_shape = getattr(env.observation_space, "shape", None)
+        args.observation_space_shape = (
+            list(observation_shape) if observation_shape is not None else None
+        )
+        args.observation_space_dtype = str(
+            getattr(env.observation_space, "dtype", "unknown")
+        )
 
         def run_validation(current_model, epoch):
             def env_factory(vessel_id):

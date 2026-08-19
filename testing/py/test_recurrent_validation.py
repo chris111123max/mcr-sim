@@ -6,7 +6,12 @@ import unittest
 
 import numpy as np
 
-from mcr_sim.rl_core.evaluation import evaluate_policy
+from mcr_sim.rl_core.evaluation import (
+    ValidationEpisodeResult,
+    evaluate_policy,
+    summarize_validation,
+    validation_selection_key,
+)
 
 
 class _OneStepEnv:
@@ -18,7 +23,17 @@ class _OneStepEnv:
             np.zeros((1, 3), dtype=np.float32),
             np.array([1.0], dtype=np.float32),
             np.array([True]),
-            [{"done_by_target": True, "terminal_reason": "target"}],
+            [
+                {
+                    "done_by_target": True,
+                    "terminal_reason": "target",
+                    "final_dist_to_goal": 0.002,
+                    "min_dist_to_goal": 0.0015,
+                    "waypoint_reached_count_episode": 4,
+                    "waypoint_num": 5,
+                    "route_potential": 1.0,
+                }
+            ],
         )
 
     def close(self):
@@ -54,6 +69,10 @@ class RecurrentValidationTest(unittest.TestCase):
         self.assertEqual(predictor.reset_count, 3)
         self.assertEqual(result.valid_episodes, 3)
         self.assertEqual(result.valid_success_count, 3)
+        self.assertEqual(result.valid_waypoint_reached_ratio_mean, 1.0)
+        self.assertEqual(result.valid_route_potential_mean, 1.0)
+        self.assertAlmostEqual(result.valid_final_distance_mm_mean, 2.0)
+        self.assertAlmostEqual(result.valid_min_distance_mm_mean, 1.5)
 
     def test_plain_mlp_callable_remains_supported(self):
         result = evaluate_policy(
@@ -64,6 +83,67 @@ class RecurrentValidationTest(unittest.TestCase):
             max_episode_steps=1,
         )
         self.assertEqual(result.valid_success_count, 2)
+
+    def test_best_selection_uses_progress_only_to_break_success_ties(self):
+        weak_failure = summarize_validation(
+            [
+                ValidationEpisodeResult(
+                    "V01",
+                    0,
+                    1,
+                    False,
+                    "out_of_vessel",
+                    10,
+                    -140.0,
+                    waypoint_reached_ratio=0.1,
+                    route_potential=0.2,
+                    final_distance_mm=100.0,
+                    min_distance_mm=90.0,
+                )
+            ]
+        )
+        better_failure = summarize_validation(
+            [
+                ValidationEpisodeResult(
+                    "V01",
+                    0,
+                    1,
+                    False,
+                    "out_of_vessel",
+                    20,
+                    -120.0,
+                    waypoint_reached_ratio=0.4,
+                    route_potential=0.5,
+                    final_distance_mm=60.0,
+                    min_distance_mm=50.0,
+                )
+            ]
+        )
+        one_success = summarize_validation(
+            [
+                ValidationEpisodeResult(
+                    "V01",
+                    0,
+                    1,
+                    True,
+                    "target",
+                    30,
+                    200.0,
+                    waypoint_reached_ratio=0.0,
+                    route_potential=0.0,
+                    final_distance_mm=3.0,
+                    min_distance_mm=2.0,
+                )
+            ]
+        )
+        self.assertGreater(
+            validation_selection_key(better_failure),
+            validation_selection_key(weak_failure),
+        )
+        self.assertGreater(
+            validation_selection_key(one_success),
+            validation_selection_key(better_failure),
+        )
 
 
 if __name__ == "__main__":

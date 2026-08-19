@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from contextlib import contextmanager
 import json
+import math
 from pathlib import Path
 from typing import Callable, List, Sequence
 
@@ -54,6 +55,10 @@ class ValidationEpisodeResult:
     terminal_reason: str
     steps: int
     reward: float
+    waypoint_reached_ratio: float = 0.0
+    route_potential: float = 0.0
+    final_distance_mm: float = math.inf
+    min_distance_mm: float = math.inf
     error: str = ""
 
 
@@ -63,7 +68,68 @@ class ValidationResult:
     valid_episodes: int
     valid_success_count: int
     valid_success_rate: float
+    valid_waypoint_reached_ratio_mean: float
+    valid_route_potential_mean: float
+    valid_final_distance_mm_mean: float
+    valid_min_distance_mm_mean: float
     episodes: Sequence[ValidationEpisodeResult]
+
+
+def _finite_mean(values, default: float) -> float:
+    finite = [float(value) for value in values if math.isfinite(float(value))]
+    return float(np.mean(finite)) if finite else float(default)
+
+
+def summarize_validation(
+    episodes: Sequence[ValidationEpisodeResult],
+) -> ValidationResult:
+    """Build aggregate metrics shared by local and distributed validation."""
+
+    episodes = tuple(episodes)
+    success_count = sum(int(item.success) for item in episodes)
+    episode_count = len(episodes)
+    return ValidationResult(
+        valid_vessels=len({item.vessel_id for item in episodes}),
+        valid_episodes=episode_count,
+        valid_success_count=success_count,
+        valid_success_rate=(
+            float(success_count / episode_count) if episode_count else 0.0
+        ),
+        valid_waypoint_reached_ratio_mean=_finite_mean(
+            (item.waypoint_reached_ratio for item in episodes),
+            0.0,
+        ),
+        valid_route_potential_mean=_finite_mean(
+            (item.route_potential for item in episodes),
+            0.0,
+        ),
+        valid_final_distance_mm_mean=_finite_mean(
+            (item.final_distance_mm for item in episodes),
+            math.inf,
+        ),
+        valid_min_distance_mm_mean=_finite_mean(
+            (item.min_distance_mm for item in episodes),
+            math.inf,
+        ),
+        episodes=episodes,
+    )
+
+
+def validation_selection_key(result: ValidationResult):
+    """Return the deterministic lexicographic best-checkpoint score.
+
+    Target success remains primary.  Fixed-seed waypoint completion, route
+    potential, and final distance only break ties, so a merely closer failure
+    can never replace a checkpoint with a higher target success rate.
+    """
+
+    final_distance = float(result.valid_final_distance_mm_mean)
+    return (
+        float(result.valid_success_rate),
+        float(result.valid_waypoint_reached_ratio_mean),
+        float(result.valid_route_potential_mean),
+        -final_distance if math.isfinite(final_distance) else -math.inf,
+    )
 
 
 def discover_validation_vessels(
@@ -222,6 +288,41 @@ def evaluate_policy(
                             if done
                             else "timeout"
                         )
+                        waypoint_count = float(
+                            final_info.get("waypoint_reached_count_episode", 0.0)
+                        )
+                        waypoint_num = float(final_info.get("waypoint_num", 0.0))
+                        waypoint_ratio = (
+                            1.0
+                            if success
+                            else float(
+                                np.clip(
+                                    waypoint_count / max(1.0, waypoint_num - 1.0),
+                                    0.0,
+                                    1.0,
+                                )
+                            )
+                        )
+                        route_potential = float(
+                            np.clip(
+                                final_info.get("route_potential", 0.0),
+                                0.0,
+                                1.0,
+                            )
+                        )
+                        final_distance = float(
+                            final_info.get(
+                                "final_dist_to_goal",
+                                final_info.get("current_dist_to_goal", math.inf),
+                            )
+                        )
+                        if not math.isfinite(final_distance):
+                            final_distance = float(
+                                final_info.get("current_dist_to_goal", math.inf)
+                            )
+                        min_distance = float(
+                            final_info.get("min_dist_to_goal", math.inf)
+                        )
                         results.append(
                             ValidationEpisodeResult(
                                 vessel_id=str(vessel_id),
@@ -231,6 +332,18 @@ def evaluate_policy(
                                 terminal_reason=terminal_reason,
                                 steps=step_count,
                                 reward=total_reward,
+                                waypoint_reached_ratio=waypoint_ratio,
+                                route_potential=route_potential,
+                                final_distance_mm=(
+                                    final_distance * 1000.0
+                                    if math.isfinite(final_distance)
+                                    else math.inf
+                                ),
+                                min_distance_mm=(
+                                    min_distance * 1000.0
+                                    if math.isfinite(min_distance)
+                                    else math.inf
+                                ),
                             )
                         )
                         print(
@@ -273,6 +386,10 @@ def evaluate_policy(
                                 terminal_reason="validation_error",
                                 steps=item.steps,
                                 reward=item.reward,
+                                waypoint_reached_ratio=item.waypoint_reached_ratio,
+                                route_potential=item.route_potential,
+                                final_distance_mm=item.final_distance_mm,
+                                min_distance_mm=item.min_distance_mm,
                                 error=error_text,
                             )
             vessel_errors = any(
@@ -286,15 +403,7 @@ def evaluate_policy(
                 flush=True,
             )
 
-    success_count = sum(int(item.success) for item in results)
-    episode_count = len(results)
-    return ValidationResult(
-        valid_vessels=len({item.vessel_id for item in results}),
-        valid_episodes=episode_count,
-        valid_success_count=success_count,
-        valid_success_rate=float(success_count / episode_count) if episode_count else 0.0,
-        episodes=tuple(results),
-    )
+    return summarize_validation(results)
 
 
 def validation_result_to_json(result: ValidationResult) -> str:
@@ -308,6 +417,10 @@ def validation_result_to_json(result: ValidationResult) -> str:
                 "terminal_reason": item.terminal_reason,
                 "steps": item.steps,
                 "reward": item.reward,
+                "waypoint_reached_ratio": item.waypoint_reached_ratio,
+                "route_potential": item.route_potential,
+                "final_distance_mm": item.final_distance_mm,
+                "min_distance_mm": item.min_distance_mm,
                 "error": item.error,
             }
             for item in result.episodes
@@ -325,12 +438,4 @@ def merge_validation_json(payloads: Sequence[str]) -> ValidationResult:
         for item in json.loads(payload or "[]"):
             episodes.append(ValidationEpisodeResult(**item))
     episodes.sort(key=lambda item: (item.vessel_id, item.episode_index))
-    success_count = sum(int(item.success) for item in episodes)
-    episode_count = len(episodes)
-    return ValidationResult(
-        valid_vessels=len({item.vessel_id for item in episodes}),
-        valid_episodes=episode_count,
-        valid_success_count=success_count,
-        valid_success_rate=float(success_count / episode_count) if episode_count else 0.0,
-        episodes=tuple(episodes),
-    )
+    return summarize_validation(episodes)

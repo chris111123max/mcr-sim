@@ -41,13 +41,14 @@ OUT_OF_VESSEL_SAFETY_RATIO = 1.00
 OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
-# Tip clearance drives dense safety features/rewards; whole-body samples are
-# containment-only so the flexible shaft can contact and slide along the wall.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V6
+# exposes the already-computed whole-body margin and starts a bounded warning
+# ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
 SDF_NEAR_WALL_MARGIN_M = 0.001
 SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
+SDF_BODY_WARNING_MARGIN_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
 SDF_SAMPLE_STEP_FRACTION = 0.5
 SDF_FORWARD_PROBE_DISTANCES_M = (0.001, 0.002, 0.004)
@@ -71,14 +72,14 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v5.  Dense navigation credit is the difference of an ordered
+# Reward profile v6.  Dense navigation credit is the difference of an ordered
 # route potential in [0, 1].  It therefore telescopes over a trajectory:
 # forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend.  V5 keeps the
-# task and terminal rewards unchanged, but makes dense retraction/stagnation
-# costs secondary to progress instead of letting them dominate a long episode.
-# Sustained stagnation is still terminated and receives its -120 penalty.
-REWARD_PROFILE_VERSION = 5
+# available again after a necessary correction in a tight bend.  V6 keeps the
+# V5 task and terminal values, and aligns the existing wall features with the
+# same whole-body SDF quantity used by out-of-vessel termination.  Sustained
+# stagnation is still terminated and receives its -120 penalty.
+REWARD_PROFILE_VERSION = 6
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_BUDGET = 100.0
 REWARD_WAYPOINT_BUDGET = 20.0
@@ -138,11 +139,39 @@ def reward_profile() -> dict:
         "timeout": REWARD_TIMEOUT,
         "no_progress_terminal": REWARD_NO_PROGRESS_TERMINAL,
         "step": REWARD_STEP,
+        "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
         "no_progress_confirm_steps": NO_PROGRESS_CONFIRM_STEPS,
         "no_progress_min_net_approach_m": NO_PROGRESS_MIN_NET_APPROACH_M,
     }
+
+
+def body_sdf_risk_features(
+    max_signed_distance: float,
+    outside_tolerance: float = SDF_OUTSIDE_CENTER_TOLERANCE_M,
+    warning_margin: float = SDF_BODY_WARNING_MARGIN_M,
+):
+    """Return bounded whole-body warning and outside-depth features.
+
+    ``max_signed_distance`` is the worst catheter-centre SDF sample: negative
+    values are inside the lumen and positive values are outside.  Contact is
+    not itself a failure.  The warning ramps from ``-warning_margin`` to the
+    configured outside threshold, while penetration starts only after the
+    sampled centre has crossed the wall.
+    """
+
+    signed = float(max_signed_distance)
+    tolerance = max(float(outside_tolerance), 1e-12)
+    margin = max(float(warning_margin), 0.0)
+    if not math.isfinite(signed):
+        return 0.0, 0.0
+    warning = min(
+        max((signed + margin) / max(tolerance + margin, 1e-12), 0.0),
+        1.0,
+    )
+    outside_depth = min(max(signed / tolerance, 0.0), 1.0)
+    return warning, outside_depth
 
 
 def ordered_route_potential(
@@ -192,8 +221,10 @@ TRAINING_CURRICULUM_MODELS = (
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02"),
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02", "C03", "C04", "C05"),
 )
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.10, 0.10, 0.10)
-TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.20, 0.20, 0.20)
+TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 5
+TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 200
+TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
 
 
 def update_curriculum_progress(
@@ -201,6 +232,7 @@ def update_curriculum_progress(
     consecutive_success_epochs: int,
     train_success_rate: float,
     per_model_success_rates=None,
+    per_model_episode_counts=None,
 ):
     """Update the stable-success streak and advance at most one stage.
 
@@ -214,6 +246,7 @@ def update_curriculum_progress(
     if stage >= len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
         return stage, 0
     mastery_success_rate = float(train_success_rate)
+    enough_samples = True
     if per_model_success_rates is not None:
         active_rates = []
         for model_id in TRAINING_CURRICULUM_MODELS[stage]:
@@ -222,10 +255,17 @@ def update_curriculum_progress(
                 active_rates = []
                 mastery_success_rate = -math.inf
                 break
+            if per_model_episode_counts is not None:
+                count = int(per_model_episode_counts.get(model_id, 0))
+                if count < TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL:
+                    enough_samples = False
             active_rates.append(float(rate))
         if active_rates:
             mastery_success_rate = min(active_rates)
-    if mastery_success_rate >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]:
+    if (
+        enough_samples
+        and mastery_success_rate >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]
+    ):
         streak += 1
         if streak >= TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS:
             stage += 1
@@ -376,12 +416,27 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum stages and thresholds are inconsistent.")
     if TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS < 1:
         raise ValueError("Curriculum consecutive epoch count must be positive.")
+    if TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL < 1:
+        raise ValueError("Curriculum rolling window must be positive.")
+    if not (
+        1
+        <= TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL
+        <= TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+    ):
+        raise ValueError("Invalid curriculum minimum per-vessel sample count.")
+    if any(
+        not (0.0 < threshold <= 1.0)
+        for threshold in TRAINING_CURRICULUM_SUCCESS_THRESHOLDS
+    ):
+        raise ValueError("Curriculum success thresholds must be in (0, 1].")
     if not (0.0 < PPO_MIN_ACTION_STD <= PPO_MAX_ACTION_STD):
         raise ValueError("Invalid PPO action standard-deviation bounds.")
     if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:
         raise ValueError("Invalid SDF outside confirmation settings.")
+    if SDF_BODY_WARNING_MARGIN_M <= 0.0:
+        raise ValueError("SDF body warning margin must be positive.")
     if not (0.0 < SDF_SAMPLE_STEP_FRACTION <= 1.0):
         raise ValueError("SDF sample step fraction must be in (0, 1].")
     if (

@@ -56,11 +56,13 @@ boundaries from entering the PPO loss.
   deliberately not multiplied by world size.
 - `--training-curriculum` (default): keep domain randomization active while the
   geometry pool expands B01/B02 -> all B -> all B plus C01/C02 -> all B/C.
-  Every promotion requires every active vessel to reach 10% success in three
-  consecutive global epochs. A missing or under-threshold vessel resets the
-  streak, so easier vessels cannot hide an unlearned C vessel. Per-vessel
-  episode counts/rates, the stage, and the streak are synchronized, logged, and
-  saved with the checkpoint. Forced vessels and validation bypass it.
+  Each vessel keeps a 200-episode rolling success window. Promotion is eligible
+  only after every active vessel has at least 100 samples and at least 20%
+  rolling success for five consecutive global epochs. A missing,
+  under-sampled, or under-threshold vessel resets the streak, so easier vessels
+  cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
+  the stage, and the streak are synchronized, logged, and saved with the
+  checkpoint. Forced vessels and validation bypass it.
 - `--min-ent-coef`: lower bound for SAC automatic entropy tuning (default 0.02).
   PPO uses `ent_coef=0.001` and clamps Gaussian action std to `0.25..1.0`,
   preventing both premature exploration collapse and saturated random actions.
@@ -72,8 +74,11 @@ boundaries from entering the PPO loss.
   native ND matrix format through APIs provided by the installed torch_npu.
   Missing version-specific APIs are recorded and safely skipped.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
-  The formal default is 100 x 100 = 10,000 completed episodes. All ranks participate
-  in the episode counter and rank 0 saves one checkpoint per epoch.
+  The formal default is 100 x 100 = 10,000 completed episodes. All ranks
+  participate in this global count, and rank 0 saves one checkpoint per epoch.
+  Equal epoch counts do not imply equal transition counts across PPO and
+  LSTM-PPO because their episode lengths can differ; use the logged
+  `global_env_steps` when making sample-efficiency comparisons.
 - `--steps-per-epoch`: legacy transition-budget setting, used only when
   `--timesteps` is supplied.
 - `--timesteps`: optional compatibility override for the global transition
@@ -154,11 +159,21 @@ is `training/sh/run_train_ppo.sh`; recurrent PPO uses
 keep validation locked until a completed training epoch first reaches success rate
 `0.20`. The gate stays unlocked; validation starts immediately when that epoch is
 even, otherwise on the next even epoch, then runs every two epochs.
-The ten
-fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then gathered
-through the active distributed backend. Rank 0 alone writes the unchanged CSV
-summaries and checkpoints. `best_valid.zip` is replaced only when
-`valid_success_rate` strictly increases.
+The ten fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then
+gathered through the active distributed backend. Rank 0 alone writes CSV
+summaries and checkpoints. Validation CSVs include waypoint completion, route
+potential, and final/minimum target distance. `best_valid.zip` uses success rate
+as the primary criterion; ties are resolved by waypoint ratio, route potential,
+then smaller final target distance. Thus a 0%-success validation phase can still
+retain the checkpoint with the strongest measurable progress.
+
+Reward V6 exposes the same 62-dimensional observation to SAC, PPO, and
+LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
+clearance and the consecutive outside-confirmation progress. The existing wall
+proximity and penetration reward components take the maximum of tip and
+whole-body risk, so unsafe shaft contact is visible before the terminal
+whole-body SDF check fires. Checkpoints trained with the former 60-dimensional
+observation are intentionally incompatible and must not be resumed.
 
 ## Checkpoint and resume
 

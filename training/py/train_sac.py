@@ -1004,8 +1004,8 @@ def parse_args():
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Expand the four-stage vessel pool only after three consecutive "
-            "epochs reach 10% training success."
+            "Expand the four-stage vessel pool after every active vessel has "
+            "at least 100 rolling samples and 20% success for five consecutive epochs."
         ),
     )
     curriculum.add_argument(
@@ -1343,6 +1343,13 @@ def main():
     env = None
     try:
         env = build_env(args)
+        observation_shape = getattr(env.observation_space, "shape", None)
+        args.observation_space_shape = (
+            list(observation_shape) if observation_shape is not None else None
+        )
+        args.observation_space_dtype = str(
+            getattr(env.observation_space, "dtype", "unknown")
+        )
 
         callback_list = None
         if args.episode_mode:

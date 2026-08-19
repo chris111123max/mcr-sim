@@ -48,6 +48,7 @@ from .training_config import (
     SETTLE_STEPS,
     SOFA_TIME_STEP_S,
     SDF_CLEARANCE_OBSERVATION_SCALE_M,
+    SDF_BODY_WARNING_MARGIN_M,
     SDF_FORWARD_PROBE_DISTANCES_M,
     SDF_NEAR_WALL_MARGIN_M,
     SDF_OUTSIDE_CENTER_TOLERANCE_M,
@@ -69,6 +70,7 @@ from .training_config import (
     WRONG_BRANCH_OBSERVATION_SCALE_M,
     TRAINING_CURRICULUM_ENABLED,
     TRAINING_CURRICULUM_MODELS,
+    body_sdf_risk_features,
     ordered_route_potential,
 )
 
@@ -201,6 +203,12 @@ class MCREnv(SofaEnv):
                 SDF_OUTSIDE_CENTER_TOLERANCE_M,
             )
         )
+        self.sdf_body_warning_margin = float(
+            create_scene_kwargs.get(
+                "sdf_body_warning_margin",
+                SDF_BODY_WARNING_MARGIN_M,
+            )
+        )
         self.sdf_outside_confirm_steps = max(
             1,
             int(
@@ -325,13 +333,13 @@ class MCREnv(SofaEnv):
             int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
         )
 
-        # Actor observation: 32-D current geometry + 4 * 7-D action-response
-        # history = 60-D.  The 12 vessel features combine selected-route
-        # geometry, tip SDF clearance/inward normal,
-        # three forward probes, and complete-graph branch deviation.  Dense
-        # clearance features are tip-only; whole-body SDF is containment-only.
-        self.vessel_section_feature_dim = 12
-        self.actor_current_geometry_dim = 32
+        # Actor observation: 34-D current geometry + 4 * 7-D action-response
+        # history = 62-D.  The 14 vessel features combine selected-route
+        # geometry, tip SDF clearance/inward normal, whole-body clearance and
+        # outside-confirmation progress, three forward probes, and complete-
+        # graph branch deviation.  All algorithms receive this same state.
+        self.vessel_section_feature_dim = 14
+        self.actor_current_geometry_dim = 34
         self.actor_dynamic_step_dim = 7
         self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", ACTOR_HISTORY_STEPS)))
         self.actor_dynamic_history_dim = self.actor_dynamic_step_dim * self.actor_history_steps
@@ -429,6 +437,8 @@ class MCREnv(SofaEnv):
         self.current_sdf_max_signed_distance = np.nan
         self.current_sdf_body_min_surface_clearance = np.nan
         self.current_sdf_surface_clearance = np.nan
+        self.current_sdf_body_warning_feature = 0.0
+        self.current_sdf_body_outside_depth_feature = 0.0
         self.current_sdf_near_wall = False
         self.current_sdf_penetrating = False
         self.current_sdf_sample_count = 0
@@ -914,6 +924,8 @@ class MCREnv(SofaEnv):
         self.current_sdf_max_signed_distance = np.nan
         self.current_sdf_body_min_surface_clearance = np.nan
         self.current_sdf_surface_clearance = np.nan
+        self.current_sdf_body_warning_feature = 0.0
+        self.current_sdf_body_outside_depth_feature = 0.0
         self.current_sdf_near_wall = False
         self.current_sdf_penetrating = False
         self.current_sdf_sample_count = 0
@@ -1345,9 +1357,9 @@ class MCREnv(SofaEnv):
             waypoint_bonus_feature = 1.0 / max(1, len(self.waypoint_points) - 1)
 
         if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
-            # Dense wall shaping is tip-only.  The flexible body may rest on or
-            # slide along the wall; its SDF samples are used only for true
-            # centre-outside termination and diagnostics.
+            # Tip clearance keeps the original contact shaping.  Whole-body
+            # samples add a bounded pre-terminal warning, while ordinary shaft
+            # contact remains legal and can still slide along the wall.
             tip_clearance = float(self.current_sdf_surface_clearance)
             base_near_wall_feature = float(
                 np.clip(
@@ -1369,14 +1381,26 @@ class MCREnv(SofaEnv):
                     1.0,
                 )
             )
-            near_wall_feature = base_near_wall_feature * persistence_scale
-            penetration_feature = float(
+            tip_near_wall_feature = base_near_wall_feature * persistence_scale
+            tip_penetration_feature = float(
                 np.clip(
                     max(-tip_clearance, 0.0)
                     / max(float(self.catheter_radius), 1e-9),
                     0.0,
                     1.0,
                 )
+            )
+            # The same whole-body SDF sample that drives termination now gives
+            # dense warning before the three-step terminal confirmation.  Shaft
+            # contact is still legal: the stronger feature starts only when a
+            # sampled centre crosses the wall.
+            near_wall_feature = max(
+                tip_near_wall_feature,
+                float(self.current_sdf_body_warning_feature),
+            )
+            penetration_feature = max(
+                tip_penetration_feature,
+                float(self.current_sdf_body_outside_depth_feature),
             )
         else:
             # Legacy vessels without VTI keep navigation rewards but do not
@@ -1564,6 +1588,12 @@ class MCREnv(SofaEnv):
             )
             if np.isfinite(self.current_sdf_body_min_surface_clearance)
             else np.nan,
+            "sdf_body_warning_feature": float(
+                self.current_sdf_body_warning_feature
+            ),
+            "sdf_body_outside_depth_feature": float(
+                self.current_sdf_body_outside_depth_feature
+            ),
             "sdf_surface_clearance_min_episode": float(
                 self.min_sdf_surface_clearance_this_episode
             )
@@ -2002,6 +2032,8 @@ class MCREnv(SofaEnv):
             self.current_sdf_max_signed_distance = np.nan
             self.current_sdf_body_min_surface_clearance = np.nan
             self.current_sdf_surface_clearance = np.nan
+            self.current_sdf_body_warning_feature = 0.0
+            self.current_sdf_body_outside_depth_feature = 0.0
             self.current_sdf_near_wall = False
             self.current_sdf_penetrating = False
             self.current_sdf_sample_count = 0
@@ -2045,6 +2077,14 @@ class MCREnv(SofaEnv):
         self.current_sdf_body_min_surface_clearance = body_surface_clearance
         # Compatibility name now explicitly means tip-surface clearance.
         self.current_sdf_surface_clearance = tip_surface_clearance
+        (
+            self.current_sdf_body_warning_feature,
+            self.current_sdf_body_outside_depth_feature,
+        ) = body_sdf_risk_features(
+            max_signed,
+            outside_tolerance=self.sdf_outside_center_tolerance,
+            warning_margin=self.sdf_body_warning_margin,
+        )
         self.current_sdf_near_wall = bool(
             tip_surface_clearance < float(self.sdf_near_wall_margin)
         )
@@ -2056,8 +2096,9 @@ class MCREnv(SofaEnv):
         ).reshape(3)
 
         # SDF increases from lumen interior toward the outside.  The tip-local
-        # negative gradient tells the policy how to steer the tip back inward;
-        # body-wall contact is intentionally not used for steering reward.
+        # negative gradient tells the policy how to steer the tip back inward.
+        # Whole-body risk is scalar because a single tip-local direction would
+        # not correctly represent arbitrary shaft contact locations.
         tip_gradient_source = np.asarray(
             grid.gradient(tip_source),
             dtype=np.float64,
@@ -2273,6 +2314,22 @@ class MCREnv(SofaEnv):
                 )
             )
             contact_feature = 1.0 if self.current_sdf_penetrating else 0.0
+            body_clearance_feature = float(
+                np.clip(
+                    self.current_sdf_body_min_surface_clearance
+                    / max(float(self.sdf_clearance_observation_scale), 1e-9),
+                    -2.0,
+                    2.0,
+                )
+            )
+            outside_counter_feature = float(
+                np.clip(
+                    self.sdf_outside_counter
+                    / max(1.0, float(self.sdf_outside_confirm_steps)),
+                    0.0,
+                    1.0,
+                )
+            )
             inward_local = self._world_vec_to_local(
                 self.current_sdf_inward_world,
                 tip_frame,
@@ -2291,6 +2348,8 @@ class MCREnv(SofaEnv):
                 np.clip(self.current_centerline_safety_margin, -2.0, 1.0)
             )
             contact_feature = 1.0 if self.current_centerline_safety_margin <= 0.0 else 0.0
+            body_clearance_feature = clearance_feature
+            outside_counter_feature = 0.0
             inward_local = np.zeros(3, dtype=np.float32)
             forward_probe_features = np.zeros(
                 len(self.sdf_forward_probe_distances),
@@ -2302,6 +2361,8 @@ class MCREnv(SofaEnv):
                 np.clip(self.current_centerline_offset_B_over_radius, -3.0, 3.0),
                 np.clip(self.current_centerline_local_radius_norm, 0.0, 5.0),
                 clearance_feature,
+                body_clearance_feature,
+                outside_counter_feature,
                 *np.clip(inward_local, -1.0, 1.0).tolist(),
                 *np.clip(forward_probe_features, -2.0, 2.0).tolist(),
                 np.clip(self.current_off_target_branch_feature, 0.0, 1.0),
