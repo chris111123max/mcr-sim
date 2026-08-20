@@ -59,9 +59,8 @@ Reward profile v6 使用严格有序 waypoint 的路线势函数 `Phi in [0,1]`�
 | 每步代价 | -0.002 | 鼓励更短路径，但不压倒最长路线上的安全连续进度 |
 
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
-`max_grad_norm=0.5` 和 `ent_coef=0.001`。课程阶段共同控制探索下限：PPO/LSTM-PPO
-动作标准差按 `0.35/0.30/0.25/0.20` 退火，SAC 自动熵系数下限按
-`0.05/0.04/0.03/0.02` 退火，既避免早期探索坍缩，也允许后期策略收敛。
+`max_grad_norm=0.5` 和 `ent_coef=0.001`。PPO/LSTM-PPO 保留已经验证过的动作标准差
+下限 `0.25`，SAC 自动熵系数下限为 `0.02`；策略参数自身仍可自然退火到这些下限。
 `run_config.json` 会完整保存 Reward v6、实际 observation shape/dtype，`train_summary.csv`
 同时记录奖励分项（包括独立的回撤/稠密无进展项）、正回报失败率、终止路线势、
 课程阶段、当前阶段每根血管的回合数与成功率、无进展次数、正负插入比例和最终插入长度。
@@ -104,16 +103,17 @@ tip 指向内腔的 3 维方向、尖端前方 1/2/4 mm 的净空探针、最危
 不同算法即使 epoch 数相同，回合长度也可能不同，因此总 transition 数并不相同；比较
 MLP-PPO、LSTM-PPO 与其他策略的样本效率时，应以 `global_env_steps` 对齐或至少同时报告，
 不能只比较 epoch。
-训练默认启用四阶段血管课程，域随机化在所有阶段均保持开启：`B01/B02 → 全部B
-→ 全部B+C01/C02 → 全部B/C`。每根血管保存最近 200 个 episode 的滚动结果；至少
-积累 100 个样本后，当前阶段每一根 active vessel 都达到 20%，并连续维持 5 个全局
-epoch 才会升级。缺少样本或任一血管未达标都会清零连续计数。阶段、连续计数、滚动
+训练默认启用六阶段任务课程：`B01/B02@40% 路线 → B01/B02@70% → B01/B02@完整路线
+→ 全部B → 全部B+C01/C02 → 全部B/C`。每根血管保存最近 200 个 episode 的滚动结果；
+当前阶段每一根 active vessel 都积累完整 200 个样本、成功率达到 45%，并连续维持 3 个
+全局 epoch 才会升级。缺少样本或任一血管未达标都会清零连续计数。阶段升级时旧阶段
+窗口会清空，短目标成功不能用于证明下一阶段已经掌握。阶段、连续计数、滚动
 结果和逐血管成功率都保存在 checkpoint，
 只前进不回退；强制单血管和 V01..V05 validation 不受影响。
-域随机化强度按阶段使用最终范围的 `30%/60%/100%/100%`，即默认 Stage 0 为
-`scale=0.97–1.00`、端点窗口 3 mm、初始方向 3°，Stage 1 为 0.94–1.00、6 mm、6°，
-之后恢复完整 0.90–1.00、10 mm、10°。当前池内采样由 20% 均匀分布和 80% 平方失败率
-权重混合，困难血管获得更多回合，同时任何血管都不会被饿死。
+域随机化强度按阶段使用最终范围的 `0%/10%/30%/60%/80%/100%`。当前池内采样由
+50% 均匀分布和 50% 平方失败率权重混合，且单根血管概率不超过均匀概率的 2 倍，
+困难血管获得更多回合，但不会造成对其他血管的灾难性遗忘。只有完整路线阶段的训练
+成功率达到 20% 才能解锁 V01–V05 validation。
 四卡分布式训练时，所有 rank 同步累计回合数，默认每 epoch 保存一次 checkpoint。
 `--steps-per-epoch` 仅保留给旧的 transition-budget 命令；传入 `--timesteps` 时启用旧模式。
 训练成功率第一次达到 `0.20` 前不创建 valid 环境；达到后永久解锁，该轮若为偶数
@@ -133,7 +133,7 @@ replay buffer，避免每次更新重复搬运大批量 observation；不支持�
 | replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
 | learning starts | 每卡 50000 | 先收集较多、多血管经验再更新 |
 | gradient steps | 4 | 64 环境下每轮执行 4 次同步更新；与全局 2048 batch 组合后保持 32 环境配置的训练强度 |
-| gamma / tau / lr | 0.999 / 0.005 / 3e-4 | 让 1000–4000 步任务的终止回报仍能反传到早期动作 |
+| gamma / tau / lr | 0.995 / 0.005 / 3e-4 | 恢复已验证设置，避免初期失败终止项压倒稠密进度信号 |
 
 推荐四卡启动方式：
 
@@ -179,19 +179,19 @@ LSTM-PPO 使用官方 SB3-Contrib 2.4 的 `RecurrentPPO`、`MlpLstmPolicy`、
 |---|---:|---:|
 | policy | `MlpPolicy` | `MlpLstmPolicy` |
 | learning rate | 3e-4 | 3e-4 |
-| n_steps | 1024 | 1024 |
+| n_steps | 512 | 512 |
 | global/local batch（四卡） | 512 / 128 | 512 / 128 |
 | PPO n_epochs | 10 | 10 |
-| gamma / GAE lambda | 0.999 / 0.98 | 0.999 / 0.98 |
+| gamma / GAE lambda | 0.995 / 0.95 | 0.995 / 0.95 |
 | clip / entropy / value coef | 0.2 / 0.001 / 0.5 | 0.2 / 0.001 / 0.5 |
 | max grad norm | 0.5 | 0.5 |
-| action std bounds | stage 0.35→0.20 / max 1.0 | stage 0.35→0.20 / max 1.0 |
+| action std bounds | 0.25–1.0 | 0.25–1.0 |
 | LSTM hidden/layers | N/A | 128 / 1 |
 | bidirectional | N/A | false |
 
 训练时每个 rank 的 actor 与 critic state 分别为
 `(n_lstm_layers, envs_per_rank, hidden_size)`；正式四卡 64 环境配置下即
 `(1, 16, 128)`。rollout buffer 另外保存每一步的 actor/critic hidden 和 cell
-state，形状为 `(1024, 1, 16, 128)`。minibatch 参数仍是每 rank 128 个真实
+state，形状为 `(512, 1, 16, 128)`。minibatch 参数仍是每 rank 128 个真实
 transition；官方 buffer 内部产生的 padding 只通过 mask 排除，不会静默改写
 `batch_size`。

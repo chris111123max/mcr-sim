@@ -54,21 +54,21 @@ boundaries from entering the PPO loss.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
   default is 4. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
-- `--training-curriculum` (default): keep domain randomization active while the
-  geometry pool expands B01/B02 -> all B -> all B plus C01/C02 -> all B/C.
+- `--training-curriculum` (default): learn B01/B02 targets at 40%, 70%, and
+  100% route length before expanding to all B, all B plus C01/C02, and all B/C.
   Each vessel keeps a 200-episode rolling success window. Promotion is eligible
-  only after every active vessel has at least 100 samples and at least 20%
-  rolling success for five consecutive global epochs. A missing,
+  only after every active vessel has 200 samples and at least 45% rolling
+  success for three consecutive global epochs. A missing,
   under-sampled, or under-threshold vessel resets the streak, so easier vessels
   cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
   the stage, and the streak are synchronized, logged, and saved with the
   checkpoint. Forced vessels and validation bypass it.
-  DR uses 30%, 60%, 100%, and 100% of the requested final range by stage.
-  Sampling mixes 20% uniform probability with 80% squared failure-rate weight,
-  so weak vessels receive more data without starving mastered vessels.
-- `--min-ent-coef`: final lower bound for SAC automatic entropy tuning (0.02).
-  Curriculum stages use SAC floors `0.05/0.04/0.03/0.02`; PPO and recurrent
-  PPO use action-std floors `0.35/0.30/0.25/0.20`, with maximum 1.0.
+  DR uses 0%, 10%, 30%, 60%, 80%, and 100% of the requested final range.
+  Sampling mixes 50% uniform probability with 50% squared failure-rate weight
+  and caps one vessel at twice its uniform probability. Stage transitions clear
+  old outcome windows. Validation remains locked until a full-route stage.
+- `--min-ent-coef`: lower bound for SAC automatic entropy tuning (0.02).
+  PPO and recurrent PPO retain the stable action-std range `0.25..1.0`.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
   Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
   older installations. A disposable optimizer step is tested first; all ranks
@@ -126,7 +126,7 @@ on every rank. Gradient averaging makes the effective global minibatch 2048.
 Each rollout collects 64 new transitions and processes `4 x 2048 = 8192` replay
 samples. Compared with the 32-environment, 2048-batch, two-update setting, this
 preserves both replay samples and optimizer updates per newly collected sample.
-Learning rate and tau remain unchanged; gamma is 0.999 for the long-horizon task.
+Learning rate and tau remain unchanged; gamma is restored to the stable 0.995.
 
 ## Launch
 

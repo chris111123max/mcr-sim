@@ -22,6 +22,7 @@ from ..training_config import (
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_MODELS,
     TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
+    TRAINING_CURRICULUM_TARGET_FRACTIONS,
     curriculum_exploration_profile,
     curriculum_sampling_weights,
     update_curriculum_progress,
@@ -78,6 +79,7 @@ class EpochExperimentCallback(BaseCallback):
             False,
             0.0,
             self.validation_min_train_success_rate,
+            full_task_ready=not bool(training_curriculum_enabled),
         )
         self.validation_fn = validation_fn
         self.resume_progress = bool(resume_progress)
@@ -87,6 +89,7 @@ class EpochExperimentCallback(BaseCallback):
         self.curriculum_sampling_weights = {}
         self.curriculum_dr_profile = {}
         self.curriculum_exploration_profile = {}
+        self.curriculum_target_fraction = 1.0
         self.episode_sync_interval_steps = max(1, int(episode_sync_interval_steps))
         self.performance_log_interval_steps = max(
             1, int(performance_log_interval_steps)
@@ -185,6 +188,17 @@ class EpochExperimentCallback(BaseCallback):
                 self.next_epoch = saved_epoch + 1
                 self.global_completed_episodes = saved_episodes
             self.curriculum_stage = int(getattr(self.model, "curriculum_stage", 0))
+            if (
+                self.training_curriculum_enabled
+                and TRAINING_CURRICULUM_TARGET_FRACTIONS[
+                    min(
+                        max(self.curriculum_stage, 0),
+                        len(TRAINING_CURRICULUM_TARGET_FRACTIONS) - 1,
+                    )
+                ]
+                < 1.0 - 1e-9
+            ):
+                self.validation_unlocked = False
             self.curriculum_success_streak = int(
                 getattr(self.model, "curriculum_success_streak", 0)
             )
@@ -220,6 +234,12 @@ class EpochExperimentCallback(BaseCallback):
             "get_curriculum_domain_randomization_profile"
         )
         self.curriculum_dr_profile = dict(profiles[0]) if profiles else {}
+        target_fractions = self.training_env.env_method(
+            "get_curriculum_target_fraction"
+        )
+        self.curriculum_target_fraction = (
+            float(target_fractions[0]) if target_fractions else 1.0
+        )
         self._apply_curriculum_exploration(stage)
 
     def _apply_curriculum_sampling(self, active_models, success_rates) -> None:
@@ -422,6 +442,9 @@ class EpochExperimentCallback(BaseCallback):
             self.curriculum_sampling_weights
         )
         self.model.curriculum_dr_profile = dict(self.curriculum_dr_profile)
+        self.model.curriculum_target_fraction = float(
+            self.curriculum_target_fraction
+        )
         self.model.curriculum_exploration_profile = dict(
             self.curriculum_exploration_profile
         )
@@ -670,6 +693,11 @@ class EpochExperimentCallback(BaseCallback):
         reward_component_total_mean = self._epoch_reward_component_total_sum / epoch_divisor
         route_potential_final_mean = self._epoch_route_potential_sum / epoch_divisor
         curriculum_stage_used = self.curriculum_stage
+        curriculum_target_fraction_used = float(
+            TRAINING_CURRICULUM_TARGET_FRACTIONS[curriculum_stage_used]
+            if self.training_curriculum_enabled
+            else 1.0
+        )
         active_models = TRAINING_CURRICULUM_MODELS[curriculum_stage_used]
         curriculum_vessel_episode_counts = {
             model_id: int(
@@ -709,6 +737,8 @@ class EpochExperimentCallback(BaseCallback):
             )
             if next_curriculum_stage != self.curriculum_stage:
                 self.curriculum_stage = next_curriculum_stage
+                for window in self._curriculum_outcome_windows.values():
+                    window.clear()
                 self._apply_curriculum_stage(self.curriculum_stage)
             sampling_models = TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
             sampling_rates, _, _, _ = self._rolling_curriculum_statistics(
@@ -732,6 +762,7 @@ class EpochExperimentCallback(BaseCallback):
             self.validation_unlocked,
             train_success_rate,
             self.validation_min_train_success_rate,
+            full_task_ready=curriculum_target_fraction_used >= 1.0 - 1e-9,
         )
         self._record_model_metadata(epoch, train_success_rate)
         checkpoint_path = self._checkpoint_path(epoch)
@@ -761,6 +792,10 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record(
                 "train/curriculum_dr_fraction",
                 float(self.curriculum_dr_profile.get("fraction", 1.0)),
+            )
+            self.logger.record(
+                "train/curriculum_target_fraction",
+                float(self.curriculum_target_fraction),
             )
             for model_id, probability in self.curriculum_sampling_weights.items():
                 self.logger.record(
@@ -796,7 +831,7 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_target_fraction_used", "curriculum_target_fraction", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -823,6 +858,8 @@ class EpochExperimentCallback(BaseCallback):
                     "route_potential_final_mean": route_potential_final_mean,
                     "curriculum_stage_used": curriculum_stage_used,
                     "curriculum_stage": self.curriculum_stage,
+                    "curriculum_target_fraction_used": curriculum_target_fraction_used,
+                    "curriculum_target_fraction": self.curriculum_target_fraction,
                     "curriculum_success_streak": self.curriculum_success_streak,
                     "curriculum_mastery_ready": curriculum_mastery_ready,
                     "curriculum_mastery_success_rate": curriculum_mastery_success_rate,
@@ -880,6 +917,8 @@ class EpochExperimentCallback(BaseCallback):
                 f"positive_failure_rate={positive_failure_rate:.6f} "
                 f"curriculum_stage_used={curriculum_stage_used} "
                 f"curriculum_stage={self.curriculum_stage} "
+                f"curriculum_target_fraction_used={curriculum_target_fraction_used:.2f} "
+                f"curriculum_target_fraction={self.curriculum_target_fraction:.2f} "
                 f"curriculum_mastery_ready={curriculum_mastery_ready} "
                 f"curriculum_mastery_success_rate={curriculum_mastery_success_rate:.6f} "
                 f"curriculum_vessel_success_rates={json.dumps(curriculum_vessel_success_rates, sort_keys=True, separators=(',', ':'))} "

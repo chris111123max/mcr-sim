@@ -61,6 +61,15 @@ class BodySafetySourceContractTest(unittest.TestCase):
             self.assertIn("args.observation_space_dtype", source)
             self.assertIn("args.curriculum_protocol", source)
 
+    def test_training_target_curriculum_preserves_forced_validation_routes(self):
+        source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("def _apply_curriculum_target_position", source)
+        self.assertIn('or bool(getattr(self, "_explicit_force_model", ""))', source)
+        self.assertIn("self.current_full_target_position", source)
+        self.assertIn("self._apply_curriculum_target_position()", source)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@ from mcr_sim.training_config import (
     TRAINING_CURRICULUM_MODELS,
     TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS,
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
+    TRAINING_CURRICULUM_TARGET_FRACTIONS,
     body_sdf_risk_features,
     curriculum_domain_randomization_profile,
     curriculum_exploration_profile,
@@ -76,41 +77,46 @@ class RewardProfileTest(unittest.TestCase):
         total = sum(1.0 / rewardable_waypoints for _ in range(rewardable_waypoints))
         self.assertAlmostEqual(total, 1.0)
 
-    def test_curriculum_requires_five_consecutive_successful_epochs(self) -> None:
-        stage, streak = update_curriculum_progress(0, 0, 0.20)
+    def test_curriculum_requires_three_consecutive_mastery_epochs(self) -> None:
+        stage, streak = update_curriculum_progress(0, 0, 0.45)
         self.assertEqual((stage, streak), (0, 1))
-        stage, streak = update_curriculum_progress(stage, streak, 0.20)
+        stage, streak = update_curriculum_progress(stage, streak, 0.45)
         self.assertEqual((stage, streak), (0, 2))
-        stage, streak = update_curriculum_progress(stage, streak, 0.199)
+        stage, streak = update_curriculum_progress(stage, streak, 0.449)
         self.assertEqual((stage, streak), (0, 0))
         for _ in range(TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS):
-            stage, streak = update_curriculum_progress(stage, streak, 0.20)
+            stage, streak = update_curriculum_progress(stage, streak, 0.45)
         self.assertEqual((stage, streak), (1, 0))
 
-    def test_curriculum_advances_only_one_of_four_stages(self) -> None:
+    def test_curriculum_advances_only_one_of_six_stages(self) -> None:
         stage, streak = update_curriculum_progress(
-            2,
+            4,
             TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS - 1,
             1.0,
         )
-        self.assertEqual((stage, streak), (3, 0))
+        self.assertEqual((stage, streak), (5, 0))
         stage, streak = update_curriculum_progress(stage, streak, 1.0)
-        self.assertEqual((stage, streak), (3, 0))
-        self.assertLess(len(TRAINING_CURRICULUM_MODELS[0]), len(TRAINING_CURRICULUM_MODELS[1]))
-        self.assertLess(len(TRAINING_CURRICULUM_MODELS[1]), len(TRAINING_CURRICULUM_MODELS[2]))
+        self.assertEqual((stage, streak), (5, 0))
+        self.assertEqual(TRAINING_CURRICULUM_MODELS[0], TRAINING_CURRICULUM_MODELS[2])
         self.assertLess(len(TRAINING_CURRICULUM_MODELS[2]), len(TRAINING_CURRICULUM_MODELS[3]))
+        self.assertLess(len(TRAINING_CURRICULUM_MODELS[3]), len(TRAINING_CURRICULUM_MODELS[4]))
+        self.assertLess(len(TRAINING_CURRICULUM_MODELS[4]), len(TRAINING_CURRICULUM_MODELS[5]))
+        self.assertEqual(
+            TRAINING_CURRICULUM_TARGET_FRACTIONS,
+            (0.40, 0.70, 1.00, 1.00, 1.00, 1.00),
+        )
 
     def test_curriculum_requires_every_active_vessel_to_meet_threshold(self) -> None:
-        active_models = TRAINING_CURRICULUM_MODELS[2]
-        rates = {model_id: 0.20 for model_id in active_models}
+        active_models = TRAINING_CURRICULUM_MODELS[4]
+        rates = {model_id: 0.45 for model_id in active_models}
         rates["C02"] = 0.0
-        stage, streak = update_curriculum_progress(2, 2, 0.50, rates)
-        self.assertEqual((stage, streak), (2, 0))
+        stage, streak = update_curriculum_progress(4, 2, 0.50, rates)
+        self.assertEqual((stage, streak), (4, 0))
 
-        rates["C02"] = 0.20
+        rates["C02"] = 0.45
         for _ in range(TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS):
             stage, streak = update_curriculum_progress(stage, streak, 0.50, rates)
-        self.assertEqual((stage, streak), (3, 0))
+        self.assertEqual((stage, streak), (5, 0))
 
     def test_missing_active_vessel_blocks_curriculum_advance(self) -> None:
         rates = {"B01": 1.0}
@@ -160,22 +166,22 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLess(PPO_MIN_ACTION_STD, PPO_MAX_ACTION_STD)
         self.assertLessEqual(PPO_MAX_ACTION_STD, 1.0)
 
-    def test_long_horizon_credit_assignment_defaults(self) -> None:
-        self.assertEqual(SAC_GAMMA, 0.999)
-        self.assertEqual(PPO_N_STEPS, 1024)
-        self.assertEqual(PPO_GAE_LAMBDA, 0.98)
-        self.assertGreater(REWARD_SUCCESS * SAC_GAMMA ** 3000, 1.0)
+    def test_stable_ppo_credit_assignment_defaults(self) -> None:
+        self.assertEqual(SAC_GAMMA, 0.995)
+        self.assertEqual(PPO_N_STEPS, 512)
+        self.assertEqual(PPO_GAE_LAMBDA, 0.95)
 
     def test_domain_randomization_expands_by_curriculum_stage(self) -> None:
         stage0 = curriculum_domain_randomization_profile(0)
         stage1 = curriculum_domain_randomization_profile(1)
         stage2 = curriculum_domain_randomization_profile(2)
-        self.assertAlmostEqual(stage0["fraction"], 0.30)
-        self.assertAlmostEqual(stage0["vessel_scale_min"], 0.97)
-        self.assertAlmostEqual(stage0["start_window_distance_m"], 0.003)
-        self.assertAlmostEqual(stage0["initial_orientation_max_angle_deg"], 3.0)
+        self.assertAlmostEqual(stage0["fraction"], 0.0)
+        self.assertAlmostEqual(stage0["vessel_scale_min"], 1.0)
+        self.assertAlmostEqual(stage0["start_window_distance_m"], 0.0)
+        self.assertAlmostEqual(stage0["initial_orientation_max_angle_deg"], 0.0)
+        self.assertAlmostEqual(stage1["fraction"], 0.10)
         self.assertLess(stage0["fraction"], stage1["fraction"])
-        self.assertEqual(stage2["fraction"], 1.0)
+        self.assertEqual(curriculum_domain_randomization_profile(5)["fraction"], 1.0)
 
     def test_adaptive_sampling_favors_hard_vessels_without_starvation(self) -> None:
         weights = curriculum_sampling_weights(
@@ -186,15 +192,17 @@ class RewardProfileTest(unittest.TestCase):
         self.assertGreater(weights["B02"], weights["B01"])
         self.assertGreater(weights["B01"], 0.0)
 
-    def test_exploration_floors_anneal_without_reaching_zero(self) -> None:
-        stage0 = curriculum_exploration_profile(0)
-        stage3 = curriculum_exploration_profile(3)
-        self.assertGreater(
-            stage0["ppo_min_action_std"], stage3["ppo_min_action_std"]
+        capped = curriculum_sampling_weights(
+            ("B01", "B02", "B03", "B04", "B05"),
+            {"B01": 0.0, "B02": 1.0, "B03": 1.0, "B04": 1.0, "B05": 1.0},
         )
-        self.assertGreater(stage0["sac_min_ent_coef"], stage3["sac_min_ent_coef"])
-        self.assertGreater(stage3["ppo_min_action_std"], 0.0)
-        self.assertGreater(stage3["sac_min_ent_coef"], 0.0)
+        self.assertLessEqual(max(capped.values()), 0.40 + 1e-9)
+
+    def test_exploration_floors_use_stable_values(self) -> None:
+        stage0 = curriculum_exploration_profile(0)
+        stage5 = curriculum_exploration_profile(5)
+        self.assertEqual(stage0["ppo_min_action_std"], 0.25)
+        self.assertEqual(stage0, stage5)
 
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET

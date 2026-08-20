@@ -74,6 +74,7 @@ from .training_config import (
     TRAINING_CURRICULUM_ENABLED,
     TRAINING_CURRICULUM_DR_FRACTIONS,
     TRAINING_CURRICULUM_MODELS,
+    TRAINING_CURRICULUM_TARGET_FRACTIONS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
     VESSEL_SECTION_FEATURE_DIM,
@@ -431,6 +432,11 @@ class MCREnv(SofaEnv):
                 self.curriculum_stage if self.training_curriculum_enabled else -1
             ]
         )
+        self.curriculum_target_fraction = float(
+            TRAINING_CURRICULUM_TARGET_FRACTIONS[self.curriculum_stage]
+            if self.training_curriculum_enabled and not initial_force_model
+            else 1.0
+        )
         uniform_probability = 1.0 / max(len(self.training_models), 1)
         self.training_model_sampling_weights = {
             model_id: uniform_probability for model_id in self.training_models
@@ -784,6 +790,9 @@ class MCREnv(SofaEnv):
     def get_curriculum_domain_randomization_profile(self) -> dict:
         return dict(getattr(self, "curriculum_dr_profile", {}))
 
+    def get_curriculum_target_fraction(self) -> float:
+        return float(getattr(self, "curriculum_target_fraction", 1.0))
+
     def set_training_model_sampling_weights(self, weights: dict) -> dict:
         """Set normalized probabilities for the current vessel pool."""
 
@@ -809,6 +818,9 @@ class MCREnv(SofaEnv):
         stage = min(max(int(stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
         self.curriculum_stage = stage
         self.training_models = list(TRAINING_CURRICULUM_MODELS[stage])
+        self.curriculum_target_fraction = float(
+            TRAINING_CURRICULUM_TARGET_FRACTIONS[stage]
+        )
         self._apply_curriculum_domain_randomization(stage)
         self.set_training_model_sampling_weights({})
         return int(self.curriculum_stage)
@@ -1679,6 +1691,9 @@ class MCREnv(SofaEnv):
             "route_potential": float(self.current_route_potential),
             "route_potential_delta": float(self.current_route_potential_delta),
             "curriculum_stage": int(self.curriculum_stage),
+            "curriculum_target_fraction": float(
+                getattr(self, "curriculum_target_fraction", 1.0)
+            ),
             "curriculum_dr_fraction": float(
                 getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0)
             ),
@@ -3287,6 +3302,7 @@ class MCREnv(SofaEnv):
         else:
             self.centerline_cumlength = None
 
+        self._apply_curriculum_target_position()
         self._build_waypoint_sequence()
         self._capture_soft_reset_reference_pose()
 
@@ -3296,6 +3312,54 @@ class MCREnv(SofaEnv):
             self.cartesian_scaling_factor = 1.0 / bbox_diag if np.isfinite(bbox_diag) and bbox_diag > 1e-9 else 1.0
         else:
             self.cartesian_scaling_factor = 1.0
+
+    def _apply_curriculum_target_position(self) -> None:
+        """Shorten only the training target while preserving the full route."""
+
+        fraction = float(getattr(self, "curriculum_target_fraction", 1.0))
+        self.current_full_target_position = np.asarray(
+            self.target_position,
+            dtype=np.float32,
+        ).reshape(3).copy()
+        self.current_curriculum_target_progress = np.nan
+        if (
+            not bool(getattr(self, "training_curriculum_enabled", False))
+            or bool(getattr(self, "_explicit_force_model", ""))
+            or fraction >= 1.0 - 1e-9
+            or self.centerline_points is None
+            or self.centerline_cumlength is None
+            or len(self.centerline_points) < 2
+        ):
+            return
+
+        start_reference = getattr(self, "current_scene_start_position", None)
+        if start_reference is None:
+            try:
+                start_reference = np.asarray(
+                    self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3],
+                    dtype=np.float32,
+                )
+            except Exception:
+                start_reference = self.centerline_points[0]
+        start_progress, _, _ = self._raw_project_point_to_centerline_progress(
+            np.asarray(start_reference, dtype=np.float32)
+        )
+        full_target_progress, _, _ = self._raw_project_point_to_centerline_progress(
+            self.current_full_target_position
+        )
+        if not (
+            np.isfinite(start_progress)
+            and np.isfinite(full_target_progress)
+            and full_target_progress > start_progress + 1e-6
+        ):
+            return
+        target_progress = start_progress + fraction * (
+            full_target_progress - start_progress
+        )
+        self.target_position = self._interpolate_centerline_point_at_progress(
+            target_progress
+        ).astype(np.float32)
+        self.current_curriculum_target_progress = float(target_progress)
 
 
 if __name__ == "__main__":

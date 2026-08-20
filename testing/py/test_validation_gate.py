@@ -14,6 +14,16 @@ class ValidationGateTest(unittest.TestCase):
     def test_gate_unlocks_at_twenty_percent(self) -> None:
         self.assertTrue(update_validation_unlocked(False, 0.20, 0.20))
 
+    def test_short_target_never_unlocks_validation(self) -> None:
+        self.assertFalse(
+            update_validation_unlocked(
+                False,
+                1.0,
+                0.20,
+                full_task_ready=False,
+            )
+        )
+
     def test_gate_stays_unlocked_after_later_regression(self) -> None:
         self.assertTrue(update_validation_unlocked(True, 0.0, 0.20))
 

@@ -219,33 +219,36 @@ def ordered_route_potential(
     return min(max(travelled / route_length, 0.0), 1.0)
 
 
-# Training-only vessel curriculum.  Domain randomization remains enabled in
-# every stage; only the geometry pool expands.  Validation always uses V01..V05
-# directly and is never simplified by this curriculum.
+# Training-only task curriculum.  The first three stages keep B01/B02 fixed
+# while extending the target from 40% to 70% to the complete route.  Only then
+# does the vessel pool expand.  Validation always uses the complete V01..V05
+# routes and is never simplified by this curriculum.
 TRAINING_CURRICULUM_ENABLED = True
 TRAINING_CURRICULUM_MODELS = (
+    ("B01", "B02"),
+    ("B01", "B02"),
     ("B01", "B02"),
     ("B01", "B02", "B03", "B04", "B05"),
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02"),
     ("B01", "B02", "B03", "B04", "B05", "C01", "C02", "C03", "C04", "C05"),
 )
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.20, 0.20, 0.20)
-TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 5
+TRAINING_CURRICULUM_TARGET_FRACTIONS = (0.40, 0.70, 1.00, 1.00, 1.00, 1.00)
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.45, 0.45, 0.45, 0.45, 0.45)
+TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
 TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 200
-TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
-# Domain randomization stays enabled throughout training, but early stages use
-# a smaller fraction of the final range.  This prevents endpoint/orientation/
-# scale perturbations from dominating before the policy can navigate B01/B02.
-TRAINING_CURRICULUM_DR_FRACTIONS = (0.30, 0.60, 1.00, 1.00)
-# Preserve a uniform component so adaptive sampling can never starve an easy
-# vessel; the remaining mass is proportional to squared failure probability.
-TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX = 0.20
+TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 200
+# Randomization is introduced only after short-goal navigation is learned.
+TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 0.10, 0.30, 0.60, 0.80, 1.00)
+# Half the sampling distribution remains uniform.  The adaptive half focuses
+# on weak vessels but is capped so a single failure mode cannot erase skills
+# already acquired on the rest of the active pool.
+TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX = 0.50
 TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
-# Exploration is high while the first stages are being learned and anneals as
-# the vessel pool expands.  These floors are applied to PPO, RecurrentPPO and
-# SAC by the common experiment callback.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.35, 0.30, 0.25, 0.20)
-SAC_ENT_COEF_FLOOR_BY_STAGE = (0.05, 0.04, 0.03, 0.02)
+TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
+# Use the previously stable exploration floors in every stage.  Exploration
+# still anneals naturally through the learned PPO log_std / SAC entropy tuner.
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 6
+SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 6
 
 
 def curriculum_domain_randomization_profile(current_stage: int) -> dict:
@@ -270,6 +273,7 @@ def curriculum_sampling_weights(
     per_model_success_rates=None,
     uniform_mix: float = TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX,
     difficulty_power: float = TRAINING_CURRICULUM_DIFFICULTY_POWER,
+    max_sampling_factor: float = TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR,
 ) -> dict:
     """Blend uniform sampling with failure-rate-weighted hard-vessel sampling."""
 
@@ -287,13 +291,35 @@ def curriculum_sampling_weights(
     difficulty_total = sum(difficulties)
     uniform_probability = 1.0 / len(models)
     mix = min(max(float(uniform_mix), 0.0), 1.0)
-    return {
+    raw_weights = {
         model_id: (
             mix * uniform_probability
             + (1.0 - mix) * difficulty / difficulty_total
         )
         for model_id, difficulty in zip(models, difficulties)
     }
+    cap = min(max(float(max_sampling_factor) * uniform_probability, uniform_probability), 1.0)
+    weights = dict(raw_weights)
+    fixed = set()
+    while True:
+        newly_fixed = {
+            model_id for model_id, probability in weights.items()
+            if model_id not in fixed and probability > cap + 1e-12
+        }
+        if not newly_fixed:
+            break
+        fixed.update(newly_fixed)
+        for model_id in newly_fixed:
+            weights[model_id] = cap
+        remaining = [model_id for model_id in models if model_id not in fixed]
+        remaining_mass = max(1.0 - cap * len(fixed), 0.0)
+        raw_remaining = sum(raw_weights[model_id] for model_id in remaining)
+        if not remaining or raw_remaining <= 0.0:
+            break
+        for model_id in remaining:
+            weights[model_id] = remaining_mass * raw_weights[model_id] / raw_remaining
+    total = sum(weights.values())
+    return {model_id: probability / total for model_id, probability in weights.items()}
 
 
 def curriculum_exploration_profile(current_stage: int) -> dict:
@@ -312,6 +338,7 @@ def curriculum_protocol_profile() -> dict:
 
     return {
         "models_by_stage": [list(models) for models in TRAINING_CURRICULUM_MODELS],
+        "target_fraction_by_stage": list(TRAINING_CURRICULUM_TARGET_FRACTIONS),
         "success_thresholds": list(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS),
         "consecutive_epochs": TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS,
         "rolling_episodes_per_vessel": TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
@@ -319,6 +346,7 @@ def curriculum_protocol_profile() -> dict:
         "domain_randomization_fractions": list(TRAINING_CURRICULUM_DR_FRACTIONS),
         "uniform_sampling_mix": TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX,
         "difficulty_power": TRAINING_CURRICULUM_DIFFICULTY_POWER,
+        "max_sampling_factor": TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR,
         "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
@@ -378,13 +406,19 @@ def update_validation_unlocked(
     previously_unlocked: bool,
     train_success_rate: float,
     minimum_train_success_rate: float,
+    full_task_ready: bool = True,
 ) -> bool:
-    """Latch validation on once the shared training-success gate is reached."""
+    """Latch validation only after success on a complete-route training task."""
 
     return bool(
         previously_unlocked
-        or float(minimum_train_success_rate) <= 0.0
-        or float(train_success_rate) >= float(minimum_train_success_rate)
+        or (
+            bool(full_task_ready)
+            and (
+                float(minimum_train_success_rate) <= 0.0
+                or float(train_success_rate) >= float(minimum_train_success_rate)
+            )
+        )
     )
 
 # Collision/contact defaults.  Catheter Line/Point primitives represent their
@@ -426,7 +460,7 @@ SAC_LEARNING_STARTS = 50_000
 SAC_TRAIN_FREQ = 1
 SAC_GRADIENT_STEPS = 4
 SAC_TAU = 0.005
-SAC_GAMMA = 0.999
+SAC_GAMMA = 0.995
 
 # PPO baseline defaults.  ``n_steps`` is per environment; batch size is global
 # and is divided evenly between synchronized ranks, just like SAC.
@@ -434,16 +468,16 @@ PPO_EPOCHS = NUM_EPOCHS
 PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
 PPO_N_ENVS = SAC_N_ENVS
 PPO_LEARNING_RATE = 3e-4
-PPO_N_STEPS = 1024
+PPO_N_STEPS = 512
 PPO_BATCH_SIZE = 512
 PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
-PPO_GAE_LAMBDA = 0.98
+PPO_GAE_LAMBDA = 0.95
 PPO_CLIP_RANGE = 0.2
 PPO_ENT_COEF = 0.001
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
-PPO_MIN_ACTION_STD = 0.20
+PPO_MIN_ACTION_STD = 0.25
 PPO_MAX_ACTION_STD = 1.0
 
 
@@ -515,12 +549,18 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum stages and thresholds are inconsistent.")
     if len(TRAINING_CURRICULUM_DR_FRACTIONS) != len(TRAINING_CURRICULUM_MODELS):
         raise ValueError("Curriculum DR stages are inconsistent.")
-    if any(not (0.0 < fraction <= 1.0) for fraction in TRAINING_CURRICULUM_DR_FRACTIONS):
-        raise ValueError("Curriculum DR fractions must be in (0, 1].")
+    if len(TRAINING_CURRICULUM_TARGET_FRACTIONS) != len(TRAINING_CURRICULUM_MODELS):
+        raise ValueError("Curriculum target-distance stages are inconsistent.")
+    if any(not (0.0 < fraction <= 1.0) for fraction in TRAINING_CURRICULUM_TARGET_FRACTIONS):
+        raise ValueError("Curriculum target fractions must be in (0, 1].")
+    if any(not (0.0 <= fraction <= 1.0) for fraction in TRAINING_CURRICULUM_DR_FRACTIONS):
+        raise ValueError("Curriculum DR fractions must be in [0, 1].")
     if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
         raise ValueError("Curriculum uniform sampling mix must be in [0, 1].")
     if TRAINING_CURRICULUM_DIFFICULTY_POWER <= 0.0:
         raise ValueError("Curriculum difficulty power must be positive.")
+    if TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR < 1.0:
+        raise ValueError("Curriculum maximum sampling factor must be at least 1.")
     if not (
         len(PPO_ACTION_STD_FLOOR_BY_STAGE)
         == len(SAC_ENT_COEF_FLOOR_BY_STAGE)

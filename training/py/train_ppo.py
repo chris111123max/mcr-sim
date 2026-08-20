@@ -150,8 +150,8 @@ def parse_args(configure_parser=None):
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Expand the four-stage vessel pool after every active vessel has "
-            "at least 100 rolling samples and 20% success for five consecutive epochs."
+            "Advance the six-stage route/vessel curriculum after every active vessel has "
+            "at least 200 rolling samples and 45% success for three consecutive epochs."
         ),
     )
     curriculum.add_argument(
