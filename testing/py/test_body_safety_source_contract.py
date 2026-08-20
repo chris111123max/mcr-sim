@@ -5,19 +5,31 @@ from __future__ import annotations
 from pathlib import Path
 import unittest
 
+from mcr_sim.training_config import (
+    ACTOR_CURRENT_GEOMETRY_DIM,
+    ACTOR_OBSERVATION_DIM,
+    VESSEL_SECTION_FEATURE_DIM,
+)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class BodySafetySourceContractTest(unittest.TestCase):
-    def test_all_algorithms_share_the_62_dimensional_environment_state(self):
+    def test_all_algorithms_share_the_78_dimensional_environment_state(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
             encoding="utf-8"
         )
-        self.assertIn("self.vessel_section_feature_dim = 14", source)
-        self.assertIn("self.actor_current_geometry_dim = 34", source)
+        self.assertEqual(VESSEL_SECTION_FEATURE_DIM, 30)
+        self.assertEqual(ACTOR_CURRENT_GEOMETRY_DIM, 50)
+        self.assertEqual(ACTOR_OBSERVATION_DIM, 78)
+        self.assertIn("self.vessel_section_feature_dim = VESSEL_SECTION_FEATURE_DIM", source)
         self.assertIn("body_clearance_feature", source)
         self.assertIn("outside_counter_feature", source)
+        self.assertIn("current_sdf_worst_arc_fraction", source)
+        self.assertIn("worst_position_local", source)
+        self.assertIn("worst_inward_local", source)
+        self.assertIn("_get_centerline_lookahead_tangent_features", source)
 
     def test_whole_body_risk_drives_existing_wall_reward_features(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
@@ -47,6 +59,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
             source = (PROJECT_ROOT / relative_path).read_text(encoding="utf-8")
             self.assertIn("args.observation_space_shape", source)
             self.assertIn("args.observation_space_dtype", source)
+            self.assertIn("args.curriculum_protocol", source)
 
 
 if __name__ == "__main__":

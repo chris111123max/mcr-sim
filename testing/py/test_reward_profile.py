@@ -15,6 +15,8 @@ from mcr_sim.training_config import (
     REWARD_OUT_OF_VESSEL,
     REWARD_PROFILE_VERSION,
     PPO_ENT_COEF,
+    PPO_GAE_LAMBDA,
+    PPO_N_STEPS,
     REWARD_PROGRESS_BUDGET,
     REWARD_RETRACTION,
     REWARD_SUCCESS,
@@ -24,6 +26,7 @@ from mcr_sim.training_config import (
     REWARD_WAYPOINT_BUDGET,
     REWARD_WRONG_BRANCH,
     SAC_MIN_ENT_COEF,
+    SAC_GAMMA,
     TRAIN_ROUTE_MAX_LENGTH_M,
     PPO_MAX_ACTION_STD,
     PPO_MIN_ACTION_STD,
@@ -31,6 +34,9 @@ from mcr_sim.training_config import (
     TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS,
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     body_sdf_risk_features,
+    curriculum_domain_randomization_profile,
+    curriculum_exploration_profile,
+    curriculum_sampling_weights,
     ordered_route_potential,
     update_curriculum_progress,
 )
@@ -153,6 +159,42 @@ class RewardProfileTest(unittest.TestCase):
         self.assertGreater(PPO_ENT_COEF, 0.0)
         self.assertLess(PPO_MIN_ACTION_STD, PPO_MAX_ACTION_STD)
         self.assertLessEqual(PPO_MAX_ACTION_STD, 1.0)
+
+    def test_long_horizon_credit_assignment_defaults(self) -> None:
+        self.assertEqual(SAC_GAMMA, 0.999)
+        self.assertEqual(PPO_N_STEPS, 1024)
+        self.assertEqual(PPO_GAE_LAMBDA, 0.98)
+        self.assertGreater(REWARD_SUCCESS * SAC_GAMMA ** 3000, 1.0)
+
+    def test_domain_randomization_expands_by_curriculum_stage(self) -> None:
+        stage0 = curriculum_domain_randomization_profile(0)
+        stage1 = curriculum_domain_randomization_profile(1)
+        stage2 = curriculum_domain_randomization_profile(2)
+        self.assertAlmostEqual(stage0["fraction"], 0.30)
+        self.assertAlmostEqual(stage0["vessel_scale_min"], 0.97)
+        self.assertAlmostEqual(stage0["start_window_distance_m"], 0.003)
+        self.assertAlmostEqual(stage0["initial_orientation_max_angle_deg"], 3.0)
+        self.assertLess(stage0["fraction"], stage1["fraction"])
+        self.assertEqual(stage2["fraction"], 1.0)
+
+    def test_adaptive_sampling_favors_hard_vessels_without_starvation(self) -> None:
+        weights = curriculum_sampling_weights(
+            ("B01", "B02"),
+            {"B01": 0.80, "B02": 0.10},
+        )
+        self.assertAlmostEqual(sum(weights.values()), 1.0)
+        self.assertGreater(weights["B02"], weights["B01"])
+        self.assertGreater(weights["B01"], 0.0)
+
+    def test_exploration_floors_anneal_without_reaching_zero(self) -> None:
+        stage0 = curriculum_exploration_profile(0)
+        stage3 = curriculum_exploration_profile(3)
+        self.assertGreater(
+            stage0["ppo_min_action_std"], stage3["ppo_min_action_std"]
+        )
+        self.assertGreater(stage0["sac_min_ent_coef"], stage3["sac_min_ent_coef"])
+        self.assertGreater(stage3["ppo_min_action_std"], 0.0)
+        self.assertGreater(stage3["sac_min_ent_coef"], 0.0)
 
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET

@@ -22,6 +22,8 @@ from ..training_config import (
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_MODELS,
     TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
+    curriculum_exploration_profile,
+    curriculum_sampling_weights,
     update_curriculum_progress,
     update_validation_unlocked,
 )
@@ -82,6 +84,9 @@ class EpochExperimentCallback(BaseCallback):
         self.training_curriculum_enabled = bool(training_curriculum_enabled)
         self.curriculum_stage = 0
         self.curriculum_success_streak = 0
+        self.curriculum_sampling_weights = {}
+        self.curriculum_dr_profile = {}
+        self.curriculum_exploration_profile = {}
         self.episode_sync_interval_steps = max(1, int(episode_sync_interval_steps))
         self.performance_log_interval_steps = max(
             1, int(performance_log_interval_steps)
@@ -200,6 +205,9 @@ class EpochExperimentCallback(BaseCallback):
                     except TypeError:
                         continue
         self._apply_curriculum_stage(self.curriculum_stage)
+        active_models = TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
+        rolling_rates, _, _, _ = self._rolling_curriculum_statistics(active_models)
+        self._apply_curriculum_sampling(active_models, rolling_rates)
 
     def _apply_curriculum_stage(self, stage: int) -> None:
         if not self.training_curriculum_enabled:
@@ -208,6 +216,41 @@ class EpochExperimentCallback(BaseCallback):
         # each local VecEnv therefore updates all workers before the epoch
         # barrier releases any rank back into rollout collection.
         self.training_env.env_method("set_curriculum_stage", int(stage))
+        profiles = self.training_env.env_method(
+            "get_curriculum_domain_randomization_profile"
+        )
+        self.curriculum_dr_profile = dict(profiles[0]) if profiles else {}
+        self._apply_curriculum_exploration(stage)
+
+    def _apply_curriculum_sampling(self, active_models, success_rates) -> None:
+        if not self.training_curriculum_enabled:
+            return
+        weights = curriculum_sampling_weights(active_models, success_rates)
+        self.training_env.env_method(
+            "set_training_model_sampling_weights",
+            weights,
+        )
+        self.curriculum_sampling_weights = dict(weights)
+
+    def _apply_curriculum_exploration(self, stage: int) -> None:
+        """Apply the same stage schedule to all supported algorithms."""
+
+        profile = curriculum_exploration_profile(stage)
+        self.curriculum_exploration_profile = dict(profile)
+        if self.algorithm_name in {"ppo", "lstm_ppo"}:
+            floor = float(profile["ppo_min_action_std"])
+            self.model.min_action_std = floor
+            log_std = getattr(getattr(self.model, "policy", None), "log_std", None)
+            if log_std is not None:
+                with th.no_grad():
+                    log_std.clamp_(min=float(np.log(floor)))
+        elif self.algorithm_name == "sac":
+            floor = float(profile["sac_min_ent_coef"])
+            self.model.min_ent_coef = floor
+            log_ent_coef = getattr(self.model, "log_ent_coef", None)
+            if log_ent_coef is not None:
+                with th.no_grad():
+                    log_ent_coef.clamp_(min=float(np.log(floor)))
 
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
@@ -374,6 +417,13 @@ class EpochExperimentCallback(BaseCallback):
         }
         self.model.curriculum_rolling_window_size = int(
             TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+        )
+        self.model.curriculum_sampling_weights = dict(
+            self.curriculum_sampling_weights
+        )
+        self.model.curriculum_dr_profile = dict(self.curriculum_dr_profile)
+        self.model.curriculum_exploration_profile = dict(
+            self.curriculum_exploration_profile
         )
         self.model.distributed_world_size_at_save = int(self.context.world_size)
 
@@ -660,6 +710,11 @@ class EpochExperimentCallback(BaseCallback):
             if next_curriculum_stage != self.curriculum_stage:
                 self.curriculum_stage = next_curriculum_stage
                 self._apply_curriculum_stage(self.curriculum_stage)
+            sampling_models = TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
+            sampling_rates, _, _, _ = self._rolling_curriculum_statistics(
+                sampling_models
+            )
+            self._apply_curriculum_sampling(sampling_models, sampling_rates)
         self.model.curriculum_mastery_success_rate = float(
             curriculum_mastery_success_rate
         )
@@ -704,6 +759,27 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/route_potential_final_mean", route_potential_final_mean, exclude="stdout")
             self.logger.record("train/curriculum_stage", float(self.curriculum_stage))
             self.logger.record(
+                "train/curriculum_dr_fraction",
+                float(self.curriculum_dr_profile.get("fraction", 1.0)),
+            )
+            for model_id, probability in self.curriculum_sampling_weights.items():
+                self.logger.record(
+                    f"train/curriculum_sampling_probability_{model_id}",
+                    float(probability),
+                    exclude="stdout",
+                )
+            exploration_floor = (
+                self.curriculum_exploration_profile.get("sac_min_ent_coef")
+                if self.algorithm_name == "sac"
+                else self.curriculum_exploration_profile.get("ppo_min_action_std")
+            )
+            if exploration_floor is not None:
+                self.logger.record(
+                    "train/curriculum_exploration_floor",
+                    float(exploration_floor),
+                    exclude="stdout",
+                )
+            self.logger.record(
                 "train/curriculum_mastery_success_rate",
                 float(curriculum_mastery_success_rate),
             )
@@ -720,7 +796,7 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_waypoints_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "waypoint_reached_ratio_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -770,6 +846,21 @@ class EpochExperimentCallback(BaseCallback):
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
+                    "curriculum_sampling_weights": json.dumps(
+                        self.curriculum_sampling_weights,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "curriculum_dr_profile": json.dumps(
+                        self.curriculum_dr_profile,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "curriculum_exploration_profile": json.dumps(
+                        self.curriculum_exploration_profile,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
                     "insert_action_mean": insert_action_mean,
                     "insert_positive_fraction": insert_positive_fraction,
                     "insert_negative_fraction": insert_negative_fraction,
@@ -794,6 +885,9 @@ class EpochExperimentCallback(BaseCallback):
                 f"curriculum_vessel_success_rates={json.dumps(curriculum_vessel_success_rates, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_rolling_success_rates={json.dumps(curriculum_rolling_success_rates, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_rolling_episode_counts={json.dumps(curriculum_rolling_episode_counts, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_sampling_weights={json.dumps(self.curriculum_sampling_weights, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_dr_profile={json.dumps(self.curriculum_dr_profile, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_exploration_profile={json.dumps(self.curriculum_exploration_profile, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_success_streak={self.curriculum_success_streak} "
                 f"global_completed_episodes={self.global_completed_episodes} "
                 f"global_env_steps={self.model.global_env_steps} "

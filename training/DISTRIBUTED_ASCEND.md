@@ -63,9 +63,12 @@ boundaries from entering the PPO loss.
   cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
   the stage, and the streak are synchronized, logged, and saved with the
   checkpoint. Forced vessels and validation bypass it.
-- `--min-ent-coef`: lower bound for SAC automatic entropy tuning (default 0.02).
-  PPO uses `ent_coef=0.001` and clamps Gaussian action std to `0.25..1.0`,
-  preventing both premature exploration collapse and saturated random actions.
+  DR uses 30%, 60%, 100%, and 100% of the requested final range by stage.
+  Sampling mixes 20% uniform probability with 80% squared failure-rate weight,
+  so weak vessels receive more data without starving mastered vessels.
+- `--min-ent-coef`: final lower bound for SAC automatic entropy tuning (0.02).
+  Curriculum stages use SAC floors `0.05/0.04/0.03/0.02`; PPO and recurrent
+  PPO use action-std floors `0.35/0.30/0.25/0.20`, with maximum 1.0.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
   Adam with `torch_npu.optim.NpuFusedAdam`, or the matching Ascend Apex class on
   older installations. A disposable optimizer step is tested first; all ranks
@@ -123,7 +126,7 @@ on every rank. Gradient averaging makes the effective global minibatch 2048.
 Each rollout collects 64 new transitions and processes `4 x 2048 = 8192` replay
 samples. Compared with the 32-environment, 2048-batch, two-update setting, this
 preserves both replay samples and optimizer updates per newly collected sample.
-Learning rate, tau, gamma, and entropy settings remain unchanged.
+Learning rate and tau remain unchanged; gamma is 0.999 for the long-horizon task.
 
 ## Launch
 
@@ -167,12 +170,13 @@ as the primary criterion; ties are resolved by waypoint ratio, route potential,
 then smaller final target distance. Thus a 0%-success validation phase can still
 retain the checkpoint with the strongest measurable progress.
 
-Reward V6 exposes the same 62-dimensional observation to SAC, PPO, and
+Reward V6 exposes the same 78-dimensional observation to SAC, PPO, and
 LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
-clearance and the consecutive outside-confirmation progress. The existing wall
+clearance, outside-confirmation progress, the worst shaft point and inward
+direction, plus selected-route tangents 5/10/20 mm ahead. The existing wall
 proximity and penetration reward components take the maximum of tip and
 whole-body risk, so unsafe shaft contact is visible before the terminal
-whole-body SDF check fires. Checkpoints trained with the former 60-dimensional
+whole-body SDF check fires. Checkpoints trained with the former 62-dimensional
 observation are intentionally incompatible and must not be resumed.
 
 ## Checkpoint and resume

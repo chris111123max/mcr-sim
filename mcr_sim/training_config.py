@@ -25,6 +25,13 @@ TARGET_THRESHOLD_M = 0.003
 MAX_EPISODE_STEPS = 4096
 RADIUS_OBSERVATION_SCALE_M = 0.005
 ACTOR_HISTORY_STEPS = 4
+VESSEL_SECTION_FEATURE_DIM = 30
+ACTOR_STATIC_ROUTE_FEATURE_DIM = 20
+ACTOR_CURRENT_GEOMETRY_DIM = ACTOR_STATIC_ROUTE_FEATURE_DIM + VESSEL_SECTION_FEATURE_DIM
+ACTOR_DYNAMIC_STEP_DIM = 7
+ACTOR_OBSERVATION_DIM = (
+    ACTOR_CURRENT_GEOMETRY_DIM + ACTOR_HISTORY_STEPS * ACTOR_DYNAMIC_STEP_DIM
+)
 
 WAYPOINT_SPACING_M = 0.005
 WAYPOINT_REACH_THRESHOLD_M = 0.002
@@ -52,6 +59,7 @@ SDF_BODY_WARNING_MARGIN_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
 SDF_SAMPLE_STEP_FRACTION = 0.5
 SDF_FORWARD_PROBE_DISTANCES_M = (0.001, 0.002, 0.004)
+CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.005, 0.010, 0.020)
 TIP_NEAR_WALL_GRACE_STEPS = 5
 TIP_NEAR_WALL_RAMP_STEPS = 20
 
@@ -225,6 +233,97 @@ TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.20, 0.20, 0.20)
 TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 5
 TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 200
 TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
+# Domain randomization stays enabled throughout training, but early stages use
+# a smaller fraction of the final range.  This prevents endpoint/orientation/
+# scale perturbations from dominating before the policy can navigate B01/B02.
+TRAINING_CURRICULUM_DR_FRACTIONS = (0.30, 0.60, 1.00, 1.00)
+# Preserve a uniform component so adaptive sampling can never starve an easy
+# vessel; the remaining mass is proportional to squared failure probability.
+TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX = 0.20
+TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
+# Exploration is high while the first stages are being learned and anneals as
+# the vessel pool expands.  These floors are applied to PPO, RecurrentPPO and
+# SAC by the common experiment callback.
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.35, 0.30, 0.25, 0.20)
+SAC_ENT_COEF_FLOOR_BY_STAGE = (0.05, 0.04, 0.03, 0.02)
+
+
+def curriculum_domain_randomization_profile(current_stage: int) -> dict:
+    """Return the stage-specific subset of the final DR envelope."""
+
+    stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_DR_FRACTIONS) - 1)
+    fraction = float(TRAINING_CURRICULUM_DR_FRACTIONS[stage])
+    return {
+        "fraction": fraction,
+        "vessel_scale_min": 1.0 - fraction * (1.0 - VESSEL_SCALE_MIN),
+        "vessel_scale_max": VESSEL_SCALE_MAX,
+        "start_window_distance_m": fraction * START_WINDOW_DISTANCE_M,
+        "target_window_distance_m": fraction * TARGET_WINDOW_DISTANCE_M,
+        "initial_orientation_max_angle_deg": (
+            fraction * INITIAL_ORIENTATION_MAX_ANGLE_DEG
+        ),
+    }
+
+
+def curriculum_sampling_weights(
+    active_models,
+    per_model_success_rates=None,
+    uniform_mix: float = TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX,
+    difficulty_power: float = TRAINING_CURRICULUM_DIFFICULTY_POWER,
+) -> dict:
+    """Blend uniform sampling with failure-rate-weighted hard-vessel sampling."""
+
+    models = tuple(str(model_id) for model_id in active_models)
+    if not models:
+        return {}
+    rates = per_model_success_rates or {}
+    difficulties = []
+    for model_id in models:
+        rate = rates.get(model_id)
+        if rate is None or not math.isfinite(float(rate)):
+            rate = 0.0
+        rate = min(max(float(rate), 0.0), 1.0)
+        difficulties.append(max(1.0 - rate, 0.05) ** float(difficulty_power))
+    difficulty_total = sum(difficulties)
+    uniform_probability = 1.0 / len(models)
+    mix = min(max(float(uniform_mix), 0.0), 1.0)
+    return {
+        model_id: (
+            mix * uniform_probability
+            + (1.0 - mix) * difficulty / difficulty_total
+        )
+        for model_id, difficulty in zip(models, difficulties)
+    }
+
+
+def curriculum_exploration_profile(current_stage: int) -> dict:
+    """Return shared algorithm-specific exploration floors for one stage."""
+
+    ppo_stage = min(max(int(current_stage), 0), len(PPO_ACTION_STD_FLOOR_BY_STAGE) - 1)
+    sac_stage = min(max(int(current_stage), 0), len(SAC_ENT_COEF_FLOOR_BY_STAGE) - 1)
+    return {
+        "ppo_min_action_std": float(PPO_ACTION_STD_FLOOR_BY_STAGE[ppo_stage]),
+        "sac_min_ent_coef": float(SAC_ENT_COEF_FLOOR_BY_STAGE[sac_stage]),
+    }
+
+
+def curriculum_protocol_profile() -> dict:
+    """Return the shared curriculum/observation protocol for run metadata."""
+
+    return {
+        "models_by_stage": [list(models) for models in TRAINING_CURRICULUM_MODELS],
+        "success_thresholds": list(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS),
+        "consecutive_epochs": TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS,
+        "rolling_episodes_per_vessel": TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
+        "minimum_episodes_per_vessel": TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
+        "domain_randomization_fractions": list(TRAINING_CURRICULUM_DR_FRACTIONS),
+        "uniform_sampling_mix": TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX,
+        "difficulty_power": TRAINING_CURRICULUM_DIFFICULTY_POWER,
+        "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
+        "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
+        "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
+        "observation_dim": ACTOR_OBSERVATION_DIM,
+    }
 
 
 def update_curriculum_progress(
@@ -327,7 +426,7 @@ SAC_LEARNING_STARTS = 50_000
 SAC_TRAIN_FREQ = 1
 SAC_GRADIENT_STEPS = 4
 SAC_TAU = 0.005
-SAC_GAMMA = 0.995
+SAC_GAMMA = 0.999
 
 # PPO baseline defaults.  ``n_steps`` is per environment; batch size is global
 # and is divided evenly between synchronized ranks, just like SAC.
@@ -335,16 +434,16 @@ PPO_EPOCHS = NUM_EPOCHS
 PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
 PPO_N_ENVS = SAC_N_ENVS
 PPO_LEARNING_RATE = 3e-4
-PPO_N_STEPS = 512
+PPO_N_STEPS = 1024
 PPO_BATCH_SIZE = 512
 PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
-PPO_GAE_LAMBDA = 0.95
+PPO_GAE_LAMBDA = 0.98
 PPO_CLIP_RANGE = 0.2
 PPO_ENT_COEF = 0.001
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
-PPO_MIN_ACTION_STD = 0.25
+PPO_MIN_ACTION_STD = 0.20
 PPO_MAX_ACTION_STD = 1.0
 
 
@@ -414,6 +513,20 @@ def validate_training_defaults() -> None:
         raise ValueError("SAC_MIN_ENT_COEF must be positive.")
     if len(TRAINING_CURRICULUM_MODELS) != len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS) + 1:
         raise ValueError("Curriculum stages and thresholds are inconsistent.")
+    if len(TRAINING_CURRICULUM_DR_FRACTIONS) != len(TRAINING_CURRICULUM_MODELS):
+        raise ValueError("Curriculum DR stages are inconsistent.")
+    if any(not (0.0 < fraction <= 1.0) for fraction in TRAINING_CURRICULUM_DR_FRACTIONS):
+        raise ValueError("Curriculum DR fractions must be in (0, 1].")
+    if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
+        raise ValueError("Curriculum uniform sampling mix must be in [0, 1].")
+    if TRAINING_CURRICULUM_DIFFICULTY_POWER <= 0.0:
+        raise ValueError("Curriculum difficulty power must be positive.")
+    if not (
+        len(PPO_ACTION_STD_FLOOR_BY_STAGE)
+        == len(SAC_ENT_COEF_FLOOR_BY_STAGE)
+        == len(TRAINING_CURRICULUM_MODELS)
+    ):
+        raise ValueError("Curriculum exploration schedules are inconsistent.")
     if TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS < 1:
         raise ValueError("Curriculum consecutive epoch count must be positive.")
     if TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL < 1:
@@ -431,6 +544,13 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum success thresholds must be in (0, 1].")
     if not (0.0 < PPO_MIN_ACTION_STD <= PPO_MAX_ACTION_STD):
         raise ValueError("Invalid PPO action standard-deviation bounds.")
+    if any(
+        not (PPO_MIN_ACTION_STD <= floor <= PPO_MAX_ACTION_STD)
+        for floor in PPO_ACTION_STD_FLOOR_BY_STAGE
+    ):
+        raise ValueError("Invalid PPO curriculum exploration floor.")
+    if any(floor < SAC_MIN_ENT_COEF for floor in SAC_ENT_COEF_FLOOR_BY_STAGE):
+        raise ValueError("Invalid SAC curriculum entropy floor.")
     if not (SDF_NEAR_WALL_MARGIN_M > 0.0 and SDF_CLEARANCE_OBSERVATION_SCALE_M > 0.0):
         raise ValueError("SDF clearance scales must be positive.")
     if SDF_OUTSIDE_CENTER_TOLERANCE_M < 0.0 or SDF_OUTSIDE_CONFIRM_STEPS < 1:
@@ -446,6 +566,13 @@ def validate_training_defaults() -> None:
         != tuple(SDF_FORWARD_PROBE_DISTANCES_M)
     ):
         raise ValueError("SDF forward probe distances must be positive and ordered.")
+    if (
+        len(CENTERLINE_LOOKAHEAD_DISTANCES_M) != 3
+        or any(distance <= 0.0 for distance in CENTERLINE_LOOKAHEAD_DISTANCES_M)
+        or tuple(sorted(CENTERLINE_LOOKAHEAD_DISTANCES_M))
+        != tuple(CENTERLINE_LOOKAHEAD_DISTANCES_M)
+    ):
+        raise ValueError("Three ordered positive centerline lookahead distances are required.")
     if TIP_NEAR_WALL_GRACE_STEPS < 0 or TIP_NEAR_WALL_RAMP_STEPS < 1:
         raise ValueError("Invalid tip near-wall persistence settings.")
     if WRONG_BRANCH_DISTANCE_MARGIN_M <= 0.0 or WRONG_BRANCH_CONFIRM_STEPS < 1:

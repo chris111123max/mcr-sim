@@ -93,6 +93,7 @@ from mcr_sim.training_config import (
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
     TRAINING_CURRICULUM_ENABLED,
+    curriculum_protocol_profile,
     reward_profile,
 )
 
@@ -1579,6 +1580,7 @@ def main():
         args.npu_fused_adam_enabled = fused_adam_enabled
         args.npu_replay_buffer_fallbacks = replay_fallbacks
         args.reward_profile = reward_profile()
+        args.curriculum_protocol = curriculum_protocol_profile()
         args.sac_max_grad_norm = float(SAC_MAX_GRAD_NORM)
         args.sac_min_ent_coef = float(args.min_ent_coef)
         model.max_grad_norm = float(SAC_MAX_GRAD_NORM)

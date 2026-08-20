@@ -41,6 +41,7 @@ from mcr_sim.training_config import (
     VALID_EPISODES_PER_VESSEL,
     VALID_INTERVAL,
     VALID_VESSELS,
+    curriculum_protocol_profile,
     reward_profile,
 )
 
@@ -174,6 +175,7 @@ def main():
     args.stable_baselines3_version = sb3_version
     args.sb3_contrib_version = sb3_contrib_version
     args.reward_profile = reward_profile()
+    args.curriculum_protocol = curriculum_protocol_profile()
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(
         enabled=args.distributed,

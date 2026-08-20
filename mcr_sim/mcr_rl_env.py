@@ -14,7 +14,10 @@ from .rl_core.base import SofaEnv, RenderMode, RenderFramework
 from .vessel_assets import load_signed_distance_grid, load_vessel_metadata
 from .training_config import (
     ACTOR_HISTORY_STEPS,
+    ACTOR_CURRENT_GEOMETRY_DIM,
+    ACTOR_DYNAMIC_STEP_DIM,
     CATHETER_RADIUS_M,
+    CENTERLINE_LOOKAHEAD_DISTANCES_M,
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
@@ -69,7 +72,11 @@ from .training_config import (
     WRONG_BRANCH_DISTANCE_MARGIN_M,
     WRONG_BRANCH_OBSERVATION_SCALE_M,
     TRAINING_CURRICULUM_ENABLED,
+    TRAINING_CURRICULUM_DR_FRACTIONS,
     TRAINING_CURRICULUM_MODELS,
+    VESSEL_SCALE_MAX,
+    VESSEL_SCALE_MIN,
+    VESSEL_SECTION_FEATURE_DIM,
     body_sdf_risk_features,
     ordered_route_potential,
 )
@@ -132,6 +139,53 @@ class MCREnv(SofaEnv):
         if not isinstance(create_scene_kwargs, dict):
             create_scene_kwargs = {}
         create_scene_kwargs["image_shape"] = image_shape
+        # Keep the user-requested DR envelope immutable, then expose only a
+        # stage-dependent fraction of it during curriculum training.  A forced
+        # vessel (validation/GUI) always uses the complete requested envelope.
+        self._curriculum_full_dr = {
+            "vessel_scale_min": float(create_scene_kwargs.get("vessel_scale_min", VESSEL_SCALE_MIN)),
+            "vessel_scale_max": float(create_scene_kwargs.get("vessel_scale_max", VESSEL_SCALE_MAX)),
+            "start_window_distance_m": float(
+                create_scene_kwargs.get("start_window_distance_m", START_WINDOW_DISTANCE_M)
+            ),
+            "target_window_distance_m": float(
+                create_scene_kwargs.get("target_window_distance_m", TARGET_WINDOW_DISTANCE_M)
+            ),
+            "initial_orientation_max_angle_deg": float(
+                create_scene_kwargs.get(
+                    "initial_orientation_max_angle_deg",
+                    INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+                )
+            ),
+        }
+        initial_curriculum_enabled = bool(
+            create_scene_kwargs.get(
+                "training_curriculum_enabled",
+                TRAINING_CURRICULUM_ENABLED,
+            )
+        )
+        initial_force_model = str(create_scene_kwargs.get("force_model", "") or "").strip()
+        initial_stage = min(
+            max(int(create_scene_kwargs.get("training_curriculum_stage", 0)), 0),
+            len(TRAINING_CURRICULUM_MODELS) - 1,
+        )
+        if initial_curriculum_enabled and not initial_force_model:
+            fraction = float(TRAINING_CURRICULUM_DR_FRACTIONS[initial_stage])
+            create_scene_kwargs["vessel_scale_min"] = 1.0 - fraction * (
+                1.0 - self._curriculum_full_dr["vessel_scale_min"]
+            )
+            create_scene_kwargs["vessel_scale_max"] = 1.0 - fraction * (
+                1.0 - self._curriculum_full_dr["vessel_scale_max"]
+            )
+            create_scene_kwargs["start_window_distance_m"] = fraction * self._curriculum_full_dr[
+                "start_window_distance_m"
+            ]
+            create_scene_kwargs["target_window_distance_m"] = fraction * self._curriculum_full_dr[
+                "target_window_distance_m"
+            ]
+            create_scene_kwargs["initial_orientation_max_angle_deg"] = fraction * self._curriculum_full_dr[
+                "initial_orientation_max_angle_deg"
+            ]
         self.scene_verbose = bool(create_scene_kwargs.get("verbose_scene", False))
         if reward_amount_dict is None:
             reward_amount_dict = {
@@ -231,6 +285,13 @@ class MCREnv(SofaEnv):
                 SDF_FORWARD_PROBE_DISTANCES_M,
             )
         )
+        self.centerline_lookahead_distances = tuple(
+            float(value)
+            for value in create_scene_kwargs.get(
+                "centerline_lookahead_distances",
+                CENTERLINE_LOOKAHEAD_DISTANCES_M,
+            )
+        )
         if not (0.0 < self.sdf_sample_step_fraction <= 1.0):
             raise ValueError("sdf_sample_step_fraction must be in (0, 1].")
         if (
@@ -239,6 +300,13 @@ class MCREnv(SofaEnv):
         ):
             raise ValueError(
                 "Exactly three positive sdf_forward_probe_distances are required."
+            )
+        if (
+            len(self.centerline_lookahead_distances) != 3
+            or any(value <= 0.0 for value in self.centerline_lookahead_distances)
+        ):
+            raise ValueError(
+                "Exactly three positive centerline_lookahead_distances are required."
             )
         self.tip_near_wall_grace_steps = max(
             0,
@@ -333,14 +401,14 @@ class MCREnv(SofaEnv):
             int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
         )
 
-        # Actor observation: 34-D current geometry + 4 * 7-D action-response
-        # history = 62-D.  The 14 vessel features combine selected-route
-        # geometry, tip SDF clearance/inward normal, whole-body clearance and
-        # outside-confirmation progress, three forward probes, and complete-
-        # graph branch deviation.  All algorithms receive this same state.
-        self.vessel_section_feature_dim = 14
-        self.actor_current_geometry_dim = 34
-        self.actor_dynamic_step_dim = 7
+        # Actor observation: 50-D current geometry + 4 * 7-D action-response
+        # history = 78-D.  The 30 vessel features retain the prior route/tip
+        # signals and add the worst shaft point (arc position, relative local
+        # position, local inward normal) plus future route tangents at 5/10/20
+        # mm.  PPO, RecurrentPPO and SAC receive this identical state.
+        self.vessel_section_feature_dim = VESSEL_SECTION_FEATURE_DIM
+        self.actor_current_geometry_dim = ACTOR_CURRENT_GEOMETRY_DIM
+        self.actor_dynamic_step_dim = ACTOR_DYNAMIC_STEP_DIM
         self.actor_history_steps = max(1, int(create_scene_kwargs.get("actor_history_steps", ACTOR_HISTORY_STEPS)))
         self.actor_dynamic_history_dim = self.actor_dynamic_step_dim * self.actor_history_steps
         self.actor_observation_dim = self.actor_current_geometry_dim + self.actor_dynamic_history_dim
@@ -363,6 +431,17 @@ class MCREnv(SofaEnv):
                 self.curriculum_stage if self.training_curriculum_enabled else -1
             ]
         )
+        uniform_probability = 1.0 / max(len(self.training_models), 1)
+        self.training_model_sampling_weights = {
+            model_id: uniform_probability for model_id in self.training_models
+        }
+        if self.training_curriculum_enabled and not initial_force_model:
+            self._apply_curriculum_domain_randomization(self.curriculum_stage)
+        else:
+            self.curriculum_dr_profile = {
+                "fraction": 1.0,
+                **self._curriculum_full_dr,
+            }
 
         if self.observation_type == ObservationType.STATE:
             self.observation_space = spaces.Box(
@@ -445,6 +524,8 @@ class MCREnv(SofaEnv):
         self.current_sdf_inserted_length = 0.0
         self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
         self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_worst_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_worst_arc_fraction = 0.0
         self.current_sdf_forward_clearances = np.full(
             len(self.sdf_forward_probe_distances),
             np.nan,
@@ -655,7 +736,7 @@ class MCREnv(SofaEnv):
     # Reset / sampling
     # ------------------------------------------------------------------
     def _sample_next_training_model(self, seed: Union[int, np.random.SeedSequence, None] = None) -> None:
-        """Uniformly sample one training vessel unless a fixed vessel is requested."""
+        """Sample from the active curriculum pool unless a vessel is forced."""
         if self._explicit_force_model:
             self.create_scene_kwargs["force_model"] = self._explicit_force_model
             self.current_sampling_model = self._explicit_force_model
@@ -665,9 +746,60 @@ class MCREnv(SofaEnv):
         if seed_value is not None:
             self._sampler_rng = np.random.default_rng(seed_value)
 
-        chosen = str(self._sampler_rng.choice(list(self.training_models)))
+        models = list(self.training_models)
+        probabilities = np.asarray(
+            [self.training_model_sampling_weights.get(model_id, 0.0) for model_id in models],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(probabilities)) or float(np.sum(probabilities)) <= 0.0:
+            probabilities = np.full(len(models), 1.0 / len(models), dtype=np.float64)
+        else:
+            probabilities = probabilities / float(np.sum(probabilities))
+        chosen = str(self._sampler_rng.choice(models, p=probabilities))
         self.create_scene_kwargs["force_model"] = chosen
         self.current_sampling_model = chosen
+
+    def _apply_curriculum_domain_randomization(self, stage: int) -> dict:
+        """Apply the stage fraction to the original user-requested DR range."""
+
+        stage = min(max(int(stage), 0), len(TRAINING_CURRICULUM_DR_FRACTIONS) - 1)
+        fraction = float(TRAINING_CURRICULUM_DR_FRACTIONS[stage])
+        full = self._curriculum_full_dr
+        profile = {
+            "fraction": fraction,
+            "vessel_scale_min": 1.0 - fraction * (1.0 - full["vessel_scale_min"]),
+            "vessel_scale_max": 1.0 - fraction * (1.0 - full["vessel_scale_max"]),
+            "start_window_distance_m": fraction * full["start_window_distance_m"],
+            "target_window_distance_m": fraction * full["target_window_distance_m"],
+            "initial_orientation_max_angle_deg": fraction * full[
+                "initial_orientation_max_angle_deg"
+            ],
+        }
+        self.create_scene_kwargs.update(
+            {key: value for key, value in profile.items() if key != "fraction"}
+        )
+        self.curriculum_dr_profile = profile
+        return dict(profile)
+
+    def get_curriculum_domain_randomization_profile(self) -> dict:
+        return dict(getattr(self, "curriculum_dr_profile", {}))
+
+    def set_training_model_sampling_weights(self, weights: dict) -> dict:
+        """Set normalized probabilities for the current vessel pool."""
+
+        models = list(self.training_models)
+        values = np.asarray(
+            [max(float((weights or {}).get(model_id, 0.0)), 0.0) for model_id in models],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(values)) or float(np.sum(values)) <= 0.0:
+            values = np.ones(len(models), dtype=np.float64)
+        values = values / float(np.sum(values))
+        self.training_model_sampling_weights = {
+            model_id: float(probability)
+            for model_id, probability in zip(models, values)
+        }
+        return dict(self.training_model_sampling_weights)
 
     def set_curriculum_stage(self, stage: int) -> int:
         """Set the latched training geometry stage for future episode resets."""
@@ -677,6 +809,8 @@ class MCREnv(SofaEnv):
         stage = min(max(int(stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
         self.curriculum_stage = stage
         self.training_models = list(TRAINING_CURRICULUM_MODELS[stage])
+        self._apply_curriculum_domain_randomization(stage)
+        self.set_training_model_sampling_weights({})
         return int(self.curriculum_stage)
 
     def _capture_soft_reset_reference_pose(self) -> None:
@@ -932,6 +1066,8 @@ class MCREnv(SofaEnv):
         self.current_sdf_inserted_length = 0.0
         self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
         self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_worst_inward_world = np.zeros(3, dtype=np.float64)
+        self.current_sdf_worst_arc_fraction = 0.0
         self.current_sdf_forward_clearances = np.full(
             len(self.sdf_forward_probe_distances),
             np.nan,
@@ -1506,6 +1642,12 @@ class MCREnv(SofaEnv):
             "task_id": str(getattr(self, "task_id", "unknown")),
             "chosen_model": chosen_model,
             "sampling_model": str(getattr(self, "current_sampling_model", chosen_model)),
+            "sampling_probability": float(
+                getattr(self, "training_model_sampling_weights", {}).get(
+                    str(getattr(self, "current_sampling_model", chosen_model)),
+                    1.0,
+                )
+            ),
             "vessel_family": str(getattr(self, "asset_model_family", "unknown")),
             "vessel_difficulty": str(getattr(self, "asset_difficulty", "unknown")),
             "collision_triangle_count": int(
@@ -1537,6 +1679,9 @@ class MCREnv(SofaEnv):
             "route_potential": float(self.current_route_potential),
             "route_potential_delta": float(self.current_route_potential_delta),
             "curriculum_stage": int(self.curriculum_stage),
+            "curriculum_dr_fraction": float(
+                getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0)
+            ),
             "waypoint_reached_this_step": bool(self.current_waypoint_reached_this_step),
             "waypoint_reached_count_episode": int(self.current_waypoint_reached_count_episode),
             "waypoint_handoff_counter": int(
@@ -1623,8 +1768,13 @@ class MCREnv(SofaEnv):
                 self.current_sdf_worst_point_sim,
                 dtype=np.float64,
             ).reshape(3).tolist(),
+            "sdf_worst_arc_fraction": float(self.current_sdf_worst_arc_fraction),
             "sdf_inward_world": np.asarray(
                 self.current_sdf_inward_world,
+                dtype=np.float64,
+            ).reshape(3).tolist(),
+            "sdf_worst_inward_world": np.asarray(
+                self.current_sdf_worst_inward_world,
                 dtype=np.float64,
             ).reshape(3).tolist(),
             "sdf_forward_probe_distances": list(
@@ -2040,6 +2190,8 @@ class MCREnv(SofaEnv):
             self.current_sdf_inserted_length = 0.0
             self.current_sdf_worst_point_sim = np.zeros(3, dtype=np.float64)
             self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+            self.current_sdf_worst_inward_world = np.zeros(3, dtype=np.float64)
+            self.current_sdf_worst_arc_fraction = 0.0
             self._sdf_geometry_cache_step = int(
                 getattr(self, "_elapsed_steps", -1)
             )
@@ -2094,25 +2246,37 @@ class MCREnv(SofaEnv):
             sample_points[worst_index],
             dtype=np.float64,
         ).reshape(3)
-
-        # SDF increases from lumen interior toward the outside.  The tip-local
-        # negative gradient tells the policy how to steer the tip back inward.
-        # Whole-body risk is scalar because a single tip-local direction would
-        # not correctly represent arbitrary shaft contact locations.
-        tip_gradient_source = np.asarray(
-            grid.gradient(tip_source),
-            dtype=np.float64,
-        ).reshape(1, 3)
-        tip_gradient_sim = self._asset_vectors_to_sim(
-            tip_gradient_source
-        )[0]
-        gradient_norm = float(np.linalg.norm(tip_gradient_sim))
-        if np.isfinite(gradient_norm) and gradient_norm > 1e-9:
-            self.current_sdf_inward_world = (
-                -tip_gradient_sim / gradient_norm
-            ).astype(np.float64)
+        if len(sample_points) > 1:
+            sample_arclength = np.concatenate(
+                ([0.0], np.cumsum(np.linalg.norm(np.diff(sample_points, axis=0), axis=1)))
+            )
+            total_sample_arclength = float(sample_arclength[-1])
+            self.current_sdf_worst_arc_fraction = (
+                float(sample_arclength[worst_index]) / total_sample_arclength
+                if total_sample_arclength > 1e-9
+                else 0.0
+            )
         else:
-            self.current_sdf_inward_world = np.zeros(3, dtype=np.float64)
+            self.current_sdf_worst_arc_fraction = 0.0
+
+        # SDF increases from lumen interior toward the outside.  Return both
+        # tip and worst-shaft inward directions; the latter is paired with its
+        # shaft location in the observation, so its spatial meaning is explicit.
+        worst_source = source_points[worst_index : worst_index + 1]
+        gradients_source = np.asarray(
+            grid.gradient(np.vstack([tip_source, worst_source])),
+            dtype=np.float64,
+        ).reshape(2, 3)
+        gradients_sim = self._asset_vectors_to_sim(gradients_source)
+        inward_vectors = []
+        for gradient_sim in gradients_sim:
+            gradient_norm = float(np.linalg.norm(gradient_sim))
+            if np.isfinite(gradient_norm) and gradient_norm > 1e-9:
+                inward_vectors.append((-gradient_sim / gradient_norm).astype(np.float64))
+            else:
+                inward_vectors.append(np.zeros(3, dtype=np.float64))
+        self.current_sdf_inward_world = inward_vectors[0]
+        self.current_sdf_worst_inward_world = inward_vectors[1]
 
         self._sdf_geometry_cache_step = int(
             getattr(self, "_elapsed_steps", -1)
@@ -2339,6 +2503,20 @@ class MCREnv(SofaEnv):
                 inward_local = inward_local / inward_norm
             else:
                 inward_local = np.zeros(3, dtype=np.float32)
+            worst_position_local = self._world_vec_to_local(
+                np.asarray(self.current_sdf_worst_point_sim, dtype=np.float32)
+                - np.asarray(tip_pos, dtype=np.float32),
+                tip_frame,
+            ) / max(float(self.current_sdf_inserted_length), 0.001)
+            worst_inward_local = self._world_vec_to_local(
+                self.current_sdf_worst_inward_world,
+                tip_frame,
+            )
+            worst_inward_norm = float(np.linalg.norm(worst_inward_local))
+            if np.isfinite(worst_inward_norm) and worst_inward_norm > 1e-9:
+                worst_inward_local = worst_inward_local / worst_inward_norm
+            else:
+                worst_inward_local = np.zeros(3, dtype=np.float32)
             forward_probe_features = self._get_sdf_forward_probe_features(
                 tip_pos=tip_pos,
                 tip_forward_world=tip_forward_world,
@@ -2351,10 +2529,13 @@ class MCREnv(SofaEnv):
             body_clearance_feature = clearance_feature
             outside_counter_feature = 0.0
             inward_local = np.zeros(3, dtype=np.float32)
+            worst_position_local = np.zeros(3, dtype=np.float32)
+            worst_inward_local = np.zeros(3, dtype=np.float32)
             forward_probe_features = np.zeros(
                 len(self.sdf_forward_probe_distances),
                 dtype=np.float32,
             )
+        lookahead_tangents = self._get_centerline_lookahead_tangent_features(tip_frame)
         return np.array(
             [
                 np.clip(self.current_centerline_offset_N_over_radius, -3.0, 3.0),
@@ -2364,12 +2545,43 @@ class MCREnv(SofaEnv):
                 body_clearance_feature,
                 outside_counter_feature,
                 *np.clip(inward_local, -1.0, 1.0).tolist(),
+                np.clip(self.current_sdf_worst_arc_fraction, 0.0, 1.0),
+                *np.clip(worst_position_local, -1.0, 1.0).tolist(),
+                *np.clip(worst_inward_local, -1.0, 1.0).tolist(),
                 *np.clip(forward_probe_features, -2.0, 2.0).tolist(),
+                *np.clip(lookahead_tangents, -1.0, 1.0).tolist(),
                 np.clip(self.current_off_target_branch_feature, 0.0, 1.0),
                 contact_feature,
             ],
             dtype=np.float32,
         )
+
+    def _get_centerline_lookahead_tangent_features(self, tip_frame: np.ndarray) -> np.ndarray:
+        """Encode selected-route tangents ahead of the current projection."""
+
+        progress = float(getattr(self, "current_centerline_progress", np.nan))
+        cumulative = getattr(self, "centerline_cumlength", None)
+        if not np.isfinite(progress) or cumulative is None or len(cumulative) < 2:
+            return np.zeros(3 * len(self.centerline_lookahead_distances), dtype=np.float32)
+        route_end = float(np.asarray(cumulative, dtype=np.float64).reshape(-1)[-1])
+        tangent_features = []
+        half_window = 0.0005
+        for distance in self.centerline_lookahead_distances:
+            query = min(progress + float(distance), route_end)
+            before = self._interpolate_centerline_point_at_progress(max(query - half_window, 0.0))
+            after = self._interpolate_centerline_point_at_progress(min(query + half_window, route_end))
+            tangent_world = np.asarray(after - before, dtype=np.float32)
+            tangent_norm = float(np.linalg.norm(tangent_world))
+            if not np.isfinite(tangent_norm) or tangent_norm <= 1e-9:
+                tangent_world = np.asarray(self.current_centerline_tangent, dtype=np.float32)
+                tangent_norm = float(np.linalg.norm(tangent_world))
+            if np.isfinite(tangent_norm) and tangent_norm > 1e-9:
+                tangent_world = tangent_world / tangent_norm
+                tangent_local = self._world_vec_to_local(tangent_world, tip_frame)
+            else:
+                tangent_local = np.zeros(3, dtype=np.float32)
+            tangent_features.extend(tangent_local.tolist())
+        return np.asarray(tangent_features, dtype=np.float32)
 
     def _get_distance_tip_to_dest(self):
         tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3], dtype=np.float32)
