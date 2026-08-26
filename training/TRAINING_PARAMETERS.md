@@ -99,18 +99,19 @@ tip 指向内腔的 3 维方向、尖端前方 1/2/4 mm 的净空探针、最危
 
 ## SAC 与 epoch 语义
 
-一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 100 epoch，即 10000 个回合。
+一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 200 epoch，即 20000 个回合。
 不同算法即使 epoch 数相同，回合长度也可能不同，因此总 transition 数并不相同；比较
 MLP-PPO、LSTM-PPO 与其他策略的样本效率时，应以 `global_env_steps` 对齐或至少同时报告，
 不能只比较 epoch。
-训练默认启用六阶段任务课程：`B01/B02@40% 路线 → B01/B02@70% → B01/B02@完整路线
-→ 全部B → 全部B+C01/C02 → 全部B/C`。每根血管保存最近 200 个 episode 的滚动结果；
-当前阶段每一根 active vessel 都积累完整 200 个样本、成功率达到 45%，并连续维持 3 个
+训练默认启用九阶段任务课程，所有阶段都使用 B01..B05、C01..C05：目标路线先按
+`40% → 55% → 70% → 85% → 100%`延长，在固定完整任务学会后，域随机化再按
+`0% → 10% → 30% → 60% → 100%`逐步加入。每根血管保存最近 100 个 episode 的滚动结果；
+当前阶段每一根训练血管都积累完整 100 个样本、成功率达到 50%，并连续维持 3 个
 全局 epoch 才会升级。缺少样本或任一血管未达标都会清零连续计数。阶段升级时旧阶段
 窗口会清空，短目标成功不能用于证明下一阶段已经掌握。阶段、连续计数、滚动
 结果和逐血管成功率都保存在 checkpoint，
 只前进不回退；强制单血管和 V01..V05 validation 不受影响。
-域随机化强度按阶段使用最终范围的 `0%/10%/30%/60%/80%/100%`。当前池内采样由
+前五个目标长度阶段域随机化均为 0%。当前池内采样由
 50% 均匀分布和 50% 平方失败率权重混合，且单根血管概率不超过均匀概率的 2 倍，
 困难血管获得更多回合，但不会造成对其他血管的灾难性遗忘。只有完整路线阶段的训练
 成功率达到 20% 才能解锁 V01–V05 validation。
@@ -127,12 +128,12 @@ replay buffer，避免每次更新重复搬运大批量 observation；不支持�
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| epoch / episodes per epoch | 100 / 100 | 正式训练预算与保存周期 |
+| epoch / episodes per epoch | 200 / 100 | 正式训练预算与保存周期 |
 | 全局环境数 | 64 | 四卡时每卡 16 个 SOFA 环境 |
-| 全局/local batch（四卡） | 2048 / 512 | 每卡独立采样，梯度同步后等效全局 2048 |
+| 全局/local batch（四卡） | 1024 / 256 | 每卡独立采样，梯度同步后等效全局 1024 |
 | replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
 | learning starts | 每卡 50000 | 先收集较多、多血管经验再更新 |
-| gradient steps | 4 | 64 环境下每轮执行 4 次同步更新；与全局 2048 batch 组合后保持 32 环境配置的训练强度 |
+| gradient steps | 1 | 每个 vector step 执行一次同步更新，降低 SAC critic 的 replay 过拟合风险 |
 | gamma / tau / lr | 0.995 / 0.005 / 3e-4 | 恢复已验证设置，避免初期失败终止项压倒稠密进度信号 |
 
 推荐四卡启动方式：
@@ -144,13 +145,13 @@ bash training/sh/run_train_sac.sh \
   --distributed \
   --world-size 4 \
   --n-envs 64 \
-  --batch-size 2048 \
-  --gradient-steps 4 \
-  --epochs 100 \
+  --batch-size 1024 \
+  --gradient-steps 1 \
+  --epochs 200 \
   --episodes-per-epoch 100 \
   --valid-min-train-success-rate 0.20 \
   --render headless \
-  --exp-name sac_base_dr090_100_64env
+  --exp-name sac_allvessel_targetdr_200ep
 ```
 
 `--nohup` 由启动脚本处理，不会传入 Python。它自动创建带时间戳的统一运行目录，
@@ -160,9 +161,8 @@ bash training/sh/run_train_sac.sh \
 `nohup`、`&` 或输出重定向。
 
 `logs/run_config.json` 不是固定模板，而是在每次运行时根据最终生效参数自动生成。
-正式默认运行会记录 `"epochs": 100`、`"episodes_per_epoch": 100` 和上限
-`"timesteps": 40960000`；命令行显式传入的值仍会覆盖默认值。已有 50 epoch
-模型仅需再训练 50 epoch 的续训任务属于一次性例外。
+正式默认运行会记录 `"epochs": 200`、`"episodes_per_epoch": 100` 和上限
+`"timesteps": 81920000`；命令行显式传入的值仍会覆盖默认值。
 
 旧的 `--timesteps` 仍可使用，并会切换到 transition-budget 模式，以兼容已有
 启动命令。第一次上服务器应先运行短 smoke test，例如
@@ -179,7 +179,7 @@ LSTM-PPO 使用官方 SB3-Contrib 2.4 的 `RecurrentPPO`、`MlpLstmPolicy`、
 |---|---:|---:|
 | policy | `MlpPolicy` | `MlpLstmPolicy` |
 | learning rate | 3e-4 | 3e-4 |
-| n_steps | 512 | 512 |
+| n_steps | 256 | 256 |
 | global/local batch（四卡） | 512 / 128 | 512 / 128 |
 | PPO n_epochs | 10 | 10 |
 | gamma / GAE lambda | 0.995 / 0.95 | 0.995 / 0.95 |
@@ -192,6 +192,6 @@ LSTM-PPO 使用官方 SB3-Contrib 2.4 的 `RecurrentPPO`、`MlpLstmPolicy`、
 训练时每个 rank 的 actor 与 critic state 分别为
 `(n_lstm_layers, envs_per_rank, hidden_size)`；正式四卡 64 环境配置下即
 `(1, 16, 128)`。rollout buffer 另外保存每一步的 actor/critic hidden 和 cell
-state，形状为 `(512, 1, 16, 128)`。minibatch 参数仍是每 rank 128 个真实
+state，形状为 `(256, 1, 16, 128)`。minibatch 参数仍是每 rank 128 个真实
 transition；官方 buffer 内部产生的 padding 只通过 mask 排除，不会静默改写
 `batch_size`。

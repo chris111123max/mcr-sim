@@ -747,7 +747,7 @@ def parse_args():
         default=SAC_EPOCHS,
         help=(
             "Number of training epochs. In the default episode mode, one epoch "
-            "contains --episodes-per-epoch completed episodes (formal default: 100 epochs)."
+            "contains --episodes-per-epoch completed episodes (formal default: 200 epochs)."
         ),
     )
     parser.add_argument(
@@ -1005,8 +1005,8 @@ def parse_args():
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Advance the six-stage route/vessel curriculum after every active vessel has "
-            "at least 200 rolling samples and 45% success for three consecutive epochs."
+            "Advance the nine-stage all-vessel target/DR curriculum after every vessel has "
+            "at least 100 rolling samples and 50% success for three consecutive epochs."
         ),
     )
     curriculum.add_argument(
@@ -1610,7 +1610,7 @@ def main():
             if args.force_model:
                 model_label = args.force_model
             elif args.training_curriculum:
-                model_label = "curriculum_stage0(B01,B02)"
+                model_label = "curriculum_stage0(all_train_vessels@40pct_fixed)"
             else:
                 model_label = "uniform(B01-B05,C01-C05)"
             print(

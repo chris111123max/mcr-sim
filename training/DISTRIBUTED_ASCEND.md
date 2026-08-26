@@ -52,18 +52,20 @@ boundaries from entering the PPO loss.
 - `--batch-size`: global SAC/PPO optimizer minibatch; it must divide by world
   size and is not changed to accommodate recurrent padding.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
-  default is 4. `-1` follows SB3's rank-local collected-transition count and is
+  default is 1. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
-- `--training-curriculum` (default): learn B01/B02 targets at 40%, 70%, and
-  100% route length before expanding to all B, all B plus C01/C02, and all B/C.
-  Each vessel keeps a 200-episode rolling success window. Promotion is eligible
-  only after every active vessel has 200 samples and at least 45% rolling
+- `--training-curriculum` (default): use all B01..B05/C01..C05 vessels in every
+  stage. Learn fixed-geometry targets at 40%, 55%, 70%, 85%, and 100% route
+  length, then retain the full route while DR increases through 10%, 30%, 60%,
+  and 100%. Each vessel keeps a 100-episode rolling success window. Promotion is
+  eligible only after every vessel has 100 samples and at least 50% rolling
   success for three consecutive global epochs. A missing,
   under-sampled, or under-threshold vessel resets the streak, so easier vessels
   cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
   the stage, and the streak are synchronized, logged, and saved with the
   checkpoint. Forced vessels and validation bypass it.
-  DR uses 0%, 10%, 30%, 60%, 80%, and 100% of the requested final range.
+  DR remains 0% throughout target-distance learning and starts only after the
+  complete fixed route has been learned.
   Sampling mixes 50% uniform probability with 50% squared failure-rate weight
   and caps one vessel at twice its uniform probability. Stage transitions clear
   old outcome windows. Validation remains locked until a full-route stage.
@@ -77,7 +79,7 @@ boundaries from entering the PPO loss.
   native ND matrix format through APIs provided by the installed torch_npu.
   Missing version-specific APIs are recorded and safely skipped.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
-  The formal default is 100 x 100 = 10,000 completed episodes. All ranks
+  The formal default is 200 x 100 = 20,000 completed episodes. All ranks
   participate in this global count, and rank 0 saves one checkpoint per epoch.
   Equal epoch counts do not imply equal transition counts across PPO and
   LSTM-PPO because their episode lengths can differ; use the logged
@@ -104,8 +106,8 @@ Every run directory contains three persistent output groups:
 
 `logs/run_config.json` is generated from the final effective arguments for each
 run; it is not a hand-maintained template. A formal default run records
-`epochs=100`, `episodes_per_epoch=100`, and the corresponding upper-bound
-`timesteps=40960000`. Explicit CLI values still override these defaults.
+`epochs=200`, `episodes_per_epoch=100`, and the corresponding upper-bound
+`timesteps=81920000`. Explicit CLI values still override these defaults.
 
 The console capture is performed by the training process itself. The launchers'
 managed `--nohup` mode additionally writes outer torchrun, HCCL, and native
@@ -120,13 +122,15 @@ environment step. SAC loss metrics are reduced every 64 train blocks. Each
 rank also writes a `[PERF]` window every 64 vector steps with update time,
 collective time/call count, and remaining rollout/IPC/callback time.
 
-For the quality-oriented four-NPU default, `--n-envs 64 --batch-size 2048
---gradient-steps 4` means 16 SOFA environments and a 512-transition minibatch
-on every rank. Gradient averaging makes the effective global minibatch 2048.
-Each rollout collects 64 new transitions and processes `4 x 2048 = 8192` replay
-samples. Compared with the 32-environment, 2048-batch, two-update setting, this
-preserves both replay samples and optimizer updates per newly collected sample.
-Learning rate and tau remain unchanged; gamma is restored to the stable 0.995.
+For the quality-oriented four-NPU SAC default, `--n-envs 64 --batch-size 1024
+--gradient-steps 1` means 16 SOFA environments and a 256-transition minibatch
+on every rank. Gradient averaging makes the effective global minibatch 1024.
+Each vector step collects 64 new transitions and processes 1024 replay samples,
+reducing the replay-sample/new-transition ratio from 128 to 16. Learning rate
+and tau remain unchanged; gamma stays at the stable 0.995. PPO and recurrent
+PPO use `n_steps=256`, so a global policy update begins after 16,384 fresh
+transitions rather than 65,536 while preserving the same optimizer work per
+65,536 environment steps.
 
 ## Launch
 
@@ -139,16 +143,16 @@ The normal launcher inserts `torchrun` automatically:
   --distributed \
   --world-size 4 \
   --n-envs 64 \
-  --batch-size 2048 \
-  --gradient-steps 4 \
-  --epochs 100 \
+  --batch-size 1024 \
+  --gradient-steps 1 \
+  --epochs 200 \
   --episodes-per-epoch 100 \
   --valid-min-train-success-rate 0.20 \
   --target-threshold 0.003 \
   --time-step 0.01 \
   --frame-skip 1 \
   --render headless \
-  --exp-name test_4x910b3
+  --exp-name sac_allvessel_targetdr_200ep
 ```
 
 Single-device CPU, CUDA, and NPU commands remain supported by omitting

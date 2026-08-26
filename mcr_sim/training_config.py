@@ -219,26 +219,40 @@ def ordered_route_potential(
     return min(max(travelled / route_length, 0.0), 1.0)
 
 
-# Training-only task curriculum.  The first three stages keep B01/B02 fixed
-# while extending the target from 40% to 70% to the complete route.  Only then
-# does the vessel pool expand.  Validation always uses the complete V01..V05
-# routes and is never simplified by this curriculum.
+# Training-only task curriculum.  Every stage uses the complete B/C training
+# pool so later stages never introduce unseen geometry.  The first five stages
+# extend a deterministic target to the complete route; only after that fixed
+# task is mastered is domain randomization introduced.  Validation always uses
+# the complete V01..V05 routes and is never simplified by this curriculum.
 TRAINING_CURRICULUM_ENABLED = True
-TRAINING_CURRICULUM_MODELS = (
-    ("B01", "B02"),
-    ("B01", "B02"),
-    ("B01", "B02"),
-    ("B01", "B02", "B03", "B04", "B05"),
-    ("B01", "B02", "B03", "B04", "B05", "C01", "C02"),
-    ("B01", "B02", "B03", "B04", "B05", "C01", "C02", "C03", "C04", "C05"),
+TRAINING_CURRICULUM_ALL_MODELS = (
+    "B01", "B02", "B03", "B04", "B05",
+    "C01", "C02", "C03", "C04", "C05",
 )
-TRAINING_CURRICULUM_TARGET_FRACTIONS = (0.40, 0.70, 1.00, 1.00, 1.00, 1.00)
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.45, 0.45, 0.45, 0.45, 0.45)
+TRAINING_CURRICULUM_MODELS = (
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_ALL_MODELS,
+)
+TRAINING_CURRICULUM_TARGET_FRACTIONS = (
+    0.40, 0.55, 0.70, 0.85, 1.00,
+    1.00, 1.00, 1.00, 1.00,
+)
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.50,) * 8
 TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
-TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 200
-TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 200
-# Randomization is introduced only after short-goal navigation is learned.
-TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 0.10, 0.30, 0.60, 0.80, 1.00)
+TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 100
+TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
+# The complete fixed route is learned before robustness perturbations begin.
+TRAINING_CURRICULUM_DR_FRACTIONS = (
+    0.00, 0.00, 0.00, 0.00, 0.00,
+    0.10, 0.30, 0.60, 1.00,
+)
 # Half the sampling distribution remains uniform.  The adaptive half focuses
 # on weak vessels but is capped so a single failure mode cannot erase skills
 # already acquired on the rest of the active pool.
@@ -247,8 +261,8 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 6
-SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 6
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 9
+SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 9
 
 
 def curriculum_domain_randomization_profile(current_stage: int) -> dict:
@@ -434,7 +448,7 @@ CONSTRAINT_MAX_ITERATIONS = 20000
 
 # Shared formal experiment protocol.  Training episode counts are global
 # across every distributed rank, not per-rank budgets.
-NUM_EPOCHS = 100
+NUM_EPOCHS = 200
 TRAIN_EPISODES_PER_EPOCH = 100
 CHECKPOINT_INTERVAL = 1
 VALID_INTERVAL = 2
@@ -454,11 +468,11 @@ SAC_STEPS_PER_EPOCH = MAX_EPISODE_STEPS * SAC_EPISODES_PER_EPOCH
 SAC_TOTAL_TIMESTEPS = SAC_EPOCHS * SAC_STEPS_PER_EPOCH
 SAC_N_ENVS = 64
 SAC_LEARNING_RATE = 3e-4
-SAC_BATCH_SIZE = 2048
+SAC_BATCH_SIZE = 1024
 SAC_BUFFER_SIZE = 500_000
 SAC_LEARNING_STARTS = 50_000
 SAC_TRAIN_FREQ = 1
-SAC_GRADIENT_STEPS = 4
+SAC_GRADIENT_STEPS = 1
 SAC_TAU = 0.005
 SAC_GAMMA = 0.995
 
@@ -468,7 +482,7 @@ PPO_EPOCHS = NUM_EPOCHS
 PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
 PPO_N_ENVS = SAC_N_ENVS
 PPO_LEARNING_RATE = 3e-4
-PPO_N_STEPS = 512
+PPO_N_STEPS = 256
 PPO_BATCH_SIZE = 512
 PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
@@ -555,6 +569,25 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum target fractions must be in (0, 1].")
     if any(not (0.0 <= fraction <= 1.0) for fraction in TRAINING_CURRICULUM_DR_FRACTIONS):
         raise ValueError("Curriculum DR fractions must be in [0, 1].")
+    if any(
+        models != TRAINING_CURRICULUM_ALL_MODELS
+        for models in TRAINING_CURRICULUM_MODELS
+    ):
+        raise ValueError("Every curriculum stage must use the complete training vessel pool.")
+    if tuple(sorted(TRAINING_CURRICULUM_TARGET_FRACTIONS)) != TRAINING_CURRICULUM_TARGET_FRACTIONS:
+        raise ValueError("Curriculum target fractions must be non-decreasing.")
+    if TRAINING_CURRICULUM_TARGET_FRACTIONS[-1] != 1.0:
+        raise ValueError("The final curriculum stage must use the complete route.")
+    if any(
+        dr_fraction > 0.0 and target_fraction < 1.0
+        for target_fraction, dr_fraction in zip(
+            TRAINING_CURRICULUM_TARGET_FRACTIONS,
+            TRAINING_CURRICULUM_DR_FRACTIONS,
+        )
+    ):
+        raise ValueError("Domain randomization may start only on complete-route stages.")
+    if TRAINING_CURRICULUM_DR_FRACTIONS[-1] != 1.0:
+        raise ValueError("The final curriculum stage must use full domain randomization.")
     if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
         raise ValueError("Curriculum uniform sampling mix must be in [0, 1].")
     if TRAINING_CURRICULUM_DIFFICULTY_POWER <= 0.0:
