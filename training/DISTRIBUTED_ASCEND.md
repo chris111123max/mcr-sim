@@ -79,7 +79,7 @@ boundaries from entering the PPO loss.
   native ND matrix format through APIs provided by the installed torch_npu.
   Missing version-specific APIs are recorded and safely skipped.
 - `--epochs` and `--episodes-per-epoch`: the primary global episode budget.
-  The formal default is 200 x 100 = 20,000 completed episodes. All ranks
+  The formal default is 100 x 100 = 10,000 completed episodes. All ranks
   participate in this global count, and rank 0 saves one checkpoint per epoch.
   Equal epoch counts do not imply equal transition counts across PPO and
   LSTM-PPO because their episode lengths can differ; use the logged
@@ -106,8 +106,8 @@ Every run directory contains three persistent output groups:
 
 `logs/run_config.json` is generated from the final effective arguments for each
 run; it is not a hand-maintained template. A formal default run records
-`epochs=200`, `episodes_per_epoch=100`, and the corresponding upper-bound
-`timesteps=81920000`. Explicit CLI values still override these defaults.
+`epochs=100`, `episodes_per_epoch=100`, and the corresponding upper-bound
+`timesteps=40960000`. Explicit CLI values still override these defaults.
 
 The console capture is performed by the training process itself. The launchers'
 managed `--nohup` mode additionally writes outer torchrun, HCCL, and native

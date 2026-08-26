@@ -15,6 +15,7 @@ from mcr_sim.training_config import (
     REWARD_OUT_OF_VESSEL,
     REWARD_PROFILE_VERSION,
     PPO_ENT_COEF,
+    PPO_BATCH_SIZE,
     PPO_GAE_LAMBDA,
     PPO_N_STEPS,
     REWARD_PROGRESS_BUDGET,
@@ -175,11 +176,20 @@ class RewardProfileTest(unittest.TestCase):
     def test_stable_ppo_credit_assignment_defaults(self) -> None:
         self.assertEqual(SAC_GAMMA, 0.995)
         self.assertEqual(PPO_N_STEPS, 256)
+        self.assertEqual(PPO_BATCH_SIZE, 1024)
         self.assertEqual(PPO_GAE_LAMBDA, 0.95)
 
     def test_stable_sac_update_to_data_defaults(self) -> None:
         self.assertEqual(SAC_BATCH_SIZE, 1024)
         self.assertEqual(SAC_GRADIENT_STEPS, 1)
+
+    def test_insertion_step_and_episode_limit_preserve_motion_budget(self) -> None:
+        self.assertEqual(MAX_INSERTION_PER_ACTION_M, 0.0004)
+        self.assertEqual(MAX_EPISODE_STEPS, 2048)
+        self.assertAlmostEqual(
+            MAX_INSERTION_PER_ACTION_M * MAX_EPISODE_STEPS,
+            0.8192,
+        )
 
     def test_domain_randomization_expands_by_curriculum_stage(self) -> None:
         stage0 = curriculum_domain_randomization_profile(0)

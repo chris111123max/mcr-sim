@@ -62,9 +62,9 @@ class ControllerSofa(Sofa.Core.Controller):
         self.mag_controller.field_des = self.mag_field_init
         self.invalid_action = False
 
-        # At |action_insert|=1 an RL step requests at most 0.2 mm.  This is
-        # deliberately small relative to the minimum scaled lumen clearance,
-        # allowing the collision solver to react before the catheter crosses a wall.
+        # At |action_insert|=1 an RL step requests at most 0.4 mm.  The
+        # episode limit is reduced proportionally, preserving the total motion
+        # budget while reducing unnecessarily long timeout trajectories.
         self.insert_step_per_action = MAX_INSERTION_PER_ACTION_M
         self.insert_substep_max = MAX_INSERTION_PER_ACTION_M
         self.pending_insert_delta = 0.0
@@ -99,7 +99,7 @@ class ControllerSofa(Sofa.Core.Controller):
     def insertRetract(self, val):
         """Buffer insertion/retraction command.
 
-        The RL action represents up to 0.2 mm insertion per step.  Pending motion
+        The RL action represents up to 0.4 mm insertion per step.  Pending motion
         is still buffered so future configurations may use smaller SOFA substeps.
         """
         val = float(np.clip(val, -1.0, 1.0))

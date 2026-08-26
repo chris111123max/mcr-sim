@@ -99,7 +99,7 @@ tip 指向内腔的 3 维方向、尖端前方 1/2/4 mm 的净空探针、最危
 
 ## SAC 与 epoch 语义
 
-一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 200 epoch，即 20000 个回合。
+一个 epoch 定义为 **100 个全局完成回合**。正式 SAC/PPO 实验默认训练 100 epoch，即 10000 个回合。
 不同算法即使 epoch 数相同，回合长度也可能不同，因此总 transition 数并不相同；比较
 MLP-PPO、LSTM-PPO 与其他策略的样本效率时，应以 `global_env_steps` 对齐或至少同时报告，
 不能只比较 epoch。
@@ -128,7 +128,7 @@ replay buffer，避免每次更新重复搬运大批量 observation；不支持�
 
 | 参数 | 默认值 | 说明 |
 |---|---:|---|
-| epoch / episodes per epoch | 200 / 100 | 正式训练预算与保存周期 |
+| epoch / episodes per epoch | 100 / 100 | 正式训练预算与保存周期 |
 | 全局环境数 | 64 | 四卡时每卡 16 个 SOFA 环境 |
 | 全局/local batch（四卡） | 1024 / 256 | 每卡独立采样，梯度同步后等效全局 1024 |
 | replay buffer | 每卡 500000 | NPU 默认驻留本卡；CPU/CUDA 或探针失败时使用标准 SB3 buffer |
@@ -161,8 +161,8 @@ bash training/sh/run_train_sac.sh \
 `nohup`、`&` 或输出重定向。
 
 `logs/run_config.json` 不是固定模板，而是在每次运行时根据最终生效参数自动生成。
-正式默认运行会记录 `"epochs": 200`、`"episodes_per_epoch": 100` 和上限
-`"timesteps": 81920000`；命令行显式传入的值仍会覆盖默认值。
+正式默认运行会记录 `"epochs": 100`、`"episodes_per_epoch": 100` 和上限
+`"timesteps": 40960000`；命令行显式传入的值仍会覆盖默认值。
 
 旧的 `--timesteps` 仍可使用，并会切换到 transition-budget 模式，以兼容已有
 启动命令。第一次上服务器应先运行短 smoke test，例如
