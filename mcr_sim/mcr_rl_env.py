@@ -30,7 +30,6 @@ from .training_config import (
     NO_PROGRESS_WINDOW_STEPS,
     OUT_OF_VESSEL_FALLBACK_DISTANCE_M,
     OUT_OF_VESSEL_SAFETY_RATIO,
-    PRE_TARGET_WAYPOINT_OFFSET_M,
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
     REWARD_OFF_TARGET_BRANCH,
@@ -38,15 +37,13 @@ from .training_config import (
     REWARD_NO_PROGRESS_TERMINAL,
     REWARD_NON_FINITE,
     REWARD_PROGRESS_NORMALIZATION_M,
+    REWARD_ROUTE_PROGRESS,
     REWARD_RETRACTION,
     REWARD_STEP,
     REWARD_SUCCESS,
-    REWARD_TARGET_APPROACH,
     REWARD_TIMEOUT,
     REWARD_WALL_PENETRATION,
     REWARD_WALL_PROXIMITY,
-    REWARD_WAYPOINT_APPROACH,
-    REWARD_WAYPOINT_REACHED,
     REWARD_WRONG_BRANCH,
     SETTLE_STEPS,
     SOFA_TIME_STEP_S,
@@ -62,12 +59,13 @@ from .training_config import (
     TARGET_WINDOW_DISTANCE_M,
     TIP_NEAR_WALL_GRACE_STEPS,
     TIP_NEAR_WALL_RAMP_STEPS,
-    WAYPOINT_HANDOFF_CONFIRM_STEPS,
-    WAYPOINT_HANDOFF_MARGIN_M,
-    WAYPOINT_OBSERVATION_SCALE_M,
-    WAYPOINT_PROGRESS_CLIP_M,
-    WAYPOINT_REACH_THRESHOLD_M,
-    WAYPOINT_SPACING_M,
+    ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M,
+    ROUTE_GUIDANCE_OBSERVATION_SCALE_M,
+    ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M,
+    ROUTE_PROJECTION_BACKWARD_WINDOW_M,
+    ROUTE_PROJECTION_FORWARD_WINDOW_M,
+    ROUTE_PROJECTION_MAX_PROGRESS_STEP_M,
+    ROUTE_SUCCESS_PROGRESS_MARGIN_M,
     WRONG_BRANCH_CONFIRM_STEPS,
     WRONG_BRANCH_DISTANCE_MARGIN_M,
     WRONG_BRANCH_OBSERVATION_SCALE_M,
@@ -79,8 +77,8 @@ from .training_config import (
     VESSEL_SCALE_MIN,
     VESSEL_SECTION_FEATURE_DIM,
     body_sdf_risk_features,
-    ordered_route_potential,
 )
+from .route_tracking import normalized_route_progress, project_to_route
 
 MCR_SIM_DIR = Path(__file__).resolve().parent
 FLAT_SCENE_DESCRIPTION_FILE_PATH = MCR_SIM_DIR / "scene_description_2d.py"
@@ -108,10 +106,10 @@ class EnvType(Enum):
 
 
 class MCREnv(SofaEnv):
-    """Multi-asset waypoint-based mCR RL environment.
+    """Multi-asset continuous-route mCR RL environment.
 
     Training logic kept in this file:
-      1. The selected target centerline supplies progress, waypoints, and local radius.
+      1. The selected target centerline supplies jump-safe progress and moving guidance.
       2. The VTI SDF supplies catheter-surface clearance and true lumen escape.
       3. The complete branching graph separates a wrong route from vessel escape.
       4. Collision remains a SOFA Triangle versus catheter Line/Point solve.
@@ -190,9 +188,7 @@ class MCREnv(SofaEnv):
         self.scene_verbose = bool(create_scene_kwargs.get("verbose_scene", False))
         if reward_amount_dict is None:
             reward_amount_dict = {
-                "waypoint_approach": REWARD_WAYPOINT_APPROACH,
-                "waypoint_reached": REWARD_WAYPOINT_REACHED,
-                "target_approach": REWARD_TARGET_APPROACH,
+                "route_progress": REWARD_ROUTE_PROGRESS,
                 "wall_proximity_penalty": REWARD_WALL_PROXIMITY,
                 "wall_penetration_penalty": REWARD_WALL_PENETRATION,
                 "off_target_branch_penalty": REWARD_OFF_TARGET_BRANCH,
@@ -206,6 +202,17 @@ class MCREnv(SofaEnv):
                 "no_progress_terminal_penalty": REWARD_NO_PROGRESS_TERMINAL,
                 "step_penalty": REWARD_STEP,
             }
+        elif "route_progress" not in reward_amount_dict:
+            # Read old experiment dictionaries without retaining waypoint
+            # navigation semantics.
+            reward_amount_dict = dict(reward_amount_dict)
+            reward_amount_dict["route_progress"] = float(
+                reward_amount_dict.pop(
+                    "waypoint_approach",
+                    reward_amount_dict.pop("target_approach", REWARD_ROUTE_PROGRESS),
+                )
+            )
+            reward_amount_dict.pop("waypoint_reached", None)
 
         self.target_distance_threshold = float(target_distance_threshold)
         self.num_catheter_tracking_points = int(num_catheter_tracking_points)
@@ -357,12 +364,56 @@ class MCREnv(SofaEnv):
         # Retraction remains available across the full action range.
         self.insert_negative_limit = float(create_scene_kwargs.get("insert_negative_limit", -1.0))
 
-        # Waypoint task parameters.
-        self.waypoint_spacing = float(create_scene_kwargs.get("waypoint_spacing", WAYPOINT_SPACING_M))
-        self.waypoint_reach_threshold = float(create_scene_kwargs.get("waypoint_reach_threshold", WAYPOINT_REACH_THRESHOLD_M))
-        self.pre_target_waypoint_offset = float(create_scene_kwargs.get("pre_target_waypoint_offset", PRE_TARGET_WAYPOINT_OFFSET_M))
-        self.waypoint_observation_scale = float(create_scene_kwargs.get("waypoint_observation_scale", WAYPOINT_OBSERVATION_SCALE_M))
-        self.progress_clip = float(create_scene_kwargs.get("waypoint_progress_clip", WAYPOINT_PROGRESS_CLIP_M))
+        # Continuous selected-route navigation. Guidance points move with the
+        # tracked arc length; projection locality and the physical step gate
+        # prevent jumps across spatially adjacent bends or branches.
+        self.route_guidance_lookahead_distances = tuple(
+            float(value)
+            for value in create_scene_kwargs.get(
+                "route_guidance_lookahead_distances",
+                ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M,
+            )
+        )
+        if len(self.route_guidance_lookahead_distances) != 2 or any(
+            value <= 0.0 for value in self.route_guidance_lookahead_distances
+        ):
+            raise ValueError("Exactly two positive route guidance distances are required.")
+        self.route_guidance_observation_scale = float(
+            create_scene_kwargs.get(
+                "route_guidance_observation_scale",
+                ROUTE_GUIDANCE_OBSERVATION_SCALE_M,
+            )
+        )
+        self.route_projection_backward_window = float(
+            create_scene_kwargs.get(
+                "route_projection_backward_window",
+                ROUTE_PROJECTION_BACKWARD_WINDOW_M,
+            )
+        )
+        self.route_projection_forward_window = float(
+            create_scene_kwargs.get(
+                "route_projection_forward_window",
+                ROUTE_PROJECTION_FORWARD_WINDOW_M,
+            )
+        )
+        self.route_projection_ambiguity_tolerance = float(
+            create_scene_kwargs.get(
+                "route_projection_ambiguity_tolerance",
+                ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M,
+            )
+        )
+        self.route_projection_max_progress_step = float(
+            create_scene_kwargs.get(
+                "route_projection_max_progress_step",
+                ROUTE_PROJECTION_MAX_PROGRESS_STEP_M,
+            )
+        )
+        self.route_success_progress_margin = float(
+            create_scene_kwargs.get(
+                "route_success_progress_margin",
+                ROUTE_SUCCESS_PROGRESS_MARGIN_M,
+            )
+        )
         self.reward_progress_normalization = float(
             create_scene_kwargs.get(
                 "reward_progress_normalization",
@@ -388,25 +439,11 @@ class MCREnv(SofaEnv):
             )
         )
 
-        # Adjacent-waypoint handoff.
-        # When the next ordered waypoint is clearly closer than the active one
-        # for several consecutive steps, advance exactly one waypoint. This is
-        # a recovery mechanism for a missed 3 mm waypoint sphere.
-        # It uses only Euclidean distances to adjacent waypoints:
-        # no centerline progress and no cross-section gate.
-        self.waypoint_handoff_margin = float(
-            create_scene_kwargs.get("waypoint_handoff_margin", WAYPOINT_HANDOFF_MARGIN_M)
-        )  # next waypoint must be at least 0.5 mm closer
-        self.waypoint_handoff_confirm_steps = max(
-            1,
-            int(create_scene_kwargs.get("waypoint_handoff_confirm_steps", WAYPOINT_HANDOFF_CONFIRM_STEPS)),
-        )
-
         # Actor observation: 50-D current geometry + 4 * 7-D action-response
         # history = 78-D.  The 30 vessel features retain the prior route/tip
         # signals and add the worst shaft point (arc position, relative local
-        # position, local inward normal) plus future route tangents at 5/10/20
-        # mm.  PPO, RecurrentPPO and SAC receive this identical state.
+        # position, local inward normal), moving route guidance, and future
+        # route tangents. PPO, RecurrentPPO and SAC receive this identical state.
         self.vessel_section_feature_dim = VESSEL_SECTION_FEATURE_DIM
         self.actor_current_geometry_dim = ACTOR_CURRENT_GEOMETRY_DIM
         self.actor_dynamic_step_dim = ACTOR_DYNAMIC_STEP_DIM
@@ -476,7 +513,7 @@ class MCREnv(SofaEnv):
         self.current_route_potential = 0.0
         self.current_route_potential_delta = 0.0
 
-        # Centerline / waypoint buffers.
+        # Centerline and continuous selected-route buffers.
         self.centerline_points = None
         self.centerline_cumlength = None
         self.centerline_radius = None
@@ -484,21 +521,21 @@ class MCREnv(SofaEnv):
         self.centerline_graph_edges = None
         self.centerline_graph_radius = None
         self.centerline_reversed_for_progress = False
-        self.waypoint_points = None
-        self.waypoint_progress = None
-        self.current_waypoint_idx = 0
-        self.current_waypoint_progress_ratio = 0.0
-        self.current_waypoint_distance = np.nan
-        self.current_waypoint_approach_delta = 0.0
-        self.current_waypoint_reached_this_step = False
-        self.current_waypoint_reached_count_episode = 0
-        self.current_waypoint_is_final = False
+        self.current_route_start_progress = 0.0
+        self.current_route_target_progress = 0.0
+        self.previous_route_progress = np.nan
+        self.current_route_progress = np.nan
+        self.current_route_progress_delta = 0.0
+        self.current_route_progress_ratio = 0.0
+        self.current_route_projection_segment = -1
+        self.current_route_projection_distance = np.nan
+        self.current_route_projection_jump_rejected = False
+        self.route_projection_jump_rejections_episode = 0
+        self.current_route_guidance_points = np.zeros((2, 3), dtype=np.float32)
+        self._route_projection_cache_step = -1
+        self._route_projection_cache_tip = None
+        self._route_projection_cache_value = None
         self.current_target_reached_this_step = False
-        self.previous_waypoint_idx = None
-        self.previous_waypoint_distance = None
-        self.current_waypoint_handoff_counter = 0
-        self.current_waypoint_handoff_this_step = False
-        self.current_waypoint_handoff_count_episode = 0
 
         # Safety state.
         self.current_centerline_local_radius = np.nan
@@ -583,7 +620,7 @@ class MCREnv(SofaEnv):
         self.insert_near_zero_steps_episode = 0
         self.max_inserted_length_episode = 0.0
 
-        # Ordered-waypoint stagnation diagnostics/termination.
+        # Continuous route stagnation diagnostics/termination.
         self.no_progress_counter = 0
         self.no_progress_failure = False
         self.no_progress_net_approach = 0.0
@@ -1025,7 +1062,7 @@ class MCREnv(SofaEnv):
                 t_start_sim[3:7] = new_rot.as_quat()
                 self._apply_instrument_start_pose_sim(t_start_sim)
 
-        self._build_waypoint_sequence()
+        self._configure_continuous_route()
 
     def reset(self, seed: Union[int, np.random.SeedSequence, None] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[Union[np.ndarray, None], Dict]:
         self._sample_next_training_model(seed=seed)
@@ -1109,19 +1146,19 @@ class MCREnv(SofaEnv):
         self.current_centerline_radial_offset = np.nan
         self.current_tip_centerline_offset_norm = np.nan
         self.previous_tip_centerline_radial_offset = None
-        self.current_waypoint_idx = 0
-        self.current_waypoint_progress_ratio = 0.0
-        self.current_waypoint_distance = np.nan
-        self.current_waypoint_approach_delta = 0.0
-        self.current_waypoint_reached_this_step = False
-        self.current_waypoint_reached_count_episode = 0
-        self.current_waypoint_is_final = False
+        self.previous_route_progress = np.nan
+        self.current_route_progress = np.nan
+        self.current_route_progress_delta = 0.0
+        self.current_route_progress_ratio = 0.0
+        self.current_route_projection_segment = -1
+        self.current_route_projection_distance = np.nan
+        self.current_route_projection_jump_rejected = False
+        self.route_projection_jump_rejections_episode = 0
+        self.current_route_guidance_points = np.zeros((2, 3), dtype=np.float32)
+        self._route_projection_cache_step = -1
+        self._route_projection_cache_tip = None
+        self._route_projection_cache_value = None
         self.current_target_reached_this_step = False
-        self.previous_waypoint_idx = None
-        self.previous_waypoint_distance = None
-        self.current_waypoint_handoff_counter = 0
-        self.current_waypoint_handoff_this_step = False
-        self.current_waypoint_handoff_count_episode = 0
 
         self.current_raw_insert = 0.0
         self.current_effective_insert = 0.0
@@ -1167,8 +1204,8 @@ class MCREnv(SofaEnv):
             except Exception as e:
                 print("[REAL_TIP_AFTER_RESET_CHECK][WARN]", e)
 
-        self._initialize_waypoint_progress_from_current_tip()
-        self.current_route_potential = self._ordered_route_potential()
+        self._initialize_continuous_route_from_current_tip()
+        self.current_route_potential = self._continuous_route_potential()
         self.previous_route_potential = self.current_route_potential
         return self._get_observation(image_observation=self._maybe_update_rgb_buffer()), {}
 
@@ -1275,24 +1312,24 @@ class MCREnv(SofaEnv):
         self,
         tip_forward_local: np.ndarray,
         magnetic_field_norm: np.ndarray,
-        waypoint_vector_local: np.ndarray,
-        next_waypoint_vector_local: np.ndarray,
+        near_guidance_vector_local: np.ndarray,
+        far_guidance_vector_local: np.ndarray,
         centerline_correction_vec_local: np.ndarray,
         centerline_tangent_local: np.ndarray,
-        waypoint_distance_norm: np.ndarray,
-        waypoint_progress_ratio: float,
+        guidance_distance_norm: np.ndarray,
+        route_progress_ratio: float,
         vessel_section_features: np.ndarray,
     ) -> np.ndarray:
         obs = np.concatenate(
             [
                 np.asarray(tip_forward_local, dtype=np.float32).reshape(3),
                 np.asarray(magnetic_field_norm, dtype=np.float32).reshape(3),
-                np.asarray(waypoint_vector_local, dtype=np.float32).reshape(3),
-                np.asarray(next_waypoint_vector_local, dtype=np.float32).reshape(3),
+                np.asarray(near_guidance_vector_local, dtype=np.float32).reshape(3),
+                np.asarray(far_guidance_vector_local, dtype=np.float32).reshape(3),
                 np.asarray(centerline_correction_vec_local, dtype=np.float32).reshape(3),
                 np.asarray(centerline_tangent_local, dtype=np.float32).reshape(3),
-                np.asarray(waypoint_distance_norm, dtype=np.float32).reshape(1),
-                np.array([np.clip(float(waypoint_progress_ratio), 0.0, 1.0)], dtype=np.float32),
+                np.asarray(guidance_distance_norm, dtype=np.float32).reshape(1),
+                np.array([np.clip(float(route_progress_ratio), 0.0, 1.0)], dtype=np.float32),
                 np.asarray(vessel_section_features, dtype=np.float32).reshape(self.vessel_section_feature_dim),
             ]
         ).astype(np.float32)
@@ -1342,30 +1379,54 @@ class MCREnv(SofaEnv):
         mag_field = np.asarray(self.mcr_controller_sofa.get_mag_field_des(), dtype=np.float32)
         magnetic_field_norm = np.clip(self._world_vec_to_local(mag_field, frame) / max(self.magnetic_field_observation_scale, 1e-9), -2.0, 2.0).astype(np.float32)
 
-        wp_scale = max(float(self.waypoint_observation_scale), 1e-9)
-        wp_points = getattr(self, "waypoint_points", None)
-        if wp_points is not None and len(wp_points) > 0:
-            wp_idx = int(np.clip(self.current_waypoint_idx, 0, len(wp_points) - 1))
-            next_idx = int(np.clip(wp_idx + 1, 0, len(wp_points) - 1))
-            wp_vec_world = np.asarray(wp_points[wp_idx], dtype=np.float32) - tip_pos
-            next_vec_world = np.asarray(wp_points[next_idx], dtype=np.float32) - tip_pos
-            wp_distance = float(np.linalg.norm(wp_vec_world))
-            waypoint_progress_ratio = float(wp_idx / max(1, len(wp_points) - 1))
+        guidance_scale = max(float(self.route_guidance_observation_scale), 1e-9)
+        route_progress = float(getattr(self, "current_route_progress", np.nan))
+        target_progress = float(getattr(self, "current_route_target_progress", np.nan))
+        if np.isfinite(route_progress) and np.isfinite(target_progress):
+            guidance_points = np.asarray(
+                [
+                    self._interpolate_centerline_point_at_progress(
+                        min(route_progress + distance, target_progress)
+                    )
+                    for distance in self.route_guidance_lookahead_distances
+                ],
+                dtype=np.float32,
+            )
         else:
-            wp_vec_world = np.asarray(self.target_position, dtype=np.float32) - tip_pos
-            next_vec_world = wp_vec_world.copy()
-            wp_distance = float(np.linalg.norm(wp_vec_world))
-            waypoint_progress_ratio = 0.0
-
-        waypoint_vector_local = np.clip(self._world_vec_to_local(wp_vec_world, frame) / wp_scale, -5.0, 5.0).astype(np.float32)
-        next_waypoint_vector_local = np.clip(self._world_vec_to_local(next_vec_world, frame) / wp_scale, -5.0, 5.0).astype(np.float32)
-        waypoint_distance_norm = np.array([np.clip(wp_distance / wp_scale, 0.0, 10.0)], dtype=np.float32)
+            guidance_points = np.repeat(
+                np.asarray(self.target_position, dtype=np.float32).reshape(1, 3),
+                2,
+                axis=0,
+            )
+        self.current_route_guidance_points = guidance_points.copy()
+        near_guidance_world = guidance_points[0] - tip_pos
+        far_guidance_world = guidance_points[1] - tip_pos
+        guidance_distance = float(np.linalg.norm(near_guidance_world))
+        near_guidance_vector_local = np.clip(
+            self._world_vec_to_local(near_guidance_world, frame) / guidance_scale,
+            -5.0,
+            5.0,
+        ).astype(np.float32)
+        far_guidance_vector_local = np.clip(
+            self._world_vec_to_local(far_guidance_world, frame) / guidance_scale,
+            -5.0,
+            5.0,
+        ).astype(np.float32)
+        guidance_distance_norm = np.array(
+            [np.clip(guidance_distance / guidance_scale, 0.0, 10.0)],
+            dtype=np.float32,
+        )
 
         centerline_proj = np.asarray(getattr(self, "current_centerline_projection", tip_pos), dtype=np.float32).reshape(3)
         centerline_tangent_world = np.asarray(getattr(self, "current_centerline_tangent", np.array([1.0, 0.0, 0.0], dtype=np.float32)), dtype=np.float32).reshape(3)
         centerline_tangent_world = centerline_tangent_world / (float(np.linalg.norm(centerline_tangent_world)) + 1e-9)
         centerline_correction_world = centerline_proj - tip_pos
-        centerline_correction_vec_local = np.clip(self._world_vec_to_local(centerline_correction_world, frame) / wp_scale, -5.0, 5.0).astype(np.float32)
+        centerline_correction_vec_local = np.clip(
+            self._world_vec_to_local(centerline_correction_world, frame)
+            / guidance_scale,
+            -5.0,
+            5.0,
+        ).astype(np.float32)
         centerline_tangent_local = self._world_vec_to_local(centerline_tangent_world, frame)
         centerline_tangent_local = (centerline_tangent_local / (float(np.linalg.norm(centerline_tangent_local)) + 1e-9)).astype(np.float32)
 
@@ -1380,18 +1441,18 @@ class MCREnv(SofaEnv):
         actor_current_geometry = self._build_actor_current_geometry_observation(
             tip_forward_local=tip_forward_local,
             magnetic_field_norm=magnetic_field_norm,
-            waypoint_vector_local=waypoint_vector_local,
-            next_waypoint_vector_local=next_waypoint_vector_local,
+            near_guidance_vector_local=near_guidance_vector_local,
+            far_guidance_vector_local=far_guidance_vector_local,
             centerline_correction_vec_local=centerline_correction_vec_local,
             centerline_tangent_local=centerline_tangent_local,
-            waypoint_distance_norm=waypoint_distance_norm,
-            waypoint_progress_ratio=waypoint_progress_ratio,
+            guidance_distance_norm=guidance_distance_norm,
+            route_progress_ratio=float(self.current_route_progress_ratio),
             vessel_section_features=vessel_section_features,
         )
         actor_dynamic_step = self._build_actor_dynamic_step_observation(
             prev_action=prev_action,
             tip_delta_local=tip_delta_local,
-            progress_delta_norm=np.array([np.clip(float(self.current_waypoint_approach_delta) / 0.001, -5.0, 5.0)], dtype=np.float32),
+            progress_delta_norm=np.array([np.clip(float(self.current_route_progress_delta) / 0.001, -5.0, 5.0)], dtype=np.float32),
         )
         self._push_actor_dynamic_history(actor_dynamic_step)
         self._last_actor_tip_pos = np.asarray(tip_pos, dtype=np.float32).copy()
@@ -1425,42 +1486,32 @@ class MCREnv(SofaEnv):
             or self.current_wrong_branch
             or sdf_center_outside
         )
-        reached = self._update_waypoint_progress(tip_pos, valid_inside_vessel=valid_inside_vessel)
-
-        # Detect sustained lack of ordered progress without confusing normal
-        # short steering pauses with failure.  A true waypoint hit starts a new
-        # window because distances on the two sides of a waypoint switch are
-        # not comparable.  Net approach (rather than positive-only motion)
-        # prevents back-and-forth oscillation from looking productive.
-        approach_delta = float(self.current_waypoint_approach_delta)
-        if reached:
-            self._no_progress_deltas.clear()
-            self.no_progress_counter = 0
-            self.no_progress_net_approach = 0.0
-            self.no_progress_feature = 0.0
-        else:
-            self._no_progress_deltas.append(approach_delta)
-            self.no_progress_net_approach = float(sum(self._no_progress_deltas))
-            eligible = bool(
-                self._elapsed_steps >= self.no_progress_grace_steps
-                and len(self._no_progress_deltas) >= self.no_progress_window_steps
-            )
-            if eligible:
-                threshold = max(float(self.no_progress_min_net_approach), 1e-9)
-                self.no_progress_feature = float(
-                    np.clip(
-                        (threshold - self.no_progress_net_approach) / threshold,
-                        0.0,
-                        1.0,
-                    )
+        # Net continuous arc-length progress detects stagnation without a
+        # waypoint-switch discontinuity. Backward corrections remain negative,
+        # so oscillation cannot look productive.
+        approach_delta = float(self.current_route_progress_delta)
+        self._no_progress_deltas.append(approach_delta)
+        self.no_progress_net_approach = float(sum(self._no_progress_deltas))
+        eligible = bool(
+            self._elapsed_steps >= self.no_progress_grace_steps
+            and len(self._no_progress_deltas) >= self.no_progress_window_steps
+        )
+        if eligible:
+            threshold = max(float(self.no_progress_min_net_approach), 1e-9)
+            self.no_progress_feature = float(
+                np.clip(
+                    (threshold - self.no_progress_net_approach) / threshold,
+                    0.0,
+                    1.0,
                 )
-                if self.no_progress_net_approach <= 0.1 * threshold:
-                    self.no_progress_counter += 1
-                else:
-                    self.no_progress_counter = 0
+            )
+            if self.no_progress_net_approach <= 0.1 * threshold:
+                self.no_progress_counter += 1
             else:
-                self.no_progress_feature = 0.0
                 self.no_progress_counter = 0
+        else:
+            self.no_progress_feature = 0.0
+            self.no_progress_counter = 0
         self.no_progress_failure = bool(
             self.no_progress_counter >= self.no_progress_confirm_steps
         )
@@ -1475,34 +1526,23 @@ class MCREnv(SofaEnv):
                 max(0.0, inserted_length),
             )
 
-        wp_points = getattr(self, "waypoint_points", None)
-        if wp_points is not None and len(wp_points) > 0:
-            in_final_target_phase = int(self.current_waypoint_idx) >= len(wp_points) - 1
-        else:
-            in_final_target_phase = True
-
-        # Reward terms are intentionally separated by phase:
-        #   - intermediate waypoint phase: waypoint_approach and waypoint_reached;
-        #   - final target phase: target_approach and successful_task;
-        #   - out-of-vessel terminal penalty;
-        #   - timeout terminal penalty is added in step() after truncated is known.
-        # Centreline geometry is retained for ordered navigation.  Wall risk and
+        # Continuous route completion is the single navigation potential.
+        # Out-of-vessel terminal penalty remains separate; timeout is added in
+        # step() after truncated is known. Centreline geometry is retained for
+        # selected-route navigation. Wall risk and
         # out-of-vessel termination come from the VTI SDF whenever it is present.
         # Potential-difference shaping telescopes over the whole trajectory.
         # Corrections restore their earlier negative credit when the tip moves
         # forward again, while oscillation has zero net progress reward.
-        self.current_route_potential = self._ordered_route_potential()
-        self.current_route_potential_delta = float(
-            self.current_route_potential - self.previous_route_potential
-        )
-        self.previous_route_potential = self.current_route_potential
+        if valid_inside_vessel:
+            self.current_route_potential = self._continuous_route_potential()
+            self.current_route_potential_delta = float(
+                self.current_route_potential - self.previous_route_potential
+            )
+            self.previous_route_potential = self.current_route_potential
+        else:
+            self.current_route_potential_delta = 0.0
         approach_feature = self.current_route_potential_delta
-
-        waypoint_bonus_feature = 0.0
-        if reached:
-            # The ordered index advances only once, so this is already bounded
-            # without a second lifetime accumulator.
-            waypoint_bonus_feature = 1.0 / max(1, len(self.waypoint_points) - 1)
 
         if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
             # Tip clearance keeps the original contact shaping.  Whole-body
@@ -1557,9 +1597,7 @@ class MCREnv(SofaEnv):
             penetration_feature = 0.0
 
         reward_features = {
-            "waypoint_approach": 0.0 if in_final_target_phase else approach_feature,
-            "waypoint_reached": waypoint_bonus_feature,
-            "target_approach": approach_feature if in_final_target_phase else 0.0,
+            "route_progress": approach_feature,
             "wall_proximity_penalty": near_wall_feature,
             "wall_penetration_penalty": penetration_feature,
             "off_target_branch_penalty": float(self.current_off_target_branch_feature),
@@ -1582,7 +1620,15 @@ class MCREnv(SofaEnv):
             self.wrong_branch_failure = True
 
         final_close = bool(current_final_dist <= float(self.target_distance_threshold))
-        self.current_target_reached_this_step = bool(valid_inside_vessel and in_final_target_phase and final_close)
+        route_ready = bool(
+            np.isfinite(self.current_route_progress)
+            and self.current_route_progress
+            >= self.current_route_target_progress
+            - float(self.route_success_progress_margin)
+        )
+        self.current_target_reached_this_step = bool(
+            valid_inside_vessel and route_ready and final_close
+        )
         if self.current_target_reached_this_step:
             reward_features["successful_task"] = 1.0
             self.episode_success = True
@@ -1681,11 +1727,23 @@ class MCREnv(SofaEnv):
             "final_dist_to_goal": current_dist if (terminated or truncated) else np.nan,
             "target_distance_threshold": float(self.target_distance_threshold),
             "vessel_scale_factor": float(getattr(self, "vessel_scale_factor", 1.0)),
-            "waypoint_idx": int(self.current_waypoint_idx),
-            "waypoint_num": int(len(self.waypoint_points)) if self.waypoint_points is not None else 0,
-            "waypoint_progress_ratio": float(self.current_waypoint_progress_ratio),
-            "waypoint_distance": float(self.current_waypoint_distance),
-            "waypoint_approach_delta": float(self.current_waypoint_approach_delta),
+            "route_progress": float(self.current_route_progress),
+            "route_start_progress": float(self.current_route_start_progress),
+            "route_target_progress": float(self.current_route_target_progress),
+            "route_progress_delta": float(self.current_route_progress_delta),
+            "route_progress_ratio": float(self.current_route_progress_ratio),
+            "route_projection_segment": int(self.current_route_projection_segment),
+            "route_projection_distance": float(self.current_route_projection_distance),
+            "route_projection_jump_rejected": bool(
+                self.current_route_projection_jump_rejected
+            ),
+            "route_projection_jump_rejections_episode": int(
+                self.route_projection_jump_rejections_episode
+            ),
+            "route_guidance_points": np.asarray(
+                self.current_route_guidance_points,
+                dtype=np.float64,
+            ).reshape((2, 3)).tolist(),
             "reward_progress_normalization": float(self.reward_progress_normalization),
             "reward_route_length": float(self.reward_progress_normalization),
             "route_potential": float(self.current_route_potential),
@@ -1697,23 +1755,7 @@ class MCREnv(SofaEnv):
             "curriculum_dr_fraction": float(
                 getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0)
             ),
-            "waypoint_reached_this_step": bool(self.current_waypoint_reached_this_step),
-            "waypoint_reached_count_episode": int(self.current_waypoint_reached_count_episode),
-            "waypoint_handoff_counter": int(
-                getattr(self, "current_waypoint_handoff_counter", 0)
-            ),
-            "waypoint_handoff_this_step": bool(
-                getattr(self, "current_waypoint_handoff_this_step", False)
-            ),
-            "waypoint_handoff_count_episode": int(
-                getattr(self, "current_waypoint_handoff_count_episode", 0)
-            ),
-            "waypoint_is_final": bool(getattr(self, "current_waypoint_is_final", False)),
             "target_reached_this_step": bool(getattr(self, "current_target_reached_this_step", False)),
-            "target_approach_delta": float(self.current_waypoint_approach_delta) if bool(getattr(self, "current_waypoint_is_final", False)) else 0.0,
-            "waypoint_spacing": float(self.waypoint_spacing),
-            "waypoint_reach_threshold": float(self.waypoint_reach_threshold),
-            "pre_target_waypoint_offset": float(getattr(self, "pre_target_waypoint_offset", 0.001)),
             "out_of_vessel": bool(self.current_out_of_vessel),
             "out_of_vessel_this_episode": bool(self.out_of_vessel_this_episode),
             "out_of_vessel_safety_ratio": float(self.out_of_vessel_safety_ratio),
@@ -1889,7 +1931,7 @@ class MCREnv(SofaEnv):
         }
 
     # ------------------------------------------------------------------
-    # Centerline / waypoint / safety
+    # Continuous selected route / centerline / safety
     # ------------------------------------------------------------------
     def _resample_centerline_points_1mm(self, points: np.ndarray) -> np.ndarray:
         if points is None:
@@ -2390,7 +2432,9 @@ class MCREnv(SofaEnv):
         tip_pos: np.ndarray,
         advance_failure_counters: bool = False,
     ) -> None:
-        progress, seg_idx, centerline_dist, centerline_proj, tangent = self._get_centerline_projection_state(tip_pos)
+        progress, seg_idx, centerline_dist, centerline_proj, tangent = (
+            self._get_tracked_centerline_projection_state(tip_pos)
+        )
         local_radius = self._get_current_local_radius(progress)
         if local_radius is None:
             local_radius = float(self.default_local_radius)
@@ -2606,390 +2650,161 @@ class MCREnv(SofaEnv):
             return float(1e3)
         return dist
 
-    def _build_waypoint_sequence(self) -> None:
-        self.waypoint_points = None
-        self.waypoint_progress = None
-        if self.centerline_points is None or self.centerline_cumlength is None or len(self.centerline_points) < 2:
-            return
-        total_len = float(self.centerline_cumlength[-1])
-        if not np.isfinite(total_len) or total_len <= 1e-9:
-            return
-        try:
-            target_progress, _, _ = self._raw_project_point_to_centerline_progress(self.target_position)
-            target_progress = float(np.clip(target_progress, float(self.centerline_cumlength[0]), total_len))
-        except Exception:
-            target_progress = total_len
+    def _configure_continuous_route(self) -> None:
+        """Resolve episode start/target arc lengths on the selected route."""
 
-        # Start waypoint generation from the actual episode start, not always
-        # from centerline_cumlength[0]. This is essential when start-point
-        # randomization places the catheter at P1/P2/... instead of P0.
-        start_progress = float(self.centerline_cumlength[0])
+        if (
+            self.centerline_points is None
+            or self.centerline_cumlength is None
+            or len(self.centerline_points) < 2
+        ):
+            self.current_route_start_progress = 0.0
+            self.current_route_target_progress = 0.0
+            return
+        route_start = float(self.centerline_cumlength[0])
+        route_end = float(self.centerline_cumlength[-1])
+        target_progress, _, _ = self._raw_project_point_to_centerline_progress(
+            self.target_position
+        )
+        target_progress = float(np.clip(target_progress, route_start, route_end))
+
         start_reference = getattr(self, "current_soft_start_position", None)
         if start_reference is None:
             start_reference = getattr(self, "current_scene_start_position", None)
+        start_progress = route_start
         if start_reference is not None:
-            try:
-                start_reference = np.asarray(start_reference, dtype=np.float32).reshape(3)
-                if np.all(np.isfinite(start_reference)):
-                    start_progress, _, _ = self._raw_project_point_to_centerline_progress(start_reference)
-                    start_progress = float(np.clip(start_progress, float(self.centerline_cumlength[0]), total_len))
-            except Exception:
-                start_progress = float(self.centerline_cumlength[0])
-
-        # Avoid degenerate/reversed route if a sampled target is accidentally
-        # not ahead of the sampled start.
+            start_np = np.asarray(start_reference, dtype=np.float32).reshape(3)
+            if np.all(np.isfinite(start_np)):
+                start_progress, _, _ = self._raw_project_point_to_centerline_progress(
+                    start_np
+                )
+                start_progress = float(np.clip(start_progress, route_start, route_end))
         if target_progress <= start_progress + 1e-7:
-            start_progress = float(self.centerline_cumlength[0])
+            start_progress = route_start
 
-        self.current_waypoint_start_progress = float(start_progress)
-        self.current_waypoint_target_progress = float(target_progress)
-        # Reward v5 uses the actual randomized start-to-target route length to
-        # normalize the ordered route potential across B/C vessels.
+        self.current_route_start_progress = float(start_progress)
+        self.current_route_target_progress = float(target_progress)
         self.reward_progress_normalization = max(
             float(target_progress - start_progress),
-            float(self.waypoint_spacing),
             1e-6,
         )
 
-        spacing = max(float(self.waypoint_spacing), 1e-6)
-        pre_target_offset = max(float(getattr(self, "pre_target_waypoint_offset", 0.001)), 0.0)
-        eps = 1e-7
+    def _initialize_continuous_route_from_current_tip(self) -> None:
+        """Initialize once globally, then use only local recurrent projection."""
 
-        is_aorta6 = (
-            str(getattr(self, "task_id", "")).lower() == "aorta6"
-            or str(getattr(self, "_explicit_force_model", "")).lower() == "aorta6"
-        )
-
-        # Normally waypoint generation starts at the physical episode start.
-        # For aorta6, exclude the physical start itself and make the first
-        # waypoint one waypoint-spacing farther toward the target.
-        waypoint_generation_start = float(start_progress)
-        if is_aorta6 and self.scene_verbose:
-            waypoint_generation_start = float(
-                min(start_progress + spacing, target_progress)
-            )
-
-        # Keep the last intermediate waypoint at pre_target_offset before the
-        # final target. The final target itself is appended separately.
-        if (
-            target_progress - waypoint_generation_start
-            > pre_target_offset + eps
-        ):
-            pre_target_progress = float(
-                np.clip(
-                    target_progress - pre_target_offset,
-                    waypoint_generation_start,
-                    target_progress,
-                )
-            )
-
-            waypoint_progress = np.arange(
-                waypoint_generation_start,
-                pre_target_progress,
-                spacing,
-                dtype=np.float32,
-            )
-
-            if (
-                waypoint_progress.size == 0
-                or abs(
-                    float(waypoint_progress[-1])
-                    - pre_target_progress
-                ) > eps
-            ):
-                waypoint_progress = np.append(
-                    waypoint_progress,
-                    np.float32(pre_target_progress),
-                )
-            else:
-                waypoint_progress[-1] = np.float32(
-                    pre_target_progress
-                )
-        else:
-            # For aorta6, never put start_progress back into the waypoint list.
-            # If the remaining route is very short, use the target directly.
-            if is_aorta6:
-                waypoint_progress = np.asarray(
-                    [],
-                    dtype=np.float32,
-                )
-            else:
-                waypoint_progress = np.asarray(
-                    [start_progress],
-                    dtype=np.float32,
-                )
-
-        # Always append the actual target as the final task point.
-        if (
-            waypoint_progress.size == 0
-            or abs(
-                float(waypoint_progress[-1])
-                - target_progress
-            ) > eps
-        ):
-            waypoint_progress = np.append(
-                waypoint_progress,
-                np.float32(target_progress),
-            )
-        else:
-            waypoint_progress[-1] = np.float32(
-                target_progress
-            )
-
-        # Preserve the original fallback for other vessels. For aorta6, a
-        # one-point sequence containing only the target is valid and must not
-        # reintroduce the physical start as waypoint[0].
-        if waypoint_progress.size < 2 and not is_aorta6:
-            waypoint_progress = np.asarray(
-                [start_progress, target_progress],
-                dtype=np.float32,
-            )
-
-        if is_aorta6:
-            first_progress = float(waypoint_progress[0])
-            print(
-                "[AORTA6_WAYPOINT_AFTER_START]",
-                "physical_start_progress_mm=",
-                float(start_progress) * 1000.0,
-                "first_waypoint_progress_mm=",
-                first_progress * 1000.0,
-                "distance_after_start_mm=",
-                max(0.0, first_progress - float(start_progress)) * 1000.0,
-                "waypoint_num=",
-                int(len(waypoint_progress)),
-            )
-
-        waypoint_points = np.asarray([self._interpolate_centerline_point_at_progress(float(q)) for q in waypoint_progress], dtype=np.float32)
-        if self.target_position is not None and len(waypoint_points) > 0:
-            target_np = np.asarray(self.target_position, dtype=np.float32).reshape(3)
-            if np.all(np.isfinite(target_np)):
-                waypoint_points[-1] = target_np
-        self.waypoint_progress = waypoint_progress.astype(np.float32)
-        self.waypoint_points = waypoint_points.astype(np.float32)
-        self.current_waypoint_idx = 0
-        self.current_waypoint_progress_ratio = 0.0
-        self.current_waypoint_distance = np.nan
-        self.current_waypoint_approach_delta = 0.0
-        self.current_waypoint_reached_this_step = False
-        self.current_waypoint_reached_count_episode = 0
-        self.current_waypoint_is_final = False
-        self.current_target_reached_this_step = False
-        self.previous_waypoint_idx = None
-        self.previous_waypoint_distance = None
-        self.current_waypoint_handoff_counter = 0
-        self.current_waypoint_handoff_this_step = False
-        self.current_waypoint_handoff_count_episode = 0
-
-    def _ordered_route_potential(self) -> float:
-        points = getattr(self, "waypoint_progress", None)
-        if points is None or len(points) == 0:
-            return 0.0
-        return ordered_route_potential(
-            start_progress=float(getattr(self, "current_waypoint_start_progress", 0.0)),
-            target_progress=float(getattr(self, "current_waypoint_target_progress", 0.0)),
-            waypoint_progress=points,
-            active_waypoint_index=int(getattr(self, "current_waypoint_idx", 0)),
-            active_waypoint_distance=float(
-                getattr(self, "current_waypoint_distance", float("nan"))
-            ),
-        )
-
-    def _initialize_waypoint_progress_from_current_tip(self) -> None:
-        """Start every episode from the first waypoint.
-
-        Do not initialize the active waypoint by centerline projection. This keeps
-        the waypoint task strictly sequential: a waypoint is counted only after
-        the tip enters its reach threshold.
-        """
         try:
-            tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3], dtype=np.float32)
-        except Exception:
-            tip = np.zeros(3, dtype=np.float32)
-
-        points = getattr(self, "waypoint_points", None)
-        if points is None or len(points) == 0:
-            self.current_waypoint_idx = 0
-            self.current_waypoint_progress_ratio = 0.0
-            self.current_waypoint_distance = float(np.linalg.norm(np.asarray(self.target_position, dtype=np.float32) - tip))
-            self.current_waypoint_approach_delta = 0.0
-            self.current_waypoint_reached_this_step = False
-            self.current_waypoint_reached_count_episode = 0
-            self.current_waypoint_is_final = False
-            self.current_target_reached_this_step = False
-            self.previous_waypoint_idx = 0
-            self.previous_waypoint_distance = self.current_waypoint_distance
-            self.current_waypoint_handoff_counter = 0
-            self.current_waypoint_handoff_this_step = False
-            self.current_waypoint_handoff_count_episode = 0
-            return
-
-        idx = 0
-        self.current_waypoint_idx = idx
-        self.current_waypoint_progress_ratio = 0.0
-        self.current_waypoint_distance = float(np.linalg.norm(np.asarray(points[idx], dtype=np.float32) - tip))
-        self.current_waypoint_approach_delta = 0.0
-        self.current_waypoint_reached_this_step = False
-        self.current_waypoint_reached_count_episode = 0
-        self.current_waypoint_is_final = False
-        self.current_target_reached_this_step = False
-        self.previous_waypoint_idx = idx
-        self.previous_waypoint_distance = self.current_waypoint_distance
-        self.current_waypoint_handoff_counter = 0
-        self.current_waypoint_handoff_this_step = False
-        self.current_waypoint_handoff_count_episode = 0
-
-    def _update_waypoint_progress(self, tip_pos: np.ndarray, valid_inside_vessel: bool = True) -> bool:
-        """Update ordered Euclidean waypoints with adjacent-point handoff.
-
-        Normal hit:
-            current waypoint distance <= waypoint_reach_threshold.
-            Advance one waypoint and keep the configured waypoint bonus.
-
-        Missed-point handoff:
-            the next ordered waypoint is clearly closer than the current one
-            for waypoint_handoff_confirm_steps consecutive steps.
-            Advance exactly one waypoint, but do not award the waypoint bonus.
-
-        The handoff uses only current/next waypoint Euclidean distances. It does
-        not use centerline progress or a cross-section gate.
-        """
-        points = getattr(self, "waypoint_points", None)
-        self.current_waypoint_handoff_this_step = False
-
-        if points is None or len(points) == 0:
-            target_dist = float(
-                np.linalg.norm(
-                    np.asarray(self.target_position, dtype=np.float32)
-                    - np.asarray(tip_pos, dtype=np.float32)
+            tip = np.asarray(
+                self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3],
+                dtype=np.float32,
+            )
+            projection = project_to_route(
+                self.centerline_points,
+                self.centerline_cumlength,
+                tip,
+                previous_progress=None,
+            )
+            progress = float(
+                np.clip(
+                    projection.progress,
+                    self.current_route_start_progress,
+                    self.current_route_target_progress,
                 )
             )
-            self.current_waypoint_distance = target_dist
-            self.current_waypoint_approach_delta = 0.0
-            self.current_waypoint_is_final = True
-            self.current_waypoint_reached_this_step = False
-            self.current_target_reached_this_step = bool(
-                valid_inside_vessel
-                and target_dist <= float(self.target_distance_threshold)
+            self.current_route_progress = progress
+            self.previous_route_progress = progress
+            self.current_route_progress_delta = 0.0
+            self.current_route_progress_ratio = normalized_route_progress(
+                progress,
+                self.current_route_start_progress,
+                self.current_route_target_progress,
             )
-            self.current_waypoint_handoff_counter = 0
-            return False
+            self.current_route_projection_segment = int(projection.segment_index)
+            self.current_route_projection_distance = float(projection.distance)
+            self.current_route_projection_jump_rejected = False
+            self._route_projection_cache_step = int(self._elapsed_steps)
+            self._route_projection_cache_tip = tip.copy()
+            self._route_projection_cache_value = projection
+        except Exception:
+            self.current_route_progress = float(self.current_route_start_progress)
+            self.previous_route_progress = float(self.current_route_start_progress)
+            self.current_route_progress_delta = 0.0
+            self.current_route_progress_ratio = 0.0
+            self._route_projection_cache_step = -1
+            self._route_projection_cache_tip = None
+            self._route_projection_cache_value = None
 
-        points = np.asarray(points, dtype=np.float32)
-        tip_pos = np.asarray(tip_pos, dtype=np.float32).reshape(3)
-        idx = int(np.clip(self.current_waypoint_idx, 0, len(points) - 1))
-        last_idx = int(len(points) - 1)
-        is_final = bool(idx >= last_idx)
-        self.current_waypoint_is_final = is_final
+    def _get_tracked_centerline_projection_state(self, tip_pos: np.ndarray):
+        """Return a cached, local and physically gated route projection."""
 
-        active_point = np.asarray(
-            self.target_position if is_final else points[idx],
-            dtype=np.float32,
-        ).reshape(3)
-        current_dist = float(np.linalg.norm(active_point - tip_pos))
-
-        prev_dist = self.previous_waypoint_distance
+        tip = np.asarray(tip_pos, dtype=np.float32).reshape(3)
+        cached_tip = getattr(self, "_route_projection_cache_tip", None)
         if (
-            self.previous_waypoint_idx is None
-            or int(self.previous_waypoint_idx) != idx
-            or prev_dist is None
-            or not np.isfinite(float(prev_dist))
+            cached_tip is not None
+            and int(getattr(self, "_route_projection_cache_step", -1))
+            == int(self._elapsed_steps)
+            and np.allclose(tip, cached_tip, rtol=0.0, atol=1e-9)
+            and getattr(self, "_route_projection_cache_value", None) is not None
         ):
-            prev_dist = current_dist
+            projection = self._route_projection_cache_value
+            return (
+                float(self.current_route_progress),
+                int(projection.segment_index),
+                float(projection.distance),
+                np.asarray(projection.point, dtype=np.float32),
+                np.asarray(projection.tangent, dtype=np.float32),
+            )
 
-        self.current_waypoint_approach_delta = float(
+        previous = float(getattr(self, "current_route_progress", np.nan))
+        previous_arg = previous if np.isfinite(previous) else None
+        projection = project_to_route(
+            self.centerline_points,
+            self.centerline_cumlength,
+            tip,
+            previous_progress=previous_arg,
+            backward_window=self.route_projection_backward_window,
+            forward_window=self.route_projection_forward_window,
+            ambiguity_tolerance=self.route_projection_ambiguity_tolerance,
+            max_progress_step=self.route_projection_max_progress_step,
+        )
+        progress = float(
             np.clip(
-                float(prev_dist) - current_dist,
-                -self.progress_clip,
-                self.progress_clip,
+                projection.progress,
+                self.current_route_start_progress,
+                self.current_route_target_progress,
             )
         )
-
-        if is_final:
-            self.current_waypoint_idx = last_idx
-            self.current_waypoint_distance = float(current_dist)
-            self.current_waypoint_progress_ratio = 1.0
-            self.current_waypoint_reached_this_step = False
-            self.current_target_reached_this_step = bool(
-                valid_inside_vessel
-                and current_dist <= float(self.target_distance_threshold)
-            )
-            self.previous_waypoint_idx = int(self.current_waypoint_idx)
-            self.previous_waypoint_distance = float(current_dist)
-            self.current_waypoint_handoff_counter = 0
-            return False
-
-        reached_by_radius = bool(
-            valid_inside_vessel
-            and current_dist <= float(self.waypoint_reach_threshold)
+        self.previous_route_progress = previous if previous_arg is not None else progress
+        self.current_route_progress = progress
+        self.current_route_progress_delta = (
+            progress - previous if previous_arg is not None else 0.0
+        )
+        self.current_route_progress_ratio = normalized_route_progress(
+            progress,
+            self.current_route_start_progress,
+            self.current_route_target_progress,
+        )
+        self.current_route_projection_segment = int(projection.segment_index)
+        self.current_route_projection_distance = float(projection.distance)
+        self.current_route_projection_jump_rejected = bool(projection.jump_rejected)
+        if projection.jump_rejected:
+            self.route_projection_jump_rejections_episode += 1
+        self._route_projection_cache_step = int(self._elapsed_steps)
+        self._route_projection_cache_tip = tip.copy()
+        self._route_projection_cache_value = projection
+        return (
+            progress,
+            int(projection.segment_index),
+            float(projection.distance),
+            np.asarray(projection.point, dtype=np.float32),
+            np.asarray(projection.tangent, dtype=np.float32),
         )
 
-        # Compare only the adjacent next waypoint.
-        next_point = np.asarray(
-            self.target_position if idx + 1 >= last_idx else points[idx + 1],
-            dtype=np.float32,
-        ).reshape(3)
-        next_dist = float(np.linalg.norm(next_point - tip_pos))
-
-        next_is_clearly_closer = bool(
-            valid_inside_vessel
-            and not reached_by_radius
-            and next_dist + float(self.waypoint_handoff_margin) < current_dist
+    def _continuous_route_potential(self) -> float:
+        return normalized_route_progress(
+            float(getattr(self, "current_route_progress", 0.0)),
+            float(getattr(self, "current_route_start_progress", 0.0)),
+            float(getattr(self, "current_route_target_progress", 0.0)),
         )
-
-        if next_is_clearly_closer:
-            self.current_waypoint_handoff_counter = int(
-                getattr(self, "current_waypoint_handoff_counter", 0)
-            ) + 1
-        else:
-            self.current_waypoint_handoff_counter = 0
-
-        handoff = bool(
-            self.current_waypoint_handoff_counter
-            >= int(self.waypoint_handoff_confirm_steps)
-        )
-        advance = bool(reached_by_radius or handoff)
-
-        # Only a true configured-radius hit is counted/rewarded as waypoint_reached.
-        self.current_waypoint_reached_this_step = bool(reached_by_radius)
-        self.current_target_reached_this_step = False
-
-        if advance:
-            if reached_by_radius:
-                self.current_waypoint_reached_count_episode += 1
-            else:
-                self.current_waypoint_handoff_this_step = True
-                self.current_waypoint_handoff_count_episode += 1
-
-            # Advance at most one waypoint per environment step.
-            idx += 1
-            self.current_waypoint_idx = int(idx)
-            is_final = bool(idx >= last_idx)
-            self.current_waypoint_is_final = is_final
-
-            active_point = np.asarray(
-                self.target_position if is_final else points[idx],
-                dtype=np.float32,
-            ).reshape(3)
-            current_dist = float(np.linalg.norm(active_point - tip_pos))
-
-            # Distances before/after a target switch are not comparable.
-            # Reset the switch-step delta to avoid a fake progress reward.
-            if handoff or is_final:
-                self.current_waypoint_approach_delta = 0.0
-
-            self.current_waypoint_handoff_counter = 0
-        else:
-            self.current_waypoint_idx = int(idx)
-
-        self.current_waypoint_distance = float(current_dist)
-        self.current_waypoint_progress_ratio = float(
-            self.current_waypoint_idx / max(1, last_idx)
-        )
-        self.previous_waypoint_idx = int(self.current_waypoint_idx)
-        self.previous_waypoint_distance = float(current_dist)
-
-        # Return True only for a real threshold hit, so handoff gets no bonus.
-        return bool(reached_by_radius)
 
     # ------------------------------------------------------------------
     # Action application and scene initialization
@@ -3264,11 +3079,10 @@ class MCREnv(SofaEnv):
             self.target_position = np.asarray(scene_target, dtype=np.float32).reshape(3)
 
         # Scene creation may already randomize the entry point when not using
-        # soft single-vessel randomization. Keep that sampled start so the
-        # waypoint sequence can begin from the actual catheter start rather
-        # than from the absolute centerline endpoint. Reset soft-start here to
-        # avoid stale start references after full scene reloads; soft reset will
-        # set it again before rebuilding waypoints.
+        # soft single-vessel randomization. Keep that sampled start so route
+        # progress begins from the actual catheter start rather than the
+        # absolute centerline endpoint. Reset soft-start here to avoid stale
+        # references after full scene reloads.
         self.current_scene_start_position = None
         self.current_soft_start_position = None
         scene_start = self.scene_creation_result.get("nominal_start_position", None)
@@ -3303,7 +3117,7 @@ class MCREnv(SofaEnv):
             self.centerline_cumlength = None
 
         self._apply_curriculum_target_position()
-        self._build_waypoint_sequence()
+        self._configure_continuous_route()
         self._capture_soft_reset_reference_pose()
 
         vessel_positions = np.asarray(self.mcr_environment.get_vessel_tree_positions(), dtype=np.float32)

@@ -562,54 +562,31 @@ class InferenceController(Sofa.Core.Controller):
         )
         no_progress_counter = int(info.get("no_progress_counter", 0))
 
-        # Current ordered waypoint diagnostics.
-        waypoint_idx = int(info.get("waypoint_idx", -1))
-        waypoint_num = int(info.get("waypoint_num", 0))
-        waypoint_distance = float(info.get("waypoint_distance", np.nan))
-        waypoint_is_final = bool(info.get("waypoint_is_final", False))
-        waypoint_handoff_counter = int(
-            info.get("waypoint_handoff_counter", 0)
+        route_progress = float(info.get("route_progress", np.nan))
+        route_target = float(info.get("route_target_progress", np.nan))
+        route_ratio = float(info.get("route_progress_ratio", np.nan))
+        route_projection_distance = float(
+            info.get("route_projection_distance", np.nan)
         )
-        waypoint_handoff = bool(
-            info.get("waypoint_handoff_this_step", False)
+        route_projection_segment = int(info.get("route_projection_segment", -1))
+        route_jump_rejected = bool(
+            info.get("route_projection_jump_rejected", False)
         )
-        waypoint_handoff_count = int(
-            info.get("waypoint_handoff_count_episode", 0)
+        route_jump_rejections = int(
+            info.get("route_projection_jump_rejections_episode", 0)
         )
-
-        waypoint_position = np.full(3, np.nan, dtype=np.float32)
-        try:
-            waypoint_points = getattr(self.env, "waypoint_points", None)
-            if waypoint_points is not None and len(waypoint_points) > 0:
-                last_idx = int(len(waypoint_points) - 1)
-                safe_idx = int(np.clip(waypoint_idx, 0, last_idx))
-                if safe_idx >= last_idx:
-                    waypoint_position = np.asarray(
-                        getattr(self.env, "target_position", waypoint_points[safe_idx]),
-                        dtype=np.float32,
-                    ).reshape(3)
-                else:
-                    waypoint_position = np.asarray(
-                        waypoint_points[safe_idx],
-                        dtype=np.float32,
-                    ).reshape(3)
-        except Exception:
-            pass
 
         print(
             f"[TRAIN_EQUIV_METRIC] Step={self.step_counter:04d} | "
             f"R={reward:+.3f} term={self._yesno(terminated)} trunc={self._yesno(truncated)} "
             f"reason={info.get('terminal_reason', 'unknown')} | "
             f"curD={cur_d * 1000.0:.2f}mm minD={min_d * 1000.0:.2f}mm | "
-            f"wp={waypoint_idx}/{max(waypoint_num - 1, 0)} "
-            f"wpFinal={self._yesno(waypoint_is_final)} "
-            f"wpD={waypoint_distance * 1000.0:.2f}mm "
-            f"wpHandoffCnt={waypoint_handoff_counter} "
-            f"wpHandoff={self._yesno(waypoint_handoff)} "
-            f"wpHandoffN={waypoint_handoff_count} "
-            f"wpPos=({waypoint_position[0]:+.6f},"
-            f"{waypoint_position[1]:+.6f},"
-            f"{waypoint_position[2]:+.6f}) | "
+            f"route={route_progress * 1000.0:.1f}/"
+            f"{route_target * 1000.0:.1f}mm ({route_ratio:.3f}) "
+            f"routeSeg={route_projection_segment} "
+            f"routeD={route_projection_distance * 1000.0:.2f}mm "
+            f"jumpReject={self._yesno(route_jump_rejected)} "
+            f"jumpRejectN={route_jump_rejections} | "
             f"gate={gate_idx}/{max(gate_num - 1, 0)} next={gate_next} gate_r={gate_r:.3f} "
             f"passed={self._yesno(info.get('gate_passed_this_step', False))} "
             f"noProg={no_progress_counter} "

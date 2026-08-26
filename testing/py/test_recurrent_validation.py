@@ -29,8 +29,7 @@ class _OneStepEnv:
                     "terminal_reason": "target",
                     "final_dist_to_goal": 0.002,
                     "min_dist_to_goal": 0.0015,
-                    "waypoint_reached_count_episode": 4,
-                    "waypoint_num": 5,
+                    "route_progress_ratio": 1.0,
                     "route_potential": 1.0,
                 }
             ],
@@ -69,7 +68,7 @@ class RecurrentValidationTest(unittest.TestCase):
         self.assertEqual(predictor.reset_count, 3)
         self.assertEqual(result.valid_episodes, 3)
         self.assertEqual(result.valid_success_count, 3)
-        self.assertEqual(result.valid_waypoint_reached_ratio_mean, 1.0)
+        self.assertEqual(result.valid_route_completion_mean, 1.0)
         self.assertEqual(result.valid_route_potential_mean, 1.0)
         self.assertAlmostEqual(result.valid_final_distance_mm_mean, 2.0)
         self.assertAlmostEqual(result.valid_min_distance_mm_mean, 1.5)
@@ -95,7 +94,7 @@ class RecurrentValidationTest(unittest.TestCase):
                     "out_of_vessel",
                     10,
                     -140.0,
-                    waypoint_reached_ratio=0.1,
+                    route_completion=0.1,
                     route_potential=0.2,
                     final_distance_mm=100.0,
                     min_distance_mm=90.0,
@@ -112,7 +111,7 @@ class RecurrentValidationTest(unittest.TestCase):
                     "out_of_vessel",
                     20,
                     -120.0,
-                    waypoint_reached_ratio=0.4,
+                    route_completion=0.4,
                     route_potential=0.5,
                     final_distance_mm=60.0,
                     min_distance_mm=50.0,
@@ -129,7 +128,7 @@ class RecurrentValidationTest(unittest.TestCase):
                     "target",
                     30,
                     200.0,
-                    waypoint_reached_ratio=0.0,
+                    route_completion=0.0,
                     route_potential=0.0,
                     final_distance_mm=3.0,
                     min_distance_mm=2.0,

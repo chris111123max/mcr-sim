@@ -54,14 +54,12 @@ from mcr_sim.training_config import (
     REWARD_NO_PROGRESS_TERMINAL,
     REWARD_NON_FINITE,
     REWARD_RETRACTION,
+    REWARD_ROUTE_PROGRESS,
     REWARD_STEP,
     REWARD_SUCCESS,
-    REWARD_TARGET_APPROACH,
     REWARD_TIMEOUT,
     REWARD_WALL_PENETRATION,
     REWARD_WALL_PROXIMITY,
-    REWARD_WAYPOINT_APPROACH,
-    REWARD_WAYPOINT_REACHED,
     REWARD_WRONG_BRANCH,
     SAC_BATCH_SIZE,
     SAC_BUFFER_SIZE,
@@ -152,7 +150,7 @@ MODEL_IDS_FOR_LOGGING = [
 
 
 class ExtraRolloutMetricsCallback(BaseCallback):
-    """Compact TensorBoard metrics for waypoint SAC training."""
+    """Compact TensorBoard metrics for continuous-route SAC training."""
 
     def __init__(self, window_size: int = 50, success_label: str = "target", verbose: int = 0):
         super().__init__(verbose)
@@ -205,20 +203,16 @@ class ExtraRolloutMetricsCallback(BaseCallback):
     def _episode_from_info(self, info: dict) -> dict:
         episode_info = info.get("episode", {}) if isinstance(info.get("episode", {}), dict) else {}
 
-        waypoint_reached_count = self._safe_float(info.get("waypoint_reached_count_episode", np.nan))
-        waypoint_num = self._safe_float(info.get("waypoint_num", np.nan))
-
-        # Single clean waypoint-progress metric:
-        #   0.0 = no waypoint reached in this episode
-        #   1.0 = all waypoints/final target reached
-        # This is based only on actually reached waypoints, not on the active waypoint index
-        # initialized by centerline projection.
-        if np.isfinite(waypoint_num) and waypoint_num > 1:
-            waypoint_reached_ratio = float(np.clip(waypoint_reached_count / max(1.0, waypoint_num - 1.0), 0.0, 1.0))
+        # Reward V7 emits continuous selected-route completion.
+        route_progress_ratio = self._safe_float(
+            info.get("route_progress_ratio", np.nan)
+        )
+        if np.isfinite(route_progress_ratio):
+            route_completion = float(np.clip(route_progress_ratio, 0.0, 1.0))
         else:
-            waypoint_reached_ratio = float("nan")
+            route_completion = float("nan")
         if bool(info.get("done_by_target", False)):
-            waypoint_reached_ratio = 1.0
+            route_completion = 1.0
 
         return {
             "task_id": str(info.get("task_id", "unknown")),
@@ -241,10 +235,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "done_by_non_finite": bool(info.get("done_by_non_finite", False)),
             "ep_len": self._safe_float(episode_info.get("l", np.nan)),
             "ep_reward": self._safe_float(episode_info.get("r", np.nan)),
-            "waypoint_reached_ratio": waypoint_reached_ratio,
-            "waypoint_reached_count": waypoint_reached_count,
-            "waypoint_num": waypoint_num,
-            "waypoint_distance_m": self._safe_float(info.get("waypoint_distance", np.nan)),
+            "route_completion": route_completion,
             "out_of_vessel": bool(info.get("out_of_vessel_this_episode", False)),
             "wrong_branch": bool(info.get("wrong_branch_this_episode", False)),
             "sdf_surface_clearance_m": self._safe_float(
@@ -273,11 +264,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             ),
             "vessel_scale_factor": self._safe_float(info.get("vessel_scale_factor", np.nan)),
             "reward_progress": self._safe_float(
-                info.get("episode_reward_waypoint_approach", 0.0)
-            )
-            + self._safe_float(info.get("episode_reward_target_approach", 0.0)),
-            "reward_waypoints": self._safe_float(
-                info.get("episode_reward_waypoint_reached", 0.0)
+                info.get("episode_reward_route_progress", 0.0)
             ),
             "reward_terminal": self._safe_float(
                 info.get("episode_reward_successful_task", 0.0)
@@ -363,12 +350,10 @@ class ExtraRolloutMetricsCallback(BaseCallback):
         self.logger.record(f"{prefix}/success_{self.success_label}_w{self.window_size}", self._rate(ep["success_target"] for ep in window))
         self.logger.record(f"{prefix}/min_dist_mm_w{self.window_size}", self._mean(ep["min_dist_m"] * 1000.0 for ep in window))
 
-        # The only waypoint progress metric kept in TensorBoard.
-        # It is the recent-episode average of:
-        #   reached_waypoints / (waypoint_num - 1)
+        # Continuous selected-route completion is the single navigation metric.
         self.logger.record(
-            f"{prefix}/waypoint_reached_ratio_w{self.window_size}",
-            self._mean(ep["waypoint_reached_ratio"] for ep in window),
+            f"{prefix}/route_completion_w{self.window_size}",
+            self._mean(ep["route_completion"] for ep in window),
         )
 
     def _on_rollout_end(self) -> None:
@@ -395,7 +380,6 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"rollout_recent/sdf_penetration_integral_mm_steps_w{self.window_size}", self._mean(ep["sdf_penetration_integral_m_steps"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/route_graph_gap_mm_w{self.window_size}", self._mean(ep["route_graph_distance_gap_m"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/progress_w{self.window_size}", self._mean(ep["reward_progress"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/waypoints_w{self.window_size}", self._mean(ep["reward_waypoints"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
@@ -443,7 +427,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             non_finite_rate = self._rate(ep["done_by_non_finite"] for ep in task_window)
             final_dist_mm = self._mean(ep["final_dist_m"] * 1000.0 for ep in task_window)
             min_dist_mm = self._mean(ep["min_dist_m"] * 1000.0 for ep in task_window)
-            waypoint_ratio = self._mean(ep["waypoint_reached_ratio"] for ep in task_window)
+            route_completion = self._mean(ep["route_completion"] for ep in task_window)
             safe_success_rate = self._rate(ep["safe_success"] for ep in task_window)
             contact_free_success_rate = self._rate(
                 ep["contact_free_success"] for ep in task_window
@@ -462,7 +446,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"{prefix}/non_finite_rate_w{self.window_size}", non_finite_rate, exclude="stdout")
             self.logger.record(f"{prefix}/final_dist_mm_w{self.window_size}", final_dist_mm, exclude="stdout")
             self.logger.record(f"{prefix}/min_dist_mm_w{self.window_size}", min_dist_mm, exclude="stdout")
-            self.logger.record(f"{prefix}/waypoint_reached_ratio_w{self.window_size}", waypoint_ratio, exclude="stdout")
+            self.logger.record(f"{prefix}/route_completion_w{self.window_size}", route_completion, exclude="stdout")
             self.logger.record(f"{prefix}/safe_success_rate_w{self.window_size}", safe_success_rate, exclude="stdout")
             self.logger.record(f"{prefix}/contact_free_success_rate_w{self.window_size}", contact_free_success_rate, exclude="stdout")
             self.logger.record(f"{prefix}/sdf_clearance_min_mm_w{self.window_size}", sdf_clearance_min_mm, exclude="stdout")
@@ -476,7 +460,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                     "out_of_vessel_rate": float(out_rate),
                     "wrong_branch_rate": float(wrong_branch_rate),
                     "final_dist_mm": float(final_dist_mm),
-                    "waypoint_ratio": float(waypoint_ratio),
+                    "route_completion": float(route_completion),
                 })
 
         # Bottleneck summary for quickly detecting whether mixed training is being
@@ -498,7 +482,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"mix_bottleneck/worst_timeout_rate_w{self.window_size}", active_task_stats[worst_idx]["timeout_rate"], exclude="stdout")
             self.logger.record(f"mix_bottleneck/worst_out_of_vessel_rate_w{self.window_size}", active_task_stats[worst_idx]["out_of_vessel_rate"], exclude="stdout")
             self.logger.record(f"mix_bottleneck/worst_final_dist_mm_w{self.window_size}", active_task_stats[worst_idx]["final_dist_mm"], exclude="stdout")
-            self.logger.record(f"mix_bottleneck/worst_waypoint_ratio_w{self.window_size}", active_task_stats[worst_idx]["waypoint_ratio"], exclude="stdout")
+            self.logger.record(f"mix_bottleneck/worst_route_completion_w{self.window_size}", active_task_stats[worst_idx]["route_completion"], exclude="stdout")
 
             for item in active_task_stats:
                 prefix = f"bottleneck/{item['task_id']}"
@@ -1641,8 +1625,7 @@ def main():
                 f"min_ent_coef={args.min_ent_coef:g}"
             )
             print(
-                f"[MCR TRAIN] reward progress={REWARD_WAYPOINT_APPROACH:g}/"
-                f"{REWARD_TARGET_APPROACH:g} waypoint={REWARD_WAYPOINT_REACHED:g} "
+                f"[MCR TRAIN] reward route_progress={REWARD_ROUTE_PROGRESS:g} "
                 f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
                 f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
                 f"retract/no_progress={REWARD_RETRACTION:g}/{REWARD_NO_PROGRESS:g} "

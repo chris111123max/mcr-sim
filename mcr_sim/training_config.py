@@ -33,13 +33,17 @@ ACTOR_OBSERVATION_DIM = (
     ACTOR_CURRENT_GEOMETRY_DIM + ACTOR_HISTORY_STEPS * ACTOR_DYNAMIC_STEP_DIM
 )
 
-WAYPOINT_SPACING_M = 0.005
-WAYPOINT_REACH_THRESHOLD_M = 0.002
-PRE_TARGET_WAYPOINT_OFFSET_M = 0.001
-WAYPOINT_OBSERVATION_SCALE_M = 0.010
-WAYPOINT_PROGRESS_CLIP_M = 0.001
-WAYPOINT_HANDOFF_MARGIN_M = 0.0005
-WAYPOINT_HANDOFF_CONFIRM_STEPS = 2
+# Continuous selected-route tracking. Initial localization may inspect the
+# complete route; recurrent tracking is local and physically gated so nearby
+# arms of a U-turn cannot create artificial progress. Two moving guidance
+# points replace discrete waypoint spheres without changing observation size.
+ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.020)
+ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.020
+ROUTE_PROJECTION_BACKWARD_WINDOW_M = 0.020
+ROUTE_PROJECTION_FORWARD_WINDOW_M = 0.040
+ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M = 0.00075
+ROUTE_PROJECTION_MAX_PROGRESS_STEP_M = 0.002
+ROUTE_SUCCESS_PROGRESS_MARGIN_M = 0.005
 
 LOCAL_FIELD_ACTION_ANGLE_RAD = 2.0 * math.pi / 180.0
 MAX_ACTION_DELTA = 0.30
@@ -49,7 +53,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V6
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V7
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -80,20 +84,17 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v6.  Dense navigation credit is the difference of an ordered
-# route potential in [0, 1].  It therefore telescopes over a trajectory:
+# Reward profile v7. Dense navigation credit is the difference of continuous
+# selected-route completion in [0, 1]. It therefore telescopes over a trajectory:
 # forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend.  V6 keeps the
-# V5 task and terminal values, and aligns the existing wall features with the
+# available again after a necessary correction in a tight bend.  V7 keeps the
+# V6 task and terminal values, and aligns the existing wall features with the
 # same whole-body SDF quantity used by out-of-vessel termination.  Sustained
 # stagnation is still terminated and receives its -120 penalty.
-REWARD_PROFILE_VERSION = 6
+REWARD_PROFILE_VERSION = 7
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_BUDGET = 100.0
-REWARD_WAYPOINT_BUDGET = 20.0
-REWARD_WAYPOINT_APPROACH = REWARD_PROGRESS_BUDGET
-REWARD_WAYPOINT_REACHED = REWARD_WAYPOINT_BUDGET
-REWARD_TARGET_APPROACH = REWARD_PROGRESS_BUDGET
+REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_BUDGET
 REWARD_WALL_PROXIMITY = -0.02
 REWARD_WALL_PENETRATION = -0.50
 REWARD_OFF_TARGET_BRANCH = -0.10
@@ -108,7 +109,7 @@ REWARD_NO_PROGRESS_TERMINAL = -120.0
 REWARD_STEP = -0.002
 
 # A policy that stays at the insertion lower bound must not fill the replay
-# buffer with 4096-step timeout episodes.  Net ordered-waypoint approach is
+# buffer with long timeout episodes. Net continuous route progress is
 # measured over a long window so normal magnetic steering pauses are allowed.
 # Only sustained stagnation after the window is full becomes terminal.
 NO_PROGRESS_WINDOW_STEPS = 256
@@ -128,13 +129,10 @@ def reward_profile() -> dict:
 
     return {
         "version": REWARD_PROFILE_VERSION,
-        "progress_normalization": "ordered_route_potential_difference",
+        "progress_normalization": "continuous_selected_route_difference",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_budget": REWARD_PROGRESS_BUDGET,
-        "waypoint_budget": REWARD_WAYPOINT_BUDGET,
-        "waypoint_approach": REWARD_WAYPOINT_APPROACH,
-        "waypoint_reached": REWARD_WAYPOINT_REACHED,
-        "target_approach": REWARD_TARGET_APPROACH,
+        "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
         "wall_penetration": REWARD_WALL_PENETRATION,
         "off_target_branch": REWARD_OFF_TARGET_BRANCH,
@@ -180,43 +178,6 @@ def body_sdf_risk_features(
     )
     outside_depth = min(max(signed / tolerance, 0.0), 1.0)
     return warning, outside_depth
-
-
-def ordered_route_potential(
-    start_progress: float,
-    target_progress: float,
-    waypoint_progress,
-    active_waypoint_index: int,
-    active_waypoint_distance: float,
-) -> float:
-    """Return bounded progress through the strictly ordered waypoint task.
-
-    The completed prefix comes from the active waypoint index.  Progress inside
-    the active segment comes only from Euclidean approach to that waypoint, so
-    the reward never exposes a privileged global centerline projection to the
-    policy and cannot jump to an unrelated branch.
-    """
-
-    start = float(start_progress)
-    target = float(target_progress)
-    route_length = target - start
-    points = [float(value) for value in waypoint_progress]
-    if not points or not math.isfinite(route_length) or route_length <= 1e-9:
-        return 0.0
-
-    index = min(max(int(active_waypoint_index), 0), len(points) - 1)
-    active = min(max(points[index], start), target)
-    previous = start if index == 0 else min(max(points[index - 1], start), target)
-    segment_length = max(active - previous, 0.0)
-    distance = float(active_waypoint_distance)
-    if not math.isfinite(distance):
-        completion = 0.0
-    elif segment_length <= 1e-9:
-        completion = 0.0
-    else:
-        completion = min(max(1.0 - distance / segment_length, 0.0), 1.0)
-    travelled = max(previous - start, 0.0) + segment_length * completion
-    return min(max(travelled / route_length, 0.0), 1.0)
 
 
 # Training-only task curriculum.  Every stage uses the complete B/C training
@@ -364,6 +325,19 @@ def curriculum_protocol_profile() -> dict:
         "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
+        "navigation": "continuous_selected_route",
+        "route_guidance_lookahead_distances_m": list(
+            ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M
+        ),
+        "route_projection_backward_window_m": ROUTE_PROJECTION_BACKWARD_WINDOW_M,
+        "route_projection_forward_window_m": ROUTE_PROJECTION_FORWARD_WINDOW_M,
+        "route_projection_ambiguity_tolerance_m": (
+            ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M
+        ),
+        "route_projection_max_progress_step_m": (
+            ROUTE_PROJECTION_MAX_PROGRESS_STEP_M
+        ),
+        "route_success_progress_margin_m": ROUTE_SUCCESS_PROGRESS_MARGIN_M,
         "observation_dim": ACTOR_OBSERVATION_DIM,
     }
 
@@ -510,9 +484,6 @@ def validate_training_defaults() -> None:
         raise ValueError(
             "Episode action budget is too short for the largest scaled vessel."
         )
-    minimum_scaled_lumen_radius = TRAIN_VESSEL_MIN_RADIUS_M * VESSEL_SCALE_MIN
-    if WAYPOINT_REACH_THRESHOLD_M >= minimum_scaled_lumen_radius:
-        raise ValueError("Waypoint threshold must be smaller than the minimum lumen radius.")
     if not (0.0 <= LMD_CONTACT_DISTANCE_M < LMD_ALARM_DISTANCE_M):
         raise ValueError("LocalMinDistance requires contactDistance < alarmDistance.")
     if not (0.0 < OUT_OF_VESSEL_SAFETY_RATIO <= 1.0):
@@ -521,6 +492,17 @@ def validate_training_defaults() -> None:
         raise ValueError("Endpoint randomization distances must be non-negative.")
     if REWARD_PROGRESS_NORMALIZATION_M <= 0.0:
         raise ValueError("Reward progress normalization must be positive.")
+    if len(ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M) != 2 or any(
+        distance <= 0.0 for distance in ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M
+    ):
+        raise ValueError("Exactly two positive continuous route guidance distances are required.")
+    if not (
+        ROUTE_PROJECTION_BACKWARD_WINDOW_M > ROUTE_PROJECTION_MAX_PROGRESS_STEP_M
+        and ROUTE_PROJECTION_FORWARD_WINDOW_M > ROUTE_PROJECTION_MAX_PROGRESS_STEP_M
+        and ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M >= 0.0
+        and ROUTE_SUCCESS_PROGRESS_MARGIN_M > 0.0
+    ):
+        raise ValueError("Continuous route tracking settings are invalid.")
     if not (
         REWARD_SUCCESS > 0.0
         and REWARD_OUT_OF_VESSEL < 0.0
@@ -530,7 +512,7 @@ def validate_training_defaults() -> None:
         and REWARD_NO_PROGRESS_TERMINAL < 0.0
     ):
         raise ValueError("Terminal reward signs are invalid.")
-    maximum_navigation_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET
+    maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
         and REWARD_WRONG_BRANCH < -maximum_navigation_credit

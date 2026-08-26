@@ -24,7 +24,6 @@ from mcr_sim.training_config import (
     REWARD_STEP,
     REWARD_TIMEOUT,
     REWARD_WALL_PROXIMITY,
-    REWARD_WAYPOINT_BUDGET,
     REWARD_WRONG_BRANCH,
     SAC_MIN_ENT_COEF,
     SAC_BATCH_SIZE,
@@ -41,7 +40,6 @@ from mcr_sim.training_config import (
     curriculum_domain_randomization_profile,
     curriculum_exploration_profile,
     curriculum_sampling_weights,
-    ordered_route_potential,
     update_curriculum_progress,
 )
 
@@ -57,28 +55,11 @@ class RewardProfileTest(unittest.TestCase):
         )
         self.assertGreater(reward, 0.0)
 
-    def test_route_potential_is_bounded_and_ordered(self) -> None:
-        waypoints = [0.0, 0.005, 0.010]
-        self.assertEqual(ordered_route_potential(0.0, 0.010, waypoints, 0, 0.0), 0.0)
-        self.assertAlmostEqual(
-            ordered_route_potential(0.0, 0.010, waypoints, 1, 0.003),
-            0.2,
-        )
-        self.assertAlmostEqual(
-            ordered_route_potential(0.0, 0.010, waypoints, 2, 0.0),
-            1.0,
-        )
-
     def test_potential_difference_restores_credit_after_correction(self) -> None:
         potentials = [0.0, 0.3, 0.2, 0.3, 0.7]
         deltas = [b - a for a, b in zip(potentials, potentials[1:])]
         self.assertAlmostEqual(sum(deltas), potentials[-1] - potentials[0])
         self.assertAlmostEqual(deltas[1] + deltas[2], 0.0)
-
-    def test_ordered_waypoint_bonus_is_naturally_bounded(self) -> None:
-        rewardable_waypoints = 20
-        total = sum(1.0 / rewardable_waypoints for _ in range(rewardable_waypoints))
-        self.assertAlmostEqual(total, 1.0)
 
     def test_curriculum_requires_three_consecutive_mastery_epochs(self) -> None:
         stage, streak = update_curriculum_progress(0, 0, 0.50)
@@ -226,7 +207,7 @@ class RewardProfileTest(unittest.TestCase):
         self.assertEqual(stage0, stage8)
 
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
-        maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET
+        maximum_credit = REWARD_PROGRESS_BUDGET
         self.assertLess(maximum_credit + REWARD_OUT_OF_VESSEL, 0.0)
         self.assertLess(maximum_credit + REWARD_WRONG_BRANCH, 0.0)
         self.assertLess(maximum_credit + REWARD_NON_FINITE, 0.0)
@@ -257,11 +238,11 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLess(retraction_return, 0.0)
         self.assertGreater(retraction_return, REWARD_OUT_OF_VESSEL)
 
-    def test_reward_profile_is_v6(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, 6)
+    def test_reward_profile_is_v7(self) -> None:
+        self.assertEqual(REWARD_PROFILE_VERSION, 7)
 
     def test_success_has_a_large_margin_over_best_failure(self) -> None:
-        maximum_credit = REWARD_PROGRESS_BUDGET + REWARD_WAYPOINT_BUDGET
+        maximum_credit = REWARD_PROGRESS_BUDGET
         successful_return = maximum_credit + REWARD_SUCCESS
         best_timeout_failure = (
             maximum_credit + REWARD_TIMEOUT + REWARD_STEP * MAX_EPISODE_STEPS

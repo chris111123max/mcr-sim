@@ -1,4 +1,4 @@
-"""CPU-only wiring checks for the shared Reward V6 body-safety state."""
+"""CPU-only wiring checks for the shared Reward V7 body-safety state."""
 
 from __future__ import annotations
 

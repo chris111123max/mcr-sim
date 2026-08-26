@@ -55,7 +55,7 @@ class ValidationEpisodeResult:
     terminal_reason: str
     steps: int
     reward: float
-    waypoint_reached_ratio: float = 0.0
+    route_completion: float = 0.0
     route_potential: float = 0.0
     final_distance_mm: float = math.inf
     min_distance_mm: float = math.inf
@@ -68,7 +68,7 @@ class ValidationResult:
     valid_episodes: int
     valid_success_count: int
     valid_success_rate: float
-    valid_waypoint_reached_ratio_mean: float
+    valid_route_completion_mean: float
     valid_route_potential_mean: float
     valid_final_distance_mm_mean: float
     valid_min_distance_mm_mean: float
@@ -95,8 +95,8 @@ def summarize_validation(
         valid_success_rate=(
             float(success_count / episode_count) if episode_count else 0.0
         ),
-        valid_waypoint_reached_ratio_mean=_finite_mean(
-            (item.waypoint_reached_ratio for item in episodes),
+        valid_route_completion_mean=_finite_mean(
+            (item.route_completion for item in episodes),
             0.0,
         ),
         valid_route_potential_mean=_finite_mean(
@@ -118,7 +118,7 @@ def summarize_validation(
 def validation_selection_key(result: ValidationResult):
     """Return the deterministic lexicographic best-checkpoint score.
 
-    Target success remains primary.  Fixed-seed waypoint completion, route
+    Target success remains primary. Fixed-seed route completion, route
     potential, and final distance only break ties, so a merely closer failure
     can never replace a checkpoint with a higher target success rate.
     """
@@ -126,7 +126,7 @@ def validation_selection_key(result: ValidationResult):
     final_distance = float(result.valid_final_distance_mm_mean)
     return (
         float(result.valid_success_rate),
-        float(result.valid_waypoint_reached_ratio_mean),
+        float(result.valid_route_completion_mean),
         float(result.valid_route_potential_mean),
         -final_distance if math.isfinite(final_distance) else -math.inf,
     )
@@ -288,21 +288,17 @@ def evaluate_policy(
                             if done
                             else "timeout"
                         )
-                        waypoint_count = float(
-                            final_info.get("waypoint_reached_count_episode", 0.0)
+                        route_ratio = float(
+                            final_info.get("route_progress_ratio", math.nan)
                         )
-                        waypoint_num = float(final_info.get("waypoint_num", 0.0))
-                        waypoint_ratio = (
-                            1.0
-                            if success
-                            else float(
-                                np.clip(
-                                    waypoint_count / max(1.0, waypoint_num - 1.0),
-                                    0.0,
-                                    1.0,
-                                )
+                        if success:
+                            route_completion = 1.0
+                        elif math.isfinite(route_ratio):
+                            route_completion = float(
+                                np.clip(route_ratio, 0.0, 1.0)
                             )
-                        )
+                        else:
+                            route_completion = 0.0
                         route_potential = float(
                             np.clip(
                                 final_info.get("route_potential", 0.0),
@@ -332,7 +328,7 @@ def evaluate_policy(
                                 terminal_reason=terminal_reason,
                                 steps=step_count,
                                 reward=total_reward,
-                                waypoint_reached_ratio=waypoint_ratio,
+                                route_completion=route_completion,
                                 route_potential=route_potential,
                                 final_distance_mm=(
                                     final_distance * 1000.0
@@ -386,7 +382,7 @@ def evaluate_policy(
                                 terminal_reason="validation_error",
                                 steps=item.steps,
                                 reward=item.reward,
-                                waypoint_reached_ratio=item.waypoint_reached_ratio,
+                                route_completion=item.route_completion,
                                 route_potential=item.route_potential,
                                 final_distance_mm=item.final_distance_mm,
                                 min_distance_mm=item.min_distance_mm,
@@ -417,7 +413,7 @@ def validation_result_to_json(result: ValidationResult) -> str:
                 "terminal_reason": item.terminal_reason,
                 "steps": item.steps,
                 "reward": item.reward,
-                "waypoint_reached_ratio": item.waypoint_reached_ratio,
+                "route_completion": item.route_completion,
                 "route_potential": item.route_potential,
                 "final_distance_mm": item.final_distance_mm,
                 "min_distance_mm": item.min_distance_mm,
@@ -436,6 +432,11 @@ def merge_validation_json(payloads: Sequence[str]) -> ValidationResult:
     episodes = []
     for payload in payloads:
         for item in json.loads(payload or "[]"):
+            if "route_completion" not in item:
+                item["route_completion"] = item.pop(
+                    "waypoint_reached_ratio",
+                    0.0,
+                )
             episodes.append(ValidationEpisodeResult(**item))
     episodes.sort(key=lambda item: (item.vessel_id, item.episode_index))
     return summarize_validation(episodes)

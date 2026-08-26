@@ -168,20 +168,22 @@ keep validation locked until a completed training epoch first reaches success ra
 even, otherwise on the next even epoch, then runs every two epochs.
 The ten fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then
 gathered through the active distributed backend. Rank 0 alone writes CSV
-summaries and checkpoints. Validation CSVs include waypoint completion, route
+summaries and checkpoints. Validation CSVs include continuous route completion, route
 potential, and final/minimum target distance. `best_valid.zip` uses success rate
-as the primary criterion; ties are resolved by waypoint ratio, route potential,
+as the primary criterion; ties are resolved by route completion, route potential,
 then smaller final target distance. Thus a 0%-success validation phase can still
 retain the checkpoint with the strongest measurable progress.
 
-Reward V6 exposes the same 78-dimensional observation to SAC, PPO, and
+Reward V7 exposes the same 78-dimensional observation to SAC, PPO, and
 LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
 clearance, outside-confirmation progress, the worst shaft point and inward
-direction, plus selected-route tangents 5/10/20 mm ahead. The existing wall
+direction, moving route guidance 10/20 mm ahead, plus selected-route tangents
+5/10/20 mm ahead. Continuous progress uses recurrent local projection with a
+physical step gate, so adjacent U-turn arms cannot create an arc-length jump. The existing wall
 proximity and penetration reward components take the maximum of tip and
 whole-body risk, so unsafe shaft contact is visible before the terminal
-whole-body SDF check fires. Checkpoints trained with the former 62-dimensional
-observation are intentionally incompatible and must not be resumed.
+whole-body SDF check fires. Navigation semantics changed even though the state
+remains 78-dimensional, so checkpoints from before Reward V7 must not be resumed.
 
 ## Checkpoint and resume
 
