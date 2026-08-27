@@ -30,6 +30,11 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn("worst_position_local", source)
         self.assertIn("worst_inward_local", source)
         self.assertIn("_get_centerline_lookahead_tangent_features", source)
+        actor_builder = source.split(
+            "def _build_actor_current_geometry_observation", 1
+        )[1].split("def _build_actor_dynamic_step_observation", 1)[0]
+        self.assertIn("remaining_route_distance_norm", actor_builder)
+        self.assertNotIn("route_progress_ratio", actor_builder)
 
     def test_whole_body_risk_drives_existing_wall_reward_features(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
@@ -69,6 +74,17 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn('or bool(getattr(self, "_explicit_force_model", ""))', source)
         self.assertIn("self.current_full_target_position", source)
         self.assertIn("self._apply_curriculum_target_position()", source)
+
+    def test_vector_env_episodes_latch_their_curriculum_stage(self):
+        env_source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
+            encoding="utf-8"
+        )
+        experiment_source = (
+            PROJECT_ROOT / "mcr_sim" / "rl_core" / "experiment.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("self.episode_curriculum_stage = int(self.curriculum_stage)", env_source)
+        self.assertIn('info.get("curriculum_stage", self.curriculum_stage)', experiment_source)
+        self.assertIn("episode_curriculum_stage == self.curriculum_stage", experiment_source)
 
     def test_reward_v8_only_uses_recoverable_behavior_failures(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(

@@ -22,6 +22,7 @@ from ..training_config import (
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_MODELS,
     TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
+    TRAINING_CURRICULUM_STAGE_NAMES,
     TRAINING_CURRICULUM_TARGET_FRACTIONS,
     curriculum_exploration_profile,
     curriculum_sampling_weights,
@@ -193,13 +194,7 @@ class EpochExperimentCallback(BaseCallback):
             self.curriculum_stage = int(getattr(self.model, "curriculum_stage", 0))
             if (
                 self.training_curriculum_enabled
-                and TRAINING_CURRICULUM_TARGET_FRACTIONS[
-                    min(
-                        max(self.curriculum_stage, 0),
-                        len(TRAINING_CURRICULUM_TARGET_FRACTIONS) - 1,
-                    )
-                ]
-                < 1.0 - 1e-9
+                and self.curriculum_stage < len(TRAINING_CURRICULUM_MODELS) - 1
             ):
                 self.validation_unlocked = False
             self.curriculum_success_streak = int(
@@ -222,7 +217,11 @@ class EpochExperimentCallback(BaseCallback):
                     except TypeError:
                         continue
         self._apply_curriculum_stage(self.curriculum_stage)
-        active_models = TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
+        active_models = (
+            TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
+            if self.training_curriculum_enabled
+            else TRAINING_CURRICULUM_MODELS[-1]
+        )
         rolling_rates, _, _, _ = self._rolling_curriculum_statistics(active_models)
         self._apply_curriculum_sampling(active_models, rolling_rates)
 
@@ -278,7 +277,7 @@ class EpochExperimentCallback(BaseCallback):
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        events = np.zeros((len(dones), 26), dtype=np.float32)
+        events = np.zeros((len(dones), 27), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -351,6 +350,7 @@ class EpochExperimentCallback(BaseCallback):
                 reward_retraction,
                 reward_no_progress_dense,
                 float(info.get("route_projection_jump_rejections_episode", 0.0)),
+                float(info.get("curriculum_stage", self.curriculum_stage)),
             ]
         return events
 
@@ -430,6 +430,11 @@ class EpochExperimentCallback(BaseCallback):
             self.validation_min_train_success_rate
         )
         self.model.curriculum_stage = int(self.curriculum_stage)
+        self.model.curriculum_stage_name = (
+            str(TRAINING_CURRICULUM_STAGE_NAMES[self.curriculum_stage])
+            if self.training_curriculum_enabled
+            else "disabled_all_vessels"
+        )
         self.model.curriculum_success_streak = int(self.curriculum_success_streak)
         self.model.curriculum_rolling_outcomes = {
             model_id: list(window)
@@ -695,12 +700,21 @@ class EpochExperimentCallback(BaseCallback):
             self._epoch_route_jump_rejections_sum / epoch_divisor
         )
         curriculum_stage_used = self.curriculum_stage
+        curriculum_stage_name_used = (
+            str(TRAINING_CURRICULUM_STAGE_NAMES[curriculum_stage_used])
+            if self.training_curriculum_enabled
+            else "disabled_all_vessels"
+        )
         curriculum_target_fraction_used = float(
             TRAINING_CURRICULUM_TARGET_FRACTIONS[curriculum_stage_used]
             if self.training_curriculum_enabled
             else 1.0
         )
-        active_models = TRAINING_CURRICULUM_MODELS[curriculum_stage_used]
+        active_models = (
+            TRAINING_CURRICULUM_MODELS[curriculum_stage_used]
+            if self.training_curriculum_enabled
+            else TRAINING_CURRICULUM_MODELS[-1]
+        )
         curriculum_vessel_episode_counts = {
             model_id: int(
                 self._epoch_model_episode_counts[
@@ -773,7 +787,10 @@ class EpochExperimentCallback(BaseCallback):
             self.validation_unlocked,
             train_success_rate,
             self.validation_min_train_success_rate,
-            full_task_ready=curriculum_target_fraction_used >= 1.0 - 1e-9,
+            full_task_ready=(
+                not self.training_curriculum_enabled
+                or curriculum_stage_used >= len(TRAINING_CURRICULUM_MODELS) - 1
+            ),
         )
         self._record_model_metadata(epoch, train_success_rate)
         checkpoint_path = self._checkpoint_path(epoch)
@@ -855,7 +872,7 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "route_projection_jump_rejections_mean", "curriculum_stage_used", "curriculum_stage", "curriculum_target_fraction_used", "curriculum_target_fraction", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_vessel_route_jump_rejections_mean", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "route_completion_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_terminal_mean", "reward_safety_mean", "reward_behavior_mean", "reward_retraction_mean", "reward_no_progress_dense_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "route_projection_jump_rejections_mean", "curriculum_stage_used", "curriculum_stage_name_used", "curriculum_stage", "curriculum_stage_name", "curriculum_target_fraction_used", "curriculum_target_fraction", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_vessel_route_jump_rejections_mean", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "route_completion_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -881,7 +898,13 @@ class EpochExperimentCallback(BaseCallback):
                     "route_potential_final_mean": route_potential_final_mean,
                     "route_projection_jump_rejections_mean": route_jump_rejections_mean,
                     "curriculum_stage_used": curriculum_stage_used,
+                    "curriculum_stage_name_used": curriculum_stage_name_used,
                     "curriculum_stage": self.curriculum_stage,
+                    "curriculum_stage_name": (
+                        TRAINING_CURRICULUM_STAGE_NAMES[self.curriculum_stage]
+                        if self.training_curriculum_enabled
+                        else "disabled_all_vessels"
+                    ),
                     "curriculum_target_fraction_used": curriculum_target_fraction_used,
                     "curriculum_target_fraction": self.curriculum_target_fraction,
                     "curriculum_success_streak": self.curriculum_success_streak,
@@ -945,7 +968,9 @@ class EpochExperimentCallback(BaseCallback):
                 f"train_episode_steps_mean={train_episode_steps_mean:.1f} "
                 f"positive_failure_rate={positive_failure_rate:.6f} "
                 f"curriculum_stage_used={curriculum_stage_used} "
+                f"curriculum_stage_name_used={curriculum_stage_name_used} "
                 f"curriculum_stage={self.curriculum_stage} "
+                f"curriculum_stage_name={TRAINING_CURRICULUM_STAGE_NAMES[self.curriculum_stage] if self.training_curriculum_enabled else 'disabled_all_vessels'} "
                 f"curriculum_target_fraction_used={curriculum_target_fraction_used:.2f} "
                 f"curriculum_target_fraction={self.curriculum_target_fraction:.2f} "
                 f"curriculum_mastery_ready={curriculum_mastery_ready} "
@@ -1049,7 +1074,11 @@ class EpochExperimentCallback(BaseCallback):
             self._epoch_route_jump_rejections_sum += float(accepted[:, 25].sum())
             for event in accepted:
                 model_index = int(round(float(event[22])))
-                if 0 <= model_index < len(self._curriculum_model_ids):
+                episode_curriculum_stage = int(round(float(event[26])))
+                if (
+                    episode_curriculum_stage == self.curriculum_stage
+                    and 0 <= model_index < len(self._curriculum_model_ids)
+                ):
                     self._epoch_model_episode_counts[model_index] += 1
                     success = int(event[1] > 0.5)
                     self._epoch_model_success_counts[model_index] += success

@@ -992,8 +992,9 @@ def parse_args():
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Advance the nine-stage all-vessel target/DR curriculum after every vessel has "
-            "at least 100 rolling samples and 50% success for three consecutive epochs."
+            "Advance the four-stage simple-fixed/simple-DR/all-fixed/all-DR curriculum "
+            "after every active vessel has at least 100 rolling samples and 50% 3 mm "
+            "success for three consecutive epochs."
         ),
     )
     curriculum.add_argument(
@@ -1003,7 +1004,7 @@ def parse_args():
     )
     parser.set_defaults(training_curriculum=TRAINING_CURRICULUM_ENABLED)
 
-    # All-vessel local-observation curriculum runs.
+    # Four-stage vessel-pool/DR curriculum with tip-local observations.
     parser.add_argument(
         "--log-root",
         type=str,
@@ -1597,7 +1598,7 @@ def main():
             if args.force_model:
                 model_label = args.force_model
             elif args.training_curriculum:
-                model_label = "curriculum_stage0(all_train_vessels@40pct_fixed)"
+                model_label = "curriculum_stage0(B01,B02,C01,C02_fullroute_fixed)"
             else:
                 model_label = "uniform(B01-B05,C01-C05)"
             print(

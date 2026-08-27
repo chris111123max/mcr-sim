@@ -54,21 +54,21 @@ boundaries from entering the PPO loss.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
   default is 1. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
-- `--training-curriculum` (default): use all B01..B05/C01..C05 vessels in every
-  stage. Learn fixed-geometry targets at 40%, 55%, 70%, 85%, and 100% route
-  length, then retain the full route while DR increases through 10%, 30%, 60%,
-  and 100%. Each vessel keeps a 100-episode rolling success window. Promotion is
-  eligible only after every vessel has 100 samples and at least 50% rolling
-  success for three consecutive global epochs. A missing,
+- `--training-curriculum` (default): use four complete-route stages:
+  `simple_fixed` (B01/B02/C01/C02, no DR), `simple_full_dr` (the same four with
+  the complete requested DR envelope), `all_fixed` (all ten vessels, no DR), and
+  `all_full_dr` (all ten with complete DR). Each active vessel keeps a 100-episode
+  rolling 3 mm success window. Promotion is eligible only after every active
+  vessel has 100 samples and at least 50% rolling success for three consecutive
+  global epochs. A missing,
   under-sampled, or under-threshold vessel resets the streak, so easier vessels
   cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
   the stage, and the streak are synchronized, logged, and saved with the
-  checkpoint. Forced vessels and validation bypass it.
-  DR remains 0% throughout target-distance learning and starts only after the
-  complete fixed route has been learned.
+  checkpoint. Forced vessels and validation bypass it. DR is intentionally reset
+  to zero when the six harder vessels are first introduced.
   Sampling mixes 50% uniform probability with 50% squared failure-rate weight
   and caps one vessel at twice its uniform probability. Stage transitions clear
-  old outcome windows. Validation remains locked until a full-route stage.
+  old outcome windows. Validation remains locked until the final all-vessel/full-DR stage.
 - `--min-ent-coef`: lower bound for SAC automatic entropy tuning (0.02).
   PPO and recurrent PPO retain the stable action-std range `0.25..1.0`.
 - `--npu-fused-adam` (default): replace SAC actor/critic Adam and the PPO policy
@@ -163,8 +163,8 @@ job in the background, and prints its PID and run directory. Do not combine it
 with shell-level `nohup`, `&`, or output redirection. The equivalent PPO launcher
 is `training/sh/run_train_ppo.sh`; recurrent PPO uses
 `training/sh/run_train_lstm_ppo.sh`. All three implement the same managed mode. Both PPO launchers
-keep validation locked until a completed training epoch first reaches success rate
-`0.20`. The gate stays unlocked; validation starts immediately when that epoch is
+keep validation locked until the final `all_full_dr` stage reaches a completed
+training-epoch success rate of `0.20`. The gate stays unlocked; validation starts immediately when that epoch is
 even, otherwise on the next even epoch, then runs every two epochs.
 The ten fixed-seed episode tasks are distributed 3/3/2/2 over four ranks, then
 gathered through the active distributed backend. Rank 0 alone writes CSV
@@ -182,8 +182,11 @@ direction, moving route guidance 10/20 mm ahead, plus selected-route tangents
 physical step gate, so adjacent U-turn arms cannot create an arc-length jump. The existing wall
 proximity and penetration reward components take the maximum of tip and
 whole-body risk, so unsafe shaft contact is visible before the terminal
-whole-body SDF check fires. Navigation semantics changed even though the state
-remains 78-dimensional. Reward V8 also removes no-progress/wrong-branch
+whole-body SDF check fires. Every actor vector is expressed in the catheter-tip
+frame. Absolute XYZ and route completion percentage are absent; the single route
+horizon scalar is remaining centerline distance normalized by the longest training
+route. Navigation semantics changed even though the state remains 78-dimensional.
+Reward V8 also removes no-progress/wrong-branch
 termination and rebalances the reward scale, so older checkpoints must not be resumed.
 
 ## Checkpoint and resume

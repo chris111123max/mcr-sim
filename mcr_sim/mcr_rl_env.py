@@ -61,6 +61,7 @@ from .training_config import (
     TIP_NEAR_WALL_RAMP_STEPS,
     ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M,
     ROUTE_GUIDANCE_OBSERVATION_SCALE_M,
+    ROUTE_REMAINING_DISTANCE_SCALE_M,
     ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M,
     ROUTE_PROJECTION_BACKWARD_WINDOW_M,
     ROUTE_PROJECTION_FORWARD_WINDOW_M,
@@ -440,7 +441,9 @@ class MCREnv(SofaEnv):
         )
 
         # Actor observation: 50-D current geometry + 4 * 7-D action-response
-        # history = 78-D.  The 30 vessel features retain the prior route/tip
+        # history = 78-D.  Every vector is expressed in the catheter-tip frame;
+        # no absolute XYZ or route-completion percentage reaches the policy.
+        # The 30 vessel features retain the prior route/tip
         # signals and add the worst shaft point (arc position, relative local
         # position, local inward normal), moving route guidance, and future
         # route tangents. PPO, RecurrentPPO and SAC receive this identical state.
@@ -1067,6 +1070,14 @@ class MCREnv(SofaEnv):
 
     def reset(self, seed: Union[int, np.random.SeedSequence, None] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[Union[np.ndarray, None], Dict]:
         self._sample_next_training_model(seed=seed)
+        # A callback may advance the curriculum while other vectorized
+        # environments are still inside an episode.  Latch the stage/DR that
+        # actually created this episode so its outcome cannot contaminate the
+        # next stage's mastery window.
+        self.episode_curriculum_stage = int(self.curriculum_stage)
+        self.episode_curriculum_dr_fraction = float(
+            getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0)
+        )
 
         single_vessel_mode = bool(getattr(self, "_explicit_force_model", ""))
         randomization_requested = bool(self.create_scene_kwargs.get("randomize_start_target", True) or self.create_scene_kwargs.get("randomize_initial_orientation", True))
@@ -1317,7 +1328,7 @@ class MCREnv(SofaEnv):
         centerline_correction_vec_local: np.ndarray,
         centerline_tangent_local: np.ndarray,
         guidance_distance_norm: np.ndarray,
-        route_progress_ratio: float,
+        remaining_route_distance_norm: float,
         vessel_section_features: np.ndarray,
     ) -> np.ndarray:
         obs = np.concatenate(
@@ -1329,7 +1340,10 @@ class MCREnv(SofaEnv):
                 np.asarray(centerline_correction_vec_local, dtype=np.float32).reshape(3),
                 np.asarray(centerline_tangent_local, dtype=np.float32).reshape(3),
                 np.asarray(guidance_distance_norm, dtype=np.float32).reshape(1),
-                np.array([np.clip(float(route_progress_ratio), 0.0, 1.0)], dtype=np.float32),
+                np.array(
+                    [np.clip(float(remaining_route_distance_norm), 0.0, 1.0)],
+                    dtype=np.float32,
+                ),
                 np.asarray(vessel_section_features, dtype=np.float32).reshape(self.vessel_section_feature_dim),
             ]
         ).astype(np.float32)
@@ -1383,6 +1397,7 @@ class MCREnv(SofaEnv):
         route_progress = float(getattr(self, "current_route_progress", np.nan))
         target_progress = float(getattr(self, "current_route_target_progress", np.nan))
         if np.isfinite(route_progress) and np.isfinite(target_progress):
+            remaining_route_distance = max(target_progress - route_progress, 0.0)
             guidance_points = np.asarray(
                 [
                     self._interpolate_centerline_point_at_progress(
@@ -1393,6 +1408,11 @@ class MCREnv(SofaEnv):
                 dtype=np.float32,
             )
         else:
+            remaining_route_distance = float(
+                np.linalg.norm(
+                    np.asarray(self.target_position, dtype=np.float32) - tip_pos
+                )
+            )
             guidance_points = np.repeat(
                 np.asarray(self.target_position, dtype=np.float32).reshape(1, 3),
                 2,
@@ -1427,6 +1447,14 @@ class MCREnv(SofaEnv):
             -5.0,
             5.0,
         ).astype(np.float32)
+        remaining_route_distance_norm = float(
+            np.clip(
+                remaining_route_distance
+                / max(float(ROUTE_REMAINING_DISTANCE_SCALE_M), 1e-9),
+                0.0,
+                1.0,
+            )
+        )
         centerline_tangent_local = self._world_vec_to_local(centerline_tangent_world, frame)
         centerline_tangent_local = (centerline_tangent_local / (float(np.linalg.norm(centerline_tangent_local)) + 1e-9)).astype(np.float32)
 
@@ -1446,7 +1474,7 @@ class MCREnv(SofaEnv):
             centerline_correction_vec_local=centerline_correction_vec_local,
             centerline_tangent_local=centerline_tangent_local,
             guidance_distance_norm=guidance_distance_norm,
-            route_progress_ratio=float(self.current_route_progress_ratio),
+            remaining_route_distance_norm=remaining_route_distance_norm,
             vessel_section_features=vessel_section_features,
         )
         actor_dynamic_step = self._build_actor_dynamic_step_observation(
@@ -1748,12 +1776,19 @@ class MCREnv(SofaEnv):
             "reward_route_length": float(self.reward_progress_normalization),
             "route_potential": float(self.current_route_potential),
             "route_potential_delta": float(self.current_route_potential_delta),
-            "curriculum_stage": int(self.curriculum_stage),
+            "curriculum_stage": int(
+                getattr(self, "episode_curriculum_stage", self.curriculum_stage)
+            ),
+            "curriculum_configured_stage": int(self.curriculum_stage),
             "curriculum_target_fraction": float(
                 getattr(self, "curriculum_target_fraction", 1.0)
             ),
             "curriculum_dr_fraction": float(
-                getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0)
+                getattr(
+                    self,
+                    "episode_curriculum_dr_fraction",
+                    getattr(self, "curriculum_dr_profile", {}).get("fraction", 1.0),
+                )
             ),
             "target_reached_this_step": bool(getattr(self, "current_target_reached_this_step", False)),
             "out_of_vessel": bool(self.current_out_of_vessel),

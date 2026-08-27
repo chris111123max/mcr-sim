@@ -39,6 +39,11 @@ ACTOR_OBSERVATION_DIM = (
 # points replace discrete waypoint spheres without changing observation size.
 ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.020)
 ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.020
+# Translation/rotation-invariant horizon feature used by the actor instead of
+# absolute route completion.  The longest generated training route is the
+# natural normalization scale; held-out routes are clipped rather than exposing
+# a vessel-specific global coordinate or percentage.
+ROUTE_REMAINING_DISTANCE_SCALE_M = TRAIN_ROUTE_MAX_LENGTH_M
 ROUTE_PROJECTION_BACKWARD_WINDOW_M = 0.020
 ROUTE_PROJECTION_FORWARD_WINDOW_M = 0.040
 ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M = 0.00075
@@ -185,40 +190,39 @@ def body_sdf_risk_features(
     return warning, outside_depth
 
 
-# Training-only task curriculum.  Every stage uses the complete B/C training
-# pool so later stages never introduce unseen geometry.  The first five stages
-# extend a deterministic target to the complete route; only after that fixed
-# task is mastered is domain randomization introduced.  Validation always uses
-# the complete V01..V05 routes and is never simplified by this curriculum.
+# Training-only four-stage vessel/robustness curriculum.  Every stage uses the
+# complete route.  The policy first masters the four simplest vessels on their
+# nominal geometry, then the same four under the full requested DR envelope.
+# The remaining vessels are introduced on nominal geometry before full DR is
+# enabled again.  Validation always uses complete V01..V05 routes and remains
+# locked until the final all-vessel/full-DR stage is active.
 TRAINING_CURRICULUM_ENABLED = True
 TRAINING_CURRICULUM_ALL_MODELS = (
     "B01", "B02", "B03", "B04", "B05",
     "C01", "C02", "C03", "C04", "C05",
 )
+TRAINING_CURRICULUM_SIMPLE_MODELS = (
+    "B01", "B02", "C01", "C02",
+)
 TRAINING_CURRICULUM_MODELS = (
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_SIMPLE_MODELS,
+    TRAINING_CURRICULUM_SIMPLE_MODELS,
     TRAINING_CURRICULUM_ALL_MODELS,
     TRAINING_CURRICULUM_ALL_MODELS,
 )
-TRAINING_CURRICULUM_TARGET_FRACTIONS = (
-    0.40, 0.55, 0.70, 0.85, 1.00,
-    1.00, 1.00, 1.00, 1.00,
+TRAINING_CURRICULUM_STAGE_NAMES = (
+    "simple_fixed",
+    "simple_full_dr",
+    "all_fixed",
+    "all_full_dr",
 )
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.50,) * 8
+TRAINING_CURRICULUM_TARGET_FRACTIONS = (1.00,) * 4
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.50,) * 3
 TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
 TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 100
 TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
-# The complete fixed route is learned before robustness perturbations begin.
-TRAINING_CURRICULUM_DR_FRACTIONS = (
-    0.00, 0.00, 0.00, 0.00, 0.00,
-    0.10, 0.30, 0.60, 1.00,
-)
+# DR is deliberately disabled again when difficult vessels are first added.
+TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 1.00, 0.00, 1.00)
 # Half the sampling distribution remains uniform.  The adaptive half focuses
 # on weak vessels but is capped so a single failure mode cannot erase skills
 # already acquired on the rest of the active pool.
@@ -227,8 +231,8 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 9
-SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 9
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 4
+SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 4
 
 
 def curriculum_domain_randomization_profile(current_stage: int) -> dict:
@@ -317,6 +321,7 @@ def curriculum_protocol_profile() -> dict:
     """Return the shared curriculum/observation protocol for run metadata."""
 
     return {
+        "stage_names": list(TRAINING_CURRICULUM_STAGE_NAMES),
         "models_by_stage": [list(models) for models in TRAINING_CURRICULUM_MODELS],
         "target_fraction_by_stage": list(TRAINING_CURRICULUM_TARGET_FRACTIONS),
         "success_thresholds": list(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS),
@@ -343,6 +348,9 @@ def curriculum_protocol_profile() -> dict:
             ROUTE_PROJECTION_MAX_PROGRESS_STEP_M
         ),
         "route_success_progress_margin_m": ROUTE_SUCCESS_PROGRESS_MARGIN_M,
+        "route_remaining_distance_scale_m": ROUTE_REMAINING_DISTANCE_SCALE_M,
+        "actor_coordinate_frame": "catheter_tip_local",
+        "actor_route_horizon_feature": "remaining_route_distance",
         "observation_dim": ACTOR_OBSERVATION_DIM,
     }
 
@@ -554,23 +562,26 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum target fractions must be in (0, 1].")
     if any(not (0.0 <= fraction <= 1.0) for fraction in TRAINING_CURRICULUM_DR_FRACTIONS):
         raise ValueError("Curriculum DR fractions must be in [0, 1].")
-    if any(
-        models != TRAINING_CURRICULUM_ALL_MODELS
-        for models in TRAINING_CURRICULUM_MODELS
+    if len(TRAINING_CURRICULUM_STAGE_NAMES) != len(TRAINING_CURRICULUM_MODELS):
+        raise ValueError("Curriculum stage names are inconsistent.")
+    if TRAINING_CURRICULUM_MODELS[:2] != (
+        TRAINING_CURRICULUM_SIMPLE_MODELS,
+        TRAINING_CURRICULUM_SIMPLE_MODELS,
     ):
-        raise ValueError("Every curriculum stage must use the complete training vessel pool.")
-    if tuple(sorted(TRAINING_CURRICULUM_TARGET_FRACTIONS)) != TRAINING_CURRICULUM_TARGET_FRACTIONS:
-        raise ValueError("Curriculum target fractions must be non-decreasing.")
-    if TRAINING_CURRICULUM_TARGET_FRACTIONS[-1] != 1.0:
-        raise ValueError("The final curriculum stage must use the complete route.")
-    if any(
-        dr_fraction > 0.0 and target_fraction < 1.0
-        for target_fraction, dr_fraction in zip(
-            TRAINING_CURRICULUM_TARGET_FRACTIONS,
-            TRAINING_CURRICULUM_DR_FRACTIONS,
-        )
+        raise ValueError("The first two curriculum stages must use the simple vessel pool.")
+    if TRAINING_CURRICULUM_MODELS[2:] != (
+        TRAINING_CURRICULUM_ALL_MODELS,
+        TRAINING_CURRICULUM_ALL_MODELS,
     ):
-        raise ValueError("Domain randomization may start only on complete-route stages.")
+        raise ValueError("The final two curriculum stages must use all training vessels.")
+    if not set(TRAINING_CURRICULUM_SIMPLE_MODELS).issubset(
+        set(TRAINING_CURRICULUM_ALL_MODELS)
+    ):
+        raise ValueError("Simple curriculum vessels must belong to the training pool.")
+    if any(fraction != 1.0 for fraction in TRAINING_CURRICULUM_TARGET_FRACTIONS):
+        raise ValueError("Every curriculum stage must use the complete route.")
+    if TRAINING_CURRICULUM_DR_FRACTIONS != (0.0, 1.0, 0.0, 1.0):
+        raise ValueError("The four-stage curriculum must alternate fixed/full DR.")
     if TRAINING_CURRICULUM_DR_FRACTIONS[-1] != 1.0:
         raise ValueError("The final curriculum stage must use full domain randomization.")
     if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
