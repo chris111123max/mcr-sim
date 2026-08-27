@@ -296,7 +296,6 @@ class EpochExperimentCallback(BaseCallback):
                 for key in (
                     "episode_reward_successful_task",
                     "episode_reward_out_of_vessel_penalty",
-                    "episode_reward_wrong_branch_penalty",
                     "episode_reward_non_finite_penalty",
                     "episode_reward_timeout_penalty",
                     "episode_reward_no_progress_terminal_penalty",
@@ -308,6 +307,7 @@ class EpochExperimentCallback(BaseCallback):
                     "episode_reward_wall_proximity_penalty",
                     "episode_reward_wall_penetration_penalty",
                     "episode_reward_off_target_branch_penalty",
+                    "episode_reward_wrong_branch_penalty",
                 )
             )
             reward_retraction = float(
@@ -330,10 +330,10 @@ class EpochExperimentCallback(BaseCallback):
                 float(episode_info.get("r", 0.0)),
                 float(episode_info.get("l", 0.0)),
                 float(bool(info.get("done_by_out_of_vessel", False))),
-                float(bool(info.get("done_by_wrong_branch", False))),
+                float(bool(info.get("wrong_branch_this_episode", False))),
                 float(bool(info.get("done_by_non_finite", False))),
                 float(bool(info.get("TimeLimit.truncated", False) or info.get("terminal_reason") == "timeout")),
-                float(bool(info.get("done_by_no_progress", False))),
+                float(bool(info.get("no_progress_this_episode", False))),
                 reward_progress,
                 reward_terminal,
                 reward_safety,

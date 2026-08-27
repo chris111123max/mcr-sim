@@ -7,7 +7,6 @@ import unittest
 from mcr_sim.training_config import (
     MAX_INSERTION_PER_ACTION_M,
     MAX_EPISODE_STEPS,
-    NO_PROGRESS_CONFIRM_STEPS,
     NO_PROGRESS_GRACE_STEPS,
     REWARD_NON_FINITE,
     REWARD_NO_PROGRESS,
@@ -209,37 +208,52 @@ class RewardProfileTest(unittest.TestCase):
     def test_every_terminal_failure_is_negative_after_maximum_credit(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET
         self.assertLess(maximum_credit + REWARD_OUT_OF_VESSEL, 0.0)
-        self.assertLess(maximum_credit + REWARD_WRONG_BRANCH, 0.0)
         self.assertLess(maximum_credit + REWARD_NON_FINITE, 0.0)
         self.assertLess(
             maximum_credit + REWARD_TIMEOUT + REWARD_STEP * MAX_EPISODE_STEPS,
             0.0,
         )
 
-    def test_stationary_failure_is_costly_but_safer_than_crashing(self) -> None:
+    def test_stationary_episode_reaches_timeout_instead_of_no_progress_terminal(self) -> None:
         stationary_return = (
-            REWARD_STEP * (NO_PROGRESS_GRACE_STEPS + NO_PROGRESS_CONFIRM_STEPS)
-            + REWARD_NO_PROGRESS * NO_PROGRESS_CONFIRM_STEPS
-            + REWARD_NO_PROGRESS_TERMINAL
+            REWARD_STEP * MAX_EPISODE_STEPS
+            + REWARD_NO_PROGRESS * (MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS)
+            + REWARD_TIMEOUT
         )
+        self.assertEqual(REWARD_NO_PROGRESS_TERMINAL, 0.0)
         self.assertLess(stationary_return, -10.0)
         self.assertGreater(stationary_return, REWARD_OUT_OF_VESSEL)
 
     def test_continuous_full_retraction_is_penalized_without_being_worse_than_crash(self) -> None:
         stationary_return = (
-            REWARD_STEP * (NO_PROGRESS_GRACE_STEPS + NO_PROGRESS_CONFIRM_STEPS)
-            + REWARD_NO_PROGRESS * NO_PROGRESS_CONFIRM_STEPS
-            + REWARD_NO_PROGRESS_TERMINAL
+            REWARD_STEP * MAX_EPISODE_STEPS
+            + REWARD_NO_PROGRESS * (MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS)
+            + REWARD_TIMEOUT
         )
-        retraction_return = stationary_return + REWARD_RETRACTION * (
-            NO_PROGRESS_GRACE_STEPS + NO_PROGRESS_CONFIRM_STEPS
-        )
+        retraction_return = stationary_return + REWARD_RETRACTION * MAX_EPISODE_STEPS
         self.assertLess(retraction_return, stationary_return)
         self.assertLess(retraction_return, 0.0)
         self.assertGreater(retraction_return, REWARD_OUT_OF_VESSEL)
 
-    def test_reward_profile_is_v7(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, 7)
+    def test_reward_profile_is_v8(self) -> None:
+        self.assertEqual(REWARD_PROFILE_VERSION, 8)
+
+    def test_wrong_branch_is_recoverable_dense_cost(self) -> None:
+        self.assertGreater(REWARD_WRONG_BRANCH, -10.0)
+        self.assertLess(REWARD_WRONG_BRANCH, 0.0)
+
+    def test_more_progress_can_beat_waiting_for_timeout(self) -> None:
+        waiting_return = (
+            0.23 * REWARD_PROGRESS_BUDGET
+            + REWARD_TIMEOUT
+            + REWARD_STEP * MAX_EPISODE_STEPS
+        )
+        later_exit_return = (
+            0.30 * REWARD_PROGRESS_BUDGET
+            + REWARD_OUT_OF_VESSEL
+            + REWARD_STEP * MAX_EPISODE_STEPS
+        )
+        self.assertGreater(later_exit_return, waiting_return)
 
     def test_success_has_a_large_margin_over_best_failure(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET
@@ -247,7 +261,7 @@ class RewardProfileTest(unittest.TestCase):
         best_timeout_failure = (
             maximum_credit + REWARD_TIMEOUT + REWARD_STEP * MAX_EPISODE_STEPS
         )
-        self.assertGreater(successful_return - best_timeout_failure, 200.0)
+        self.assertGreater(successful_return - best_timeout_failure, 400.0)
 
 
 if __name__ == "__main__":

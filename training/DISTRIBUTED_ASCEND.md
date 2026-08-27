@@ -174,7 +174,7 @@ as the primary criterion; ties are resolved by route completion, route potential
 then smaller final target distance. Thus a 0%-success validation phase can still
 retain the checkpoint with the strongest measurable progress.
 
-Reward V7 exposes the same 78-dimensional observation to SAC, PPO, and
+Reward V8 exposes the same 78-dimensional observation to SAC, PPO, and
 LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
 clearance, outside-confirmation progress, the worst shaft point and inward
 direction, moving route guidance 10/20 mm ahead, plus selected-route tangents
@@ -183,7 +183,8 @@ physical step gate, so adjacent U-turn arms cannot create an arc-length jump. Th
 proximity and penetration reward components take the maximum of tip and
 whole-body risk, so unsafe shaft contact is visible before the terminal
 whole-body SDF check fires. Navigation semantics changed even though the state
-remains 78-dimensional, so checkpoints from before Reward V7 must not be resumed.
+remains 78-dimensional. Reward V8 also removes no-progress/wrong-branch
+termination and rebalances the reward scale, so older checkpoints must not be resumed.
 
 ## Checkpoint and resume
 

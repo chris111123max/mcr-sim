@@ -95,7 +95,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 echo "=============================================================="
-echo " Starting MCR SOFA GUI inference: $MAX_STEPS steps, no no-progress termination "
+echo " Starting MCR SOFA GUI inference: $MAX_STEPS steps "
 echo "=============================================================="
 echo "MODEL_PATH=$MODEL_PATH"
 echo "Python=$(which python)"
@@ -103,7 +103,7 @@ echo "SOFA_ROOT=$SOFA_ROOT"
 echo "Timing: dt=$TIME_STEP frame_skip=$FRAME_SKIP max_steps=$MAX_STEPS max_episode_steps=$MAX_EPISODE_STEPS"
 echo "Target threshold: $TARGET_THRESHOLD m"
 echo "Randomization: start_window=${START_WINDOW_MM}mm target_window=${TARGET_WINDOW_MM}mm, initial angle=${INITIAL_ORIENTATION_MAX_ANGLE_DEG}deg, entry_tangent_points=${ENTRY_TANGENT_POINTS}"
-echo "No-progress gate termination: disabled by default. Add --enable-no-progress-termination to restore it."
+echo "Reward V8: no-progress and wrong-branch events are recoverable dense penalties."
 
 "$PYTHON_BIN" "$PYTHON_ROOT/testing/py/run_trained_mcr_sofa_gui.py" \
     --model "$MODEL_PATH" \

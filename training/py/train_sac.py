@@ -203,7 +203,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
     def _episode_from_info(self, info: dict) -> dict:
         episode_info = info.get("episode", {}) if isinstance(info.get("episode", {}), dict) else {}
 
-        # Reward V7 emits continuous selected-route completion.
+        # Reward V8 emits continuous selected-route completion.
         route_progress_ratio = self._safe_float(
             info.get("route_progress_ratio", np.nan)
         )
@@ -238,6 +238,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "route_completion": route_completion,
             "out_of_vessel": bool(info.get("out_of_vessel_this_episode", False)),
             "wrong_branch": bool(info.get("wrong_branch_this_episode", False)),
+            "no_progress": bool(info.get("no_progress_this_episode", False)),
             "sdf_surface_clearance_m": self._safe_float(
                 info.get("sdf_surface_clearance", np.nan)
             ),
@@ -270,7 +271,6 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 info.get("episode_reward_successful_task", 0.0)
             )
             + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
-            + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_non_finite_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_no_progress_terminal_penalty", 0.0)),
@@ -282,7 +282,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             )
             + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
-            ),
+            )
+            + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0)),
             "reward_retraction": self._safe_float(
                 info.get("episode_reward_retraction_penalty", 0.0)
             ),
@@ -369,6 +370,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"terminal/no_progress_rate_w{self.window_size}", self._rate(ep["done_by_no_progress"] for ep in recent))
             self.logger.record(f"terminal/non_finite_rate_w{self.window_size}", self._rate(ep["done_by_non_finite"] for ep in recent))
             self.logger.record(f"terminal/positive_failure_rate_w{self.window_size}", self._rate(ep["positive_failure_return"] for ep in recent))
+            self.logger.record(f"behavior/wrong_branch_episode_rate_w{self.window_size}", self._rate(ep["wrong_branch"] for ep in recent))
+            self.logger.record(f"behavior/no_progress_episode_rate_w{self.window_size}", self._rate(ep["no_progress"] for ep in recent))
             self.logger.record(f"rollout_recent/safe_success_rate_w{self.window_size}", self._rate(ep["safe_success"] for ep in recent))
             self.logger.record(f"rollout_recent/contact_free_success_rate_w{self.window_size}", self._rate(ep["contact_free_success"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
@@ -422,8 +425,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             success_rate = self._rate(ep["success_target"] for ep in task_window)
             timeout_rate = self._rate(ep["done_by_timeout"] for ep in task_window)
             out_rate = self._rate(ep["done_by_out_of_vessel"] for ep in task_window)
-            wrong_branch_rate = self._rate(ep["done_by_wrong_branch"] for ep in task_window)
-            no_progress_rate = self._rate(ep["done_by_no_progress"] for ep in task_window)
+            wrong_branch_rate = self._rate(ep["wrong_branch"] for ep in task_window)
+            no_progress_rate = self._rate(ep["no_progress"] for ep in task_window)
             non_finite_rate = self._rate(ep["done_by_non_finite"] for ep in task_window)
             final_dist_mm = self._mean(ep["final_dist_m"] * 1000.0 for ep in task_window)
             min_dist_mm = self._mean(ep["min_dist_m"] * 1000.0 for ep in task_window)

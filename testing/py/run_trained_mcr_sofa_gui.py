@@ -325,7 +325,6 @@ class InferenceController(Sofa.Core.Controller):
         max_steps: int = 0,
         stop_on_train_done: bool = True,
         stop_on_threshold: bool = True,
-        ignore_no_progress_done: bool = True,
         *args,
         **kwargs,
     ):
@@ -337,7 +336,6 @@ class InferenceController(Sofa.Core.Controller):
         self.print_every = max(1, int(print_every))
         self.stop_on_train_done = bool(stop_on_train_done)
         self.stop_on_threshold = bool(stop_on_threshold)
-        self.ignore_no_progress_done = bool(ignore_no_progress_done)
 
         self.step_counter = 0
         self.stopped = False
@@ -353,8 +351,6 @@ class InferenceController(Sofa.Core.Controller):
         print("[InferenceController] Initialized in TRAIN-EQUIVALENT GUI mode.")
         print("[InferenceController] Per GUI step: predict -> clip/smooth -> _do_action -> observation/reward/done/info update.")
         print("[InferenceController] Metrics use MCREnv info after _get_reward(), not a separate GUI-only projection.")
-        if self.ignore_no_progress_done:
-            print("[InferenceController] no_progress_failure will be logged but ignored as a GUI-test termination condition.")
         if int(getattr(self.env, "frame_skip", 1)) != 1:
             print(
                 "[InferenceController][WARN] env.frame_skip != 1. "
@@ -492,36 +488,15 @@ class InferenceController(Sofa.Core.Controller):
             self.env.non_finite_failure = True
             terminated = True
 
-        # In training, MCREnv can terminate after a long period without passing
-        # the next ordered gate. For GUI diagnosis we usually want to keep watching
-        # whether the catheter eventually recovers, so ignore that termination by
-        # default while still logging noProg.
-        ignored_no_progress_failure = bool(getattr(self.env, "no_progress_failure", False)) and bool(
-            getattr(self, "ignore_no_progress_done", True)
-        )
-        if ignored_no_progress_failure:
-            self.env.no_progress_failure = False
-
         if (
             bool(getattr(self.env, "is_out_of_bounds", False))
             or bool(getattr(self.env, "terminal_escape_failed", False))
-            or (
-                bool(getattr(self.env, "no_progress_failure", False))
-                and not bool(getattr(self, "ignore_no_progress_done", True))
-            )
             or bool(getattr(self.env, "non_finite_failure", False))
         ):
             terminated = True
 
         truncated = (int(getattr(self.env, "_elapsed_steps", 0)) >= int(getattr(self.env, "max_episode_steps", 2000))) and (not terminated)
         info = self.env._get_info(terminated=terminated, truncated=truncated)
-        if ignored_no_progress_failure:
-            info["no_progress_failure_ignored"] = True
-            info["done_by_no_progress"] = False
-            if str(info.get("terminal_reason", "")) == "no_progress":
-                info["terminal_reason"] = "not_done"
-        else:
-            info["no_progress_failure_ignored"] = False
         if truncated:
             info["TimeLimit.truncated"] = True
 
@@ -590,7 +565,7 @@ class InferenceController(Sofa.Core.Controller):
             f"gate={gate_idx}/{max(gate_num - 1, 0)} next={gate_next} gate_r={gate_r:.3f} "
             f"passed={self._yesno(info.get('gate_passed_this_step', False))} "
             f"noProg={no_progress_counter} "
-            f"noProgIgnored={self._yesno(info.get('no_progress_failure_ignored', False))} | "
+            f"| "
             f"CL_dist={cl_dist * 1000.0:.2f}mm R_local={r_local * 1000.0:.2f}mm "
             f"SDF_clear={sdf_clearance * 1000.0:.2f}mm "
             f"bodyClear={sdf_body_clearance * 1000.0:.2f}mm "
@@ -718,7 +693,6 @@ def main():
     parser.add_argument("--max-episode-steps", type=int, default=MAX_EPISODE_STEPS, help="MCREnv episode limit; defaults to training.")
     parser.add_argument("--continue-after-done", action="store_true", help="Do not pause when training termination condition is reached.")
     parser.add_argument("--continue-after-threshold", action="store_true", help="Do not pause immediately when current distance reaches target threshold.")
-    parser.add_argument("--enable-no-progress-termination", action="store_true", help="Use training no-progress termination. Default: disabled for GUI testing.")
 
     # Training-style start/target/orientation randomization. In forced single-vessel
     # mode, soft_randomize_single_vessel=True keeps the scene loaded and randomizes
@@ -788,12 +762,6 @@ def main():
         f"max_angle_deg={create_scene_kwargs['initial_orientation_max_angle_deg']:.3f}",
         f"soft_randomize_single_vessel={create_scene_kwargs['soft_randomize_single_vessel']}",
     )
-    print(
-        "[NO_PROGRESS_TERMINATION]",
-        "enabled=" + str(bool(args.enable_no_progress_termination)),
-        "(default is disabled in GUI test)"
-    )
-
     print("Initializing SOFA Environment...")
     env = MCREnv(
         create_scene_kwargs=create_scene_kwargs,
@@ -835,7 +803,6 @@ def main():
         max_steps=int(args.max_steps),
         stop_on_train_done=not bool(args.continue_after_done),
         stop_on_threshold=not bool(args.continue_after_threshold),
-        ignore_no_progress_done=not bool(args.enable_no_progress_termination),
     )
     env._sofa_root_node.addObject(controller)
     controller.init()

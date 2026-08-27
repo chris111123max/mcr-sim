@@ -623,6 +623,7 @@ class MCREnv(SofaEnv):
         # Continuous route stagnation diagnostics/termination.
         self.no_progress_counter = 0
         self.no_progress_failure = False
+        self.no_progress_this_episode = False
         self.no_progress_net_approach = 0.0
         self.no_progress_feature = 0.0
         self._no_progress_deltas = deque(maxlen=self.no_progress_window_steps)
@@ -1169,6 +1170,7 @@ class MCREnv(SofaEnv):
         self.max_inserted_length_episode = 0.0
         self.no_progress_counter = 0
         self.no_progress_failure = False
+        self.no_progress_this_episode = False
         self.no_progress_net_approach = 0.0
         self.no_progress_feature = 0.0
         self._no_progress_deltas = deque(maxlen=self.no_progress_window_steps)
@@ -1268,8 +1270,6 @@ class MCREnv(SofaEnv):
         terminated = bool(
             self.episode_success
             or self.out_of_vessel_failure
-            or self.wrong_branch_failure
-            or self.no_progress_failure
             or self.non_finite_failure
         )
         truncated = (self._elapsed_steps >= self.max_episode_steps) and (not terminated)
@@ -1512,9 +1512,12 @@ class MCREnv(SofaEnv):
         else:
             self.no_progress_feature = 0.0
             self.no_progress_counter = 0
-        self.no_progress_failure = bool(
-            self.no_progress_counter >= self.no_progress_confirm_steps
-        )
+        if self.no_progress_feature > 0.0:
+            self.no_progress_this_episode = True
+        # Reward V8 deliberately keeps slow/stalled episodes alive until the
+        # ordinary step limit. The counter remains diagnostic; only the dense
+        # no-progress feature affects reward.
+        self.no_progress_failure = False
 
         try:
             inserted_length = float(self.mcr_controller_sofa._getXTipValue())
@@ -1607,7 +1610,7 @@ class MCREnv(SofaEnv):
             "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
             "non_finite_penalty": 0.0,
             "timeout_penalty": 0.0,
-            "no_progress_terminal_penalty": 1.0 if self.no_progress_failure else 0.0,
+            "no_progress_terminal_penalty": 0.0,
             "step_penalty": 1.0,
             "successful_task": 0.0,
         }
@@ -1617,7 +1620,10 @@ class MCREnv(SofaEnv):
             self.out_of_vessel_failure = True
         if self.current_wrong_branch:
             self.wrong_branch_this_episode = True
-            self.wrong_branch_failure = True
+        # Wrong-branch confirmation is recoverable in Reward V8. It suppresses
+        # selected-route progress credit and applies a dense penalty, but never
+        # ends the episode by itself.
+        self.wrong_branch_failure = False
 
         final_close = bool(current_final_dist <= float(self.target_distance_threshold))
         route_ready = bool(
@@ -1671,8 +1677,6 @@ class MCREnv(SofaEnv):
         return bool(
             getattr(self, "episode_success", False)
             or getattr(self, "out_of_vessel_failure", False)
-            or getattr(self, "wrong_branch_failure", False)
-            or getattr(self, "no_progress_failure", False)
             or getattr(self, "non_finite_failure", False)
         )
 
@@ -1685,10 +1689,6 @@ class MCREnv(SofaEnv):
             if truncated
             else "out_of_vessel"
             if self.out_of_vessel_failure
-            else "wrong_branch"
-            if self.wrong_branch_failure
-            else "no_progress"
-            if self.no_progress_failure
             else "non_finite"
             if self.non_finite_failure
             else "other"
@@ -1718,8 +1718,8 @@ class MCREnv(SofaEnv):
             "done_by_target": bool(self.episode_success),
             "done_by_timeout": bool(truncated),
             "done_by_out_of_vessel": bool(self.out_of_vessel_failure),
-            "done_by_wrong_branch": bool(self.wrong_branch_failure),
-            "done_by_no_progress": bool(self.no_progress_failure),
+            "done_by_wrong_branch": False,
+            "done_by_no_progress": False,
             "done_by_non_finite": bool(self.non_finite_failure),
             "terminal_reason": terminal_reason,
             "min_dist_to_goal": float(self.min_dist_this_episode),
@@ -1904,6 +1904,7 @@ class MCREnv(SofaEnv):
             "inserted_length_max_episode": float(self.max_inserted_length_episode),
             "no_progress_counter": int(self.no_progress_counter),
             "no_progress_failure": bool(self.no_progress_failure),
+            "no_progress_this_episode": bool(self.no_progress_this_episode),
             "no_progress_net_approach": float(self.no_progress_net_approach),
             "no_progress_feature": float(self.no_progress_feature),
             "no_progress_window_steps": int(self.no_progress_window_steps),

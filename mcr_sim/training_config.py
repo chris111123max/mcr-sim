@@ -53,7 +53,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V7
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V8
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -69,7 +69,7 @@ TIP_NEAR_WALL_RAMP_STEPS = 20
 
 # On branching vessels, compare distance to the selected target route with
 # distance to the complete centerline graph.  A 2 mm preference for another
-# graph branch, sustained for five steps, is treated as a wrong-branch failure.
+# graph branch, sustained for five steps, activates a recoverable dense penalty.
 WRONG_BRANCH_DISTANCE_MARGIN_M = 0.002
 WRONG_BRANCH_OBSERVATION_SCALE_M = 0.005
 WRONG_BRANCH_CONFIRM_STEPS = 5
@@ -84,34 +84,39 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v7. Dense navigation credit is the difference of continuous
+# Reward profile v8. Dense navigation credit is the difference of continuous
 # selected-route completion in [0, 1]. It therefore telescopes over a trajectory:
 # forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend.  V7 keeps the
-# V6 task and terminal values, and aligns the existing wall features with the
-# same whole-body SDF quantity used by out-of-vessel termination.  Sustained
-# stagnation is still terminated and receives its -120 penalty.
-REWARD_PROFILE_VERSION = 7
+# available again after a necessary correction in a tight bend. V8 removes
+# no-progress and wrong-branch termination: a normal episode now ends only on
+# target success, confirmed vessel exit, or the step limit (non-finite simulator
+# state remains an emergency stop). Failure values are aligned with the complete
+# progress budget so waiting for timeout cannot dominate useful forward progress.
+REWARD_PROFILE_VERSION = 8
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
-REWARD_PROGRESS_BUDGET = 100.0
+REWARD_PROGRESS_BUDGET = 200.0
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_BUDGET
-REWARD_WALL_PROXIMITY = -0.02
-REWARD_WALL_PENETRATION = -0.50
-REWARD_OFF_TARGET_BRANCH = -0.10
-REWARD_RETRACTION = -0.005
-REWARD_NO_PROGRESS = -0.005
-REWARD_WRONG_BRANCH = -150.0
-REWARD_SUCCESS = 150.0
-REWARD_OUT_OF_VESSEL = -150.0
-REWARD_NON_FINITE = -150.0
-REWARD_TIMEOUT = -120.0
-REWARD_NO_PROGRESS_TERMINAL = -120.0
+REWARD_WALL_PROXIMITY = -0.04
+REWARD_WALL_PENETRATION = -1.00
+REWARD_OFF_TARGET_BRANCH = -0.20
+REWARD_RETRACTION = -0.002
+# Stagnation remains observable and logged, but carries no separate cost. The
+# step cost plus timeout already makes waiting undesirable; another cumulative
+# term would make deliberate vessel exit cheaper than waiting for the step limit.
+REWARD_NO_PROGRESS = 0.0
+# This is a per-step penalty after the five-step branch confirmation, not a
+# terminal value. The agent may retract and recover to the selected route.
+REWARD_WRONG_BRANCH = -1.0
+REWARD_SUCCESS = 300.0
+REWARD_OUT_OF_VESSEL = -210.0
+REWARD_NON_FINITE = -220.0
+REWARD_TIMEOUT = -200.0
+# Retained as a zero-valued metadata key for old run readers. V8 never applies it.
+REWARD_NO_PROGRESS_TERMINAL = 0.0
 REWARD_STEP = -0.002
 
-# A policy that stays at the insertion lower bound must not fill the replay
-# buffer with long timeout episodes. Net continuous route progress is
-# measured over a long window so normal magnetic steering pauses are allowed.
-# Only sustained stagnation after the window is full becomes terminal.
+# Net continuous route progress is measured over a long window for diagnostics.
+# It neither changes reward nor terminates an episode in Reward V8.
 NO_PROGRESS_WINDOW_STEPS = 256
 NO_PROGRESS_GRACE_STEPS = 256
 NO_PROGRESS_CONFIRM_STEPS = 512
@@ -509,18 +514,16 @@ def validate_training_defaults() -> None:
         and REWARD_WRONG_BRANCH < 0.0
         and REWARD_NON_FINITE < 0.0
         and REWARD_TIMEOUT < 0.0
-        and REWARD_NO_PROGRESS_TERMINAL < 0.0
+        and REWARD_NO_PROGRESS_TERMINAL == 0.0
     ):
-        raise ValueError("Terminal reward signs are invalid.")
+        raise ValueError("Reward V8 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
-        and REWARD_WRONG_BRANCH < -maximum_navigation_credit
         and REWARD_NON_FINITE < -maximum_navigation_credit
         and REWARD_TIMEOUT <= -maximum_navigation_credit
-        and REWARD_NO_PROGRESS_TERMINAL <= -maximum_navigation_credit
     ):
-        raise ValueError("Every failed trajectory must remain negative after maximum navigation credit.")
+        raise ValueError("Every terminal failure must remain negative after maximum navigation credit.")
     longest_route_forward_reward = (
         REWARD_PROGRESS_BUDGET
         * MAX_INSERTION_PER_ACTION_M

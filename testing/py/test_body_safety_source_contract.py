@@ -1,4 +1,4 @@
-"""CPU-only wiring checks for the shared Reward V7 body-safety state."""
+"""CPU-only wiring checks for the shared Reward V8 body-safety state."""
 
 from __future__ import annotations
 
@@ -69,6 +69,19 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn('or bool(getattr(self, "_explicit_force_model", ""))', source)
         self.assertIn("self.current_full_target_position", source)
         self.assertIn("self._apply_curriculum_target_position()", source)
+
+    def test_reward_v8_only_uses_recoverable_behavior_failures(self):
+        source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
+            encoding="utf-8"
+        )
+        done_block = source.split("def _get_done", 1)[1].split("def _get_info", 1)[0]
+        self.assertIn('getattr(self, "out_of_vessel_failure", False)', done_block)
+        self.assertIn('getattr(self, "non_finite_failure", False)', done_block)
+        self.assertNotIn("wrong_branch_failure", done_block)
+        self.assertNotIn("no_progress_failure", done_block)
+        self.assertIn("self.no_progress_failure = False", source)
+        self.assertIn('"done_by_wrong_branch": False', source)
+        self.assertIn('"done_by_no_progress": False', source)
 
 
 if __name__ == "__main__":
