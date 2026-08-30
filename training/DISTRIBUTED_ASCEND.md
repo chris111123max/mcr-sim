@@ -54,13 +54,14 @@ boundaries from entering the PPO loss.
 - `--gradient-steps`: synchronized optimizer updates per rollout. The four-NPU
   default is 1. `-1` follows SB3's rank-local collected-transition count and is
   deliberately not multiplied by world size.
-- `--training-curriculum` (default): use four complete-route stages:
-  `simple_fixed` (B01/B02/C01/C02, no DR), `simple_full_dr` (the same four with
-  the complete requested DR envelope), `all_fixed` (all ten vessels, no DR), and
+- `--training-curriculum` (default): use five complete-route stages:
+  `branch_fixed` (B01/B02, no DR), `curved_fixed` (C01/C02, no DR),
+  `simple_full_dr` (all four with complete DR), `all_fixed` (all ten, no DR), and
   `all_full_dr` (all ten with complete DR). Each active vessel keeps a 100-episode
-  rolling 3 mm success window. Promotion is eligible only after every active
-  vessel has 100 samples and at least 50% rolling success for three consecutive
-  global epochs. A missing,
+  rolling 3 mm success window. Stage 0 advances only after the aggregate B01/B02
+  rolling success reaches 90%; later stages require every active vessel to reach
+  50%. After the stage threshold is met, three consecutive successful completed
+  episodes are sufficient; the stage is applied at the next epoch boundary. A missing,
   under-sampled, or under-threshold vessel resets the streak, so easier vessels
   cannot hide an unlearned C vessel. Per-vessel epoch and rolling counts/rates,
   the stage, and the streak are synchronized, logged, and saved with the
@@ -174,11 +175,12 @@ as the primary criterion; ties are resolved by route completion, route potential
 then smaller final target distance. Thus a 0%-success validation phase can still
 retain the checkpoint with the strongest measurable progress.
 
-Reward V8 exposes the same 78-dimensional observation to SAC, PPO, and
+Reward V9 exposes the same 78-dimensional observation to SAC, PPO, and
 LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
 clearance, outside-confirmation progress, the worst shaft point and inward
 direction, moving route guidance 10/20 mm ahead, plus selected-route tangents
-5/10/20 mm ahead. Continuous progress uses recurrent local projection with a
+5/10/20 mm ahead. Three formerly constant tip-forward slots now explicitly encode
+the matching bend severities, so observation size remains unchanged. Continuous progress uses recurrent local projection with a
 physical step gate, so adjacent U-turn arms cannot create an arc-length jump. The existing wall
 proximity and penetration reward components take the maximum of tip and
 whole-body risk, so unsafe shaft contact is visible before the terminal
@@ -186,8 +188,10 @@ whole-body SDF check fires. Every actor vector is expressed in the catheter-tip
 frame. Absolute XYZ and route completion percentage are absent; the single route
 horizon scalar is remaining centerline distance normalized by the longest training
 route. Navigation semantics changed even though the state remains 78-dimensional.
-Reward V8 also removes no-progress/wrong-branch
-termination and rebalances the reward scale, so older checkpoints must not be resumed.
+Reward V9 also penalizes positive insertion while the catheter is not aligned with
+an upcoming 20 mm bend, and increases the bounded local magnetic turn from 2° to
+3° per step. It retains no-progress/wrong-branch recovery semantics, so older
+checkpoints must not be resumed.
 
 ## Checkpoint and resume
 

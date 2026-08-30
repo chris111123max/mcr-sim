@@ -44,6 +44,7 @@ from .training_config import (
     REWARD_TIMEOUT,
     REWARD_WALL_PENETRATION,
     REWARD_WALL_PROXIMITY,
+    REWARD_UNSAFE_CURVE_INSERTION,
     REWARD_WRONG_BRANCH,
     SETTLE_STEPS,
     SOFA_TIME_STEP_S,
@@ -192,6 +193,7 @@ class MCREnv(SofaEnv):
                 "route_progress": REWARD_ROUTE_PROGRESS,
                 "wall_proximity_penalty": REWARD_WALL_PROXIMITY,
                 "wall_penetration_penalty": REWARD_WALL_PENETRATION,
+                "unsafe_curve_insertion_penalty": REWARD_UNSAFE_CURVE_INSERTION,
                 "off_target_branch_penalty": REWARD_OFF_TARGET_BRANCH,
                 "retraction_penalty": REWARD_RETRACTION,
                 "no_progress_penalty": REWARD_NO_PROGRESS,
@@ -550,6 +552,8 @@ class MCREnv(SofaEnv):
         self.current_centerline_progress = np.nan
         self.current_centerline_projection = np.zeros(3, dtype=np.float32)
         self.current_centerline_tangent = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        self.current_curve_bend_features = np.zeros(3, dtype=np.float32)
+        self.current_curve_alignment_features = np.zeros(3, dtype=np.float32)
         self.current_centerline_radial_offset = np.nan
         self.current_tip_centerline_offset_norm = np.nan
         self.previous_tip_centerline_radial_offset = None
@@ -1167,6 +1171,8 @@ class MCREnv(SofaEnv):
         self.current_route_projection_jump_rejected = False
         self.route_projection_jump_rejections_episode = 0
         self.current_route_guidance_points = np.zeros((2, 3), dtype=np.float32)
+        self.current_curve_bend_features = np.zeros(3, dtype=np.float32)
+        self.current_curve_alignment_features = np.zeros(3, dtype=np.float32)
         self._route_projection_cache_step = -1
         self._route_projection_cache_tip = None
         self._route_projection_cache_value = None
@@ -1321,7 +1327,7 @@ class MCREnv(SofaEnv):
 
     def _build_actor_current_geometry_observation(
         self,
-        tip_forward_local: np.ndarray,
+        bend_severity_features: np.ndarray,
         magnetic_field_norm: np.ndarray,
         near_guidance_vector_local: np.ndarray,
         far_guidance_vector_local: np.ndarray,
@@ -1333,7 +1339,7 @@ class MCREnv(SofaEnv):
     ) -> np.ndarray:
         obs = np.concatenate(
             [
-                np.asarray(tip_forward_local, dtype=np.float32).reshape(3),
+                np.asarray(bend_severity_features, dtype=np.float32).reshape(3),
                 np.asarray(magnetic_field_norm, dtype=np.float32).reshape(3),
                 np.asarray(near_guidance_vector_local, dtype=np.float32).reshape(3),
                 np.asarray(far_guidance_vector_local, dtype=np.float32).reshape(3),
@@ -1467,7 +1473,7 @@ class MCREnv(SofaEnv):
             tip_forward_world=tip_forward_world,
         )
         actor_current_geometry = self._build_actor_current_geometry_observation(
-            tip_forward_local=tip_forward_local,
+            bend_severity_features=self.current_curve_bend_features,
             magnetic_field_norm=magnetic_field_norm,
             near_guidance_vector_local=near_guidance_vector_local,
             far_guidance_vector_local=far_guidance_vector_local,
@@ -1495,9 +1501,15 @@ class MCREnv(SofaEnv):
         self.min_dist_this_episode = min(float(self.min_dist_this_episode), current_final_dist)
 
         try:
-            tip_pos = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3], dtype=np.float32)
+            tip_pose = np.asarray(
+                self.mcr_controller_sofa.get_pos_quat_catheter_tip(),
+                dtype=np.float32,
+            )
+            tip_pos = tip_pose[0:3]
+            tip_frame = self._build_tip_local_frame(tip_pose[3:7])
         except Exception:
             tip_pos = np.zeros(3, dtype=np.float32)
+            tip_frame = np.eye(3, dtype=np.float32)
 
         self._update_vessel_safety_state(
             tip_pos,
@@ -1542,7 +1554,7 @@ class MCREnv(SofaEnv):
             self.no_progress_counter = 0
         if self.no_progress_feature > 0.0:
             self.no_progress_this_episode = True
-        # Reward V8 deliberately keeps slow/stalled episodes alive until the
+        # Reward V9 deliberately keeps slow/stalled episodes alive until the
         # ordinary step limit. The counter remains diagnostic; only the dense
         # no-progress feature affects reward.
         self.no_progress_failure = False
@@ -1627,10 +1639,31 @@ class MCREnv(SofaEnv):
             near_wall_feature = 0.0
             penetration_feature = 0.0
 
+        bend_features, alignment_features, _ = self._get_curve_control_features(
+            tip_frame
+        )
+        self.current_curve_bend_features = bend_features
+        self.current_curve_alignment_features = alignment_features
+        # A 90-degree upcoming bend produces bend=alignment=0.5 when the
+        # catheter still points straight ahead.  The factor four maps that
+        # situation to a full-strength feature, while alignment with the future
+        # tangent makes the cost vanish.  Retraction is never penalized here.
+        unsafe_curve_insertion_feature = float(
+            np.clip(
+                max(float(self.current_effective_insert), 0.0)
+                * 4.0
+                * float(bend_features[-1])
+                * float(alignment_features[-1]),
+                0.0,
+                1.0,
+            )
+        )
+
         reward_features = {
             "route_progress": approach_feature,
             "wall_proximity_penalty": near_wall_feature,
             "wall_penetration_penalty": penetration_feature,
+            "unsafe_curve_insertion_penalty": unsafe_curve_insertion_feature,
             "off_target_branch_penalty": float(self.current_off_target_branch_feature),
             "retraction_penalty": float(max(-self.current_effective_insert, 0.0)),
             "no_progress_penalty": float(self.no_progress_feature),
@@ -1648,7 +1681,7 @@ class MCREnv(SofaEnv):
             self.out_of_vessel_failure = True
         if self.current_wrong_branch:
             self.wrong_branch_this_episode = True
-        # Wrong-branch confirmation is recoverable in Reward V8. It suppresses
+        # Wrong-branch confirmation is recoverable in Reward V9. It suppresses
         # selected-route progress credit and applies a dense penalty, but never
         # ends the episode by itself.
         self.wrong_branch_failure = False
@@ -1803,6 +1836,12 @@ class MCREnv(SofaEnv):
             "tip_centerline_radial_offset": float(self.current_centerline_radial_offset),
             "tip_centerline_offset_norm": float(self.current_tip_centerline_offset_norm),
             "centerline_progress": float(self.current_centerline_progress),
+            "curve_bend_5mm": float(self.current_curve_bend_features[0]),
+            "curve_bend_10mm": float(self.current_curve_bend_features[1]),
+            "curve_bend_20mm": float(self.current_curve_bend_features[2]),
+            "curve_alignment_error_20mm": float(
+                self.current_curve_alignment_features[2]
+            ),
             "centerline_safety_ratio_max_episode": float(self.max_safety_ratio_this_episode),
             "centerline_safety_margin_min_episode": float(self.min_safety_margin_this_episode),
             "sdf_available": bool(self.sdf_grid is not None),
@@ -2630,7 +2669,11 @@ class MCREnv(SofaEnv):
                 len(self.sdf_forward_probe_distances),
                 dtype=np.float32,
             )
-        lookahead_tangents = self._get_centerline_lookahead_tangent_features(tip_frame)
+        bend_features, alignment_features, lookahead_tangents = (
+            self._get_curve_control_features(tip_frame)
+        )
+        self.current_curve_bend_features = bend_features
+        self.current_curve_alignment_features = alignment_features
         return np.array(
             [
                 np.clip(self.current_centerline_offset_N_over_radius, -3.0, 3.0),
@@ -2677,6 +2720,43 @@ class MCREnv(SofaEnv):
                 tangent_local = np.zeros(3, dtype=np.float32)
             tangent_features.extend(tangent_local.tolist())
         return np.asarray(tangent_features, dtype=np.float32)
+
+    def _get_curve_control_features(self, tip_frame: np.ndarray):
+        """Return explicit local bend/alignment features plus future tangents.
+
+        Bend compares the selected-route tangent at the current projection with
+        the route tangent at 5/10/20 mm.  Alignment compares the catheter's
+        local forward axis with those same future tangents.  Both are bounded
+        to [0, 1], invariant to world coordinates, and shared by every RL
+        algorithm through the environment observation/reward.
+        """
+
+        tangents = self._get_centerline_lookahead_tangent_features(tip_frame)
+        tangents = np.asarray(tangents, dtype=np.float32).reshape(-1, 3)
+        current_world = np.asarray(
+            getattr(
+                self,
+                "current_centerline_tangent",
+                np.array([1.0, 0.0, 0.0], dtype=np.float32),
+            ),
+            dtype=np.float32,
+        ).reshape(3)
+        current_local = self._world_vec_to_local(current_world, tip_frame)
+        current_local = current_local / (float(np.linalg.norm(current_local)) + 1e-9)
+        tangent_norms = np.linalg.norm(tangents, axis=1, keepdims=True)
+        tangents = tangents / np.maximum(tangent_norms, 1e-9)
+        bend = np.clip(
+            0.5 * (1.0 - tangents @ current_local),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        # In the catheter-tip frame the forward direction is the +X axis.
+        alignment = np.clip(
+            0.5 * (1.0 - tangents[:, 0]),
+            0.0,
+            1.0,
+        ).astype(np.float32)
+        return bend, alignment, tangents.reshape(-1).astype(np.float32)
 
     def _get_distance_tip_to_dest(self):
         tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3], dtype=np.float32)

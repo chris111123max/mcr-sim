@@ -50,7 +50,7 @@ ROUTE_PROJECTION_AMBIGUITY_TOLERANCE_M = 0.00075
 ROUTE_PROJECTION_MAX_PROGRESS_STEP_M = 0.002
 ROUTE_SUCCESS_PROGRESS_MARGIN_M = 0.005
 
-LOCAL_FIELD_ACTION_ANGLE_RAD = 2.0 * math.pi / 180.0
+LOCAL_FIELD_ACTION_ANGLE_RAD = 3.0 * math.pi / 180.0
 MAX_ACTION_DELTA = 0.30
 # The ratio is retained only for legacy vessels that do not provide a VTI SDF.
 OUT_OF_VESSEL_SAFETY_RATIO = 1.00
@@ -58,7 +58,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V8
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V9
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -89,20 +89,23 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v8. Dense navigation credit is the difference of continuous
+# Reward profile v9. Dense navigation credit is the difference of continuous
 # selected-route completion in [0, 1]. It therefore telescopes over a trajectory:
 # forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend. V8 removes
-# no-progress and wrong-branch termination: a normal episode now ends only on
+# available again after a necessary correction in a tight bend. V9 retains the
+# V8 removal of no-progress and wrong-branch termination: a normal episode ends only on
 # target success, confirmed vessel exit, or the step limit (non-finite simulator
-# state remains an emergency stop). Failure values are aligned with the complete
-# progress budget so waiting for timeout cannot dominate useful forward progress.
-REWARD_PROFILE_VERSION = 8
+# state remains an emergency stop).  A bounded action-dependent term discourages
+# positive insertion while the catheter is not aligned with the 20 mm route
+# tangent.  It teaches bend anticipation without prescribing a turn direction
+# or introducing vessel/global coordinates.
+REWARD_PROFILE_VERSION = 9
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_BUDGET = 200.0
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_BUDGET
 REWARD_WALL_PROXIMITY = -0.04
 REWARD_WALL_PENETRATION = -1.00
+REWARD_UNSAFE_CURVE_INSERTION = -0.10
 REWARD_OFF_TARGET_BRANCH = -0.20
 REWARD_RETRACTION = -0.002
 # Stagnation remains observable and logged, but carries no separate cost. The
@@ -116,12 +119,12 @@ REWARD_SUCCESS = 300.0
 REWARD_OUT_OF_VESSEL = -210.0
 REWARD_NON_FINITE = -220.0
 REWARD_TIMEOUT = -200.0
-# Retained as a zero-valued metadata key for old run readers. V8 never applies it.
+# Retained as a zero-valued metadata key for old run readers. V9 never applies it.
 REWARD_NO_PROGRESS_TERMINAL = 0.0
 REWARD_STEP = -0.002
 
 # Net continuous route progress is measured over a long window for diagnostics.
-# It neither changes reward nor terminates an episode in Reward V8.
+# It neither changes reward nor terminates an episode in Reward V9.
 NO_PROGRESS_WINDOW_STEPS = 256
 NO_PROGRESS_GRACE_STEPS = 256
 NO_PROGRESS_CONFIRM_STEPS = 512
@@ -145,6 +148,7 @@ def reward_profile() -> dict:
         "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
         "wall_penetration": REWARD_WALL_PENETRATION,
+        "unsafe_curve_insertion": REWARD_UNSAFE_CURVE_INSERTION,
         "off_target_branch": REWARD_OFF_TARGET_BRANCH,
         "retraction": REWARD_RETRACTION,
         "no_progress": REWARD_NO_PROGRESS,
@@ -190,39 +194,52 @@ def body_sdf_risk_features(
     return warning, outside_depth
 
 
-# Training-only four-stage vessel/robustness curriculum.  Every stage uses the
-# complete route.  The policy first masters the four simplest vessels on their
-# nominal geometry, then the same four under the full requested DR envelope.
-# The remaining vessels are introduced on nominal geometry before full DR is
-# enabled again.  Validation always uses complete V01..V05 routes and remains
-# locked until the final all-vessel/full-DR stage is active.
+# Training-only five-stage vessel/robustness curriculum.  Every stage uses the
+# complete route.  Branching B01/B02 are learned first; their aggregate rolling
+# success must stably reach 90% before the continuously curved C01/C02 are
+# isolated for bend-control learning.  The four-vessel pool is then trained with
+# full DR, followed by all vessels on fixed geometry and finally full DR.
+# Validation remains locked until the final all-vessel/full-DR stage is active.
 TRAINING_CURRICULUM_ENABLED = True
 TRAINING_CURRICULUM_ALL_MODELS = (
     "B01", "B02", "B03", "B04", "B05",
     "C01", "C02", "C03", "C04", "C05",
 )
+TRAINING_CURRICULUM_BRANCH_MODELS = ("B01", "B02")
+TRAINING_CURRICULUM_CURVED_MODELS = ("C01", "C02")
 TRAINING_CURRICULUM_SIMPLE_MODELS = (
-    "B01", "B02", "C01", "C02",
+    *TRAINING_CURRICULUM_BRANCH_MODELS,
+    *TRAINING_CURRICULUM_CURVED_MODELS,
 )
 TRAINING_CURRICULUM_MODELS = (
-    TRAINING_CURRICULUM_SIMPLE_MODELS,
+    TRAINING_CURRICULUM_BRANCH_MODELS,
+    TRAINING_CURRICULUM_CURVED_MODELS,
     TRAINING_CURRICULUM_SIMPLE_MODELS,
     TRAINING_CURRICULUM_ALL_MODELS,
     TRAINING_CURRICULUM_ALL_MODELS,
 )
 TRAINING_CURRICULUM_STAGE_NAMES = (
-    "simple_fixed",
+    "branch_fixed",
+    "curved_fixed",
     "simple_full_dr",
     "all_fixed",
     "all_full_dr",
 )
-TRAINING_CURRICULUM_TARGET_FRACTIONS = (1.00,) * 4
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.50,) * 3
-TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS = 3
+TRAINING_CURRICULUM_TARGET_FRACTIONS = (1.00,) * 5
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.90, 0.50, 0.50, 0.50)
+# Stage 0 follows the requested aggregate B01/B02 criterion.  Later stages use
+# the weakest active vessel so one geometry cannot hide another vessel's failure.
+TRAINING_CURRICULUM_PROMOTION_MODES = (
+    "aggregate",
+    "per_vessel_min",
+    "per_vessel_min",
+    "per_vessel_min",
+)
+TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES = 3
 TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 100
 TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
 # DR is deliberately disabled again when difficult vessels are first added.
-TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 1.00, 0.00, 1.00)
+TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 0.00, 1.00, 0.00, 1.00)
 # Half the sampling distribution remains uniform.  The adaptive half focuses
 # on weak vessels but is capped so a single failure mode cannot erase skills
 # already acquired on the rest of the active pool.
@@ -231,8 +248,8 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 4
-SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 4
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 5
+SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 5
 
 
 def curriculum_domain_randomization_profile(current_stage: int) -> dict:
@@ -325,7 +342,10 @@ def curriculum_protocol_profile() -> dict:
         "models_by_stage": [list(models) for models in TRAINING_CURRICULUM_MODELS],
         "target_fraction_by_stage": list(TRAINING_CURRICULUM_TARGET_FRACTIONS),
         "success_thresholds": list(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS),
-        "consecutive_epochs": TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS,
+        "promotion_modes": list(TRAINING_CURRICULUM_PROMOTION_MODES),
+        "consecutive_success_episodes": (
+            TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES
+        ),
         "rolling_episodes_per_vessel": TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
         "minimum_episodes_per_vessel": TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
         "domain_randomization_fractions": list(TRAINING_CURRICULUM_DR_FRACTIONS),
@@ -335,6 +355,11 @@ def curriculum_protocol_profile() -> dict:
         "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
+        "actor_curve_features": "bend_severity_5_10_20mm",
+        "local_field_action_angle_deg": math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD),
+        "unsafe_curve_insertion_feature": (
+            "positive_insert_x_4_x_bend20_x_alignment_error20"
+        ),
         "navigation": "continuous_selected_route",
         "route_guidance_lookahead_distances_m": list(
             ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M
@@ -357,20 +382,20 @@ def curriculum_protocol_profile() -> dict:
 
 def update_curriculum_progress(
     current_stage: int,
-    consecutive_success_epochs: int,
+    consecutive_success_episodes: int,
     train_success_rate: float,
     per_model_success_rates=None,
     per_model_episode_counts=None,
 ):
     """Update the stable-success streak and advance at most one stage.
 
-    When per-vessel rates are available, every vessel in the current stage must
-    meet the threshold.  The aggregate rate is retained only as a compatibility
-    fallback for callers that do not yet have per-vessel episode statistics.
+    Stage 0 uses the weighted aggregate rolling success of B01/B02.  Later
+    stages use the weakest active vessel.  All stages still require the minimum
+    rolling sample count for every active vessel.
     """
 
     stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_MODELS) - 1)
-    streak = max(int(consecutive_success_epochs), 0)
+    streak = max(int(consecutive_success_episodes), 0)
     if stage >= len(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS):
         return stage, 0
     mastery_success_rate = float(train_success_rate)
@@ -389,16 +414,35 @@ def update_curriculum_progress(
                     enough_samples = False
             active_rates.append(float(rate))
         if active_rates:
-            mastery_success_rate = min(active_rates)
+            mode = TRAINING_CURRICULUM_PROMOTION_MODES[stage]
+            if mode == "aggregate":
+                if per_model_episode_counts is None:
+                    mastery_success_rate = sum(active_rates) / len(active_rates)
+                else:
+                    active_counts = [
+                        max(int(per_model_episode_counts.get(model_id, 0)), 0)
+                        for model_id in TRAINING_CURRICULUM_MODELS[stage]
+                    ]
+                    total_count = sum(active_counts)
+                    mastery_success_rate = (
+                        sum(rate * count for rate, count in zip(active_rates, active_counts))
+                        / total_count
+                        if total_count > 0
+                        else -math.inf
+                    )
+            else:
+                mastery_success_rate = min(active_rates)
     if (
         enough_samples
         and mastery_success_rate >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]
+        and streak >= TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES
     ):
-        streak += 1
-        if streak >= TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS:
-            stage += 1
-            streak = 0
-    else:
+        stage += 1
+        streak = 0
+    elif (
+        not enough_samples
+        or mastery_success_rate < TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[stage]
+    ):
         streak = 0
     return stage, streak
 
@@ -523,8 +567,9 @@ def validate_training_defaults() -> None:
         and REWARD_NON_FINITE < 0.0
         and REWARD_TIMEOUT < 0.0
         and REWARD_NO_PROGRESS_TERMINAL == 0.0
+        and REWARD_UNSAFE_CURVE_INSERTION < 0.0
     ):
-        raise ValueError("Reward V8 signs are invalid.")
+        raise ValueError("Reward V9 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
@@ -564,24 +609,29 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum DR fractions must be in [0, 1].")
     if len(TRAINING_CURRICULUM_STAGE_NAMES) != len(TRAINING_CURRICULUM_MODELS):
         raise ValueError("Curriculum stage names are inconsistent.")
-    if TRAINING_CURRICULUM_MODELS[:2] != (
+    if TRAINING_CURRICULUM_MODELS != (
+        TRAINING_CURRICULUM_BRANCH_MODELS,
+        TRAINING_CURRICULUM_CURVED_MODELS,
         TRAINING_CURRICULUM_SIMPLE_MODELS,
-        TRAINING_CURRICULUM_SIMPLE_MODELS,
-    ):
-        raise ValueError("The first two curriculum stages must use the simple vessel pool.")
-    if TRAINING_CURRICULUM_MODELS[2:] != (
         TRAINING_CURRICULUM_ALL_MODELS,
         TRAINING_CURRICULUM_ALL_MODELS,
     ):
-        raise ValueError("The final two curriculum stages must use all training vessels.")
+        raise ValueError("The five-stage vessel curriculum is inconsistent.")
     if not set(TRAINING_CURRICULUM_SIMPLE_MODELS).issubset(
         set(TRAINING_CURRICULUM_ALL_MODELS)
     ):
         raise ValueError("Simple curriculum vessels must belong to the training pool.")
     if any(fraction != 1.0 for fraction in TRAINING_CURRICULUM_TARGET_FRACTIONS):
         raise ValueError("Every curriculum stage must use the complete route.")
-    if TRAINING_CURRICULUM_DR_FRACTIONS != (0.0, 1.0, 0.0, 1.0):
-        raise ValueError("The four-stage curriculum must alternate fixed/full DR.")
+    if TRAINING_CURRICULUM_DR_FRACTIONS != (0.0, 0.0, 1.0, 0.0, 1.0):
+        raise ValueError("The five-stage curriculum DR schedule is inconsistent.")
+    if TRAINING_CURRICULUM_PROMOTION_MODES != (
+        "aggregate",
+        "per_vessel_min",
+        "per_vessel_min",
+        "per_vessel_min",
+    ):
+        raise ValueError("The curriculum promotion modes are inconsistent.")
     if TRAINING_CURRICULUM_DR_FRACTIONS[-1] != 1.0:
         raise ValueError("The final curriculum stage must use full domain randomization.")
     if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
@@ -596,8 +646,8 @@ def validate_training_defaults() -> None:
         == len(TRAINING_CURRICULUM_MODELS)
     ):
         raise ValueError("Curriculum exploration schedules are inconsistent.")
-    if TRAINING_CURRICULUM_CONSECUTIVE_EPOCHS < 1:
-        raise ValueError("Curriculum consecutive epoch count must be positive.")
+    if TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES < 1:
+        raise ValueError("Curriculum consecutive-success episode count must be positive.")
     if TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL < 1:
         raise ValueError("Curriculum rolling window must be positive.")
     if not (

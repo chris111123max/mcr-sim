@@ -21,6 +21,7 @@ from .evaluation import (
 from ..training_config import (
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_MODELS,
+    TRAINING_CURRICULUM_PROMOTION_MODES,
     TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
     TRAINING_CURRICULUM_STAGE_NAMES,
     TRAINING_CURRICULUM_TARGET_FRACTIONS,
@@ -305,6 +306,7 @@ class EpochExperimentCallback(BaseCallback):
                 for key in (
                     "episode_reward_wall_proximity_penalty",
                     "episode_reward_wall_penetration_penalty",
+                    "episode_reward_unsafe_curve_insertion_penalty",
                     "episode_reward_off_target_branch_penalty",
                     "episode_reward_wrong_branch_penalty",
                 )
@@ -378,7 +380,7 @@ class EpochExperimentCallback(BaseCallback):
             f"episodes_{self.global_completed_episodes:05d}"
         )
 
-    def _rolling_curriculum_statistics(self, active_models):
+    def _rolling_curriculum_statistics(self, active_models, promotion_mode=None):
         counts = {
             model_id: len(self._curriculum_outcome_windows[model_id])
             for model_id in active_models
@@ -400,9 +402,18 @@ class EpochExperimentCallback(BaseCallback):
             )
             and all(rate is not None for rate in rates.values())
         )
-        mastery_rate = (
-            min(float(rate) for rate in rates.values()) if ready else 0.0
-        )
+        if ready and promotion_mode == "aggregate":
+            total_count = sum(counts.values())
+            mastery_rate = (
+                sum(float(rates[model_id]) * counts[model_id] for model_id in active_models)
+                / float(total_count)
+                if total_count > 0
+                else 0.0
+            )
+        else:
+            mastery_rate = (
+                min(float(rate) for rate in rates.values()) if ready else 0.0
+            )
         return rates, counts, ready, mastery_rate
 
     def _record_model_metadata(self, epoch: int, train_success_rate: float) -> None:
@@ -746,10 +757,15 @@ class EpochExperimentCallback(BaseCallback):
             curriculum_rolling_episode_counts,
             curriculum_mastery_ready,
             curriculum_mastery_success_rate,
-        ) = self._rolling_curriculum_statistics(active_models)
+        ) = self._rolling_curriculum_statistics(
+            active_models,
+            promotion_mode=(
+                TRAINING_CURRICULUM_PROMOTION_MODES[curriculum_stage_used]
+                if curriculum_stage_used < len(TRAINING_CURRICULUM_PROMOTION_MODES)
+                else None
+            ),
+        )
         curriculum_mastery_ready = bool(curriculum_mastery_ready)
-        if not curriculum_mastery_ready:
-            self.curriculum_success_streak = 0
         if self.training_curriculum_enabled:
             next_curriculum_stage, self.curriculum_success_streak = (
                 update_curriculum_progress(
@@ -1087,6 +1103,10 @@ class EpochExperimentCallback(BaseCallback):
                     )
                     model_id = self._curriculum_model_ids[model_index]
                     self._curriculum_outcome_windows[model_id].append(success)
+                    if success:
+                        self.curriculum_success_streak += 1
+                    else:
+                        self.curriculum_success_streak = 0
             cursor += take
             if (
                 self.next_epoch <= self.epochs

@@ -1,0 +1,89 @@
+{
+  "model_id": "C02",
+  "family": "curved",
+  "difficulty": "medium-low",
+  "source_units": "mm",
+  "sofa_scale": 0.001,
+  "seed": 102,
+  "catheter_outer_diameter_mm": 1.33,
+  "parameters": {
+    "length_mm": 285.0,
+    "turns": 2.05,
+    "amplitude_mm": 29.0,
+    "torsion_mm": 12.0,
+    "radius_min_mm": 4.0,
+    "radius_max_mm": 4.0,
+    "centerline_samples": 181,
+    "collision_ring_sides": 18,
+    "visual_ring_sides": 40,
+    "visual_wall_offset_mm": 1.0
+  },
+  "topology": {
+    "inlets": 1,
+    "outlets": 1,
+    "bifurcations": 0
+  },
+  "sdf": {
+    "convention": "negative_inside_positive_outside",
+    "scalar_name": "signed_distance_mm",
+    "spacing_mm": 1.0,
+    "origin_mm": [
+      -33.0,
+      -11.0,
+      -22.0
+    ],
+    "dimensions_xyz": [
+      74,
+      308,
+      45
+    ]
+  },
+  "collision_validation": {
+    "triangle_count": 6480,
+    "degenerate_triangles": 0,
+    "bounds_min_mm": [
+      -25.161,
+      0.0,
+      -14.39243
+    ],
+    "bounds_max_mm": [
+      32.05214,
+      285.0,
+      13.99052
+    ],
+    "area_mm2_min_mean_max": [
+      0.7772076253597174,
+      1.3185060466898333,
+      2.229558247053252
+    ],
+    "edge_mm_min_mean_max": [
+      1.1190496753990948,
+      1.8845080111778474,
+      3.4938939828669517
+    ]
+  },
+  "visual_validation": {
+    "triangle_count": 14400,
+    "degenerate_triangles": 0,
+    "bounds_min_mm": [
+      -26.17769,
+      0.0,
+      -15.4197
+    ],
+    "bounds_max_mm": [
+      33.0735,
+      285.0,
+      15.03388
+    ],
+    "area_mm2_min_mean_max": [
+      0.3852487880408064,
+      0.7446723260977965,
+      1.2679610985175958
+    ],
+    "edge_mm_min_mean_max": [
+      0.7845790852278797,
+      1.5814671823571074,
+      3.3247477900080655
+    ]
+  }
+}

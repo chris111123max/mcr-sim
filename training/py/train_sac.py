@@ -60,6 +60,7 @@ from mcr_sim.training_config import (
     REWARD_TIMEOUT,
     REWARD_WALL_PENETRATION,
     REWARD_WALL_PROXIMITY,
+    REWARD_UNSAFE_CURVE_INSERTION,
     REWARD_WRONG_BRANCH,
     SAC_BATCH_SIZE,
     SAC_BUFFER_SIZE,
@@ -203,7 +204,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
     def _episode_from_info(self, info: dict) -> dict:
         episode_info = info.get("episode", {}) if isinstance(info.get("episode", {}), dict) else {}
 
-        # Reward V8 emits continuous selected-route completion.
+        # Reward V9 emits continuous selected-route completion and bend control.
         route_progress_ratio = self._safe_float(
             info.get("route_progress_ratio", np.nan)
         )
@@ -279,6 +280,9 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             )
             + self._safe_float(
                 info.get("episode_reward_wall_penetration_penalty", 0.0)
+            )
+            + self._safe_float(
+                info.get("episode_reward_unsafe_curve_insertion_penalty", 0.0)
             )
             + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
@@ -992,9 +996,9 @@ def parse_args():
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Advance the four-stage simple-fixed/simple-DR/all-fixed/all-DR curriculum "
-            "after every active vessel has at least 100 rolling samples and 50% 3 mm "
-            "success for three consecutive epochs."
+            "Advance the five-stage branch-fixed/curved-fixed/simple-DR/"
+            "all-fixed/all-DR curriculum. Stage 0 requires aggregate B01/B02 "
+            "rolling 3 mm success >=90% plus three consecutive successful episodes."
         ),
     )
     curriculum.add_argument(
@@ -1598,7 +1602,7 @@ def main():
             if args.force_model:
                 model_label = args.force_model
             elif args.training_curriculum:
-                model_label = "curriculum_stage0(B01,B02,C01,C02_fullroute_fixed)"
+                model_label = "curriculum_stage0(B01,B02_fullroute_fixed)"
             else:
                 model_label = "uniform(B01-B05,C01-C05)"
             print(
@@ -1631,6 +1635,7 @@ def main():
             print(
                 f"[MCR TRAIN] reward route_progress={REWARD_ROUTE_PROGRESS:g} "
                 f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
+                f"unsafe_curve_insert={REWARD_UNSAFE_CURVE_INSERTION:g} "
                 f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
                 f"retract/no_progress={REWARD_RETRACTION:g}/{REWARD_NO_PROGRESS:g} "
                 f"success={REWARD_SUCCESS:g} out/non_finite="

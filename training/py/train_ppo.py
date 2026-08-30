@@ -150,9 +150,9 @@ def parse_args(configure_parser=None):
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Advance the four-stage simple-fixed/simple-DR/all-fixed/all-DR curriculum "
-            "after every active vessel has at least 100 rolling samples and 50% 3 mm "
-            "success for three consecutive epochs."
+            "Advance the five-stage branch-fixed/curved-fixed/simple-DR/"
+            "all-fixed/all-DR curriculum. Stage 0 requires aggregate B01/B02 "
+            "rolling 3 mm success >=90% plus three consecutive successful episodes."
         ),
     )
     curriculum.add_argument(

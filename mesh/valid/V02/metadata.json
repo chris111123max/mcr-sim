@@ -1,0 +1,127 @@
+{
+  "model_id": "V02",
+  "family": "branching",
+  "difficulty": "easy",
+  "source_units": "mm",
+  "sofa_scale": 0.001,
+  "seed": 302,
+  "catheter_outer_diameter_mm": 1.33,
+  "parameters": {
+    "x_scale": 1.14,
+    "y_scale": 1.34,
+    "z_scale_mm": 28.0,
+    "curve_mm": 23.0,
+    "trunk_radius_mm": 5.0,
+    "outlet_radius_mm": 3.3,
+    "nominal_angle_range_deg": [
+      28.0,
+      100.0
+    ],
+    "turnback_mm": 15.0,
+    "collision_surface_spacing_mm": 2.0,
+    "visual_surface_spacing_mm": 1.4,
+    "visual_wall_offset_mm": 1.0
+  },
+  "topology": {
+    "inlets": 1,
+    "outlets": 6,
+    "bifurcation_levels": 3,
+    "target_centerlines": [
+      {
+        "target_index": 1,
+        "outlet_node": "lo1",
+        "file": "target_01_centerline.vtk"
+      },
+      {
+        "target_index": 2,
+        "outlet_node": "lo2",
+        "file": "target_02_centerline.vtk"
+      },
+      {
+        "target_index": 3,
+        "outlet_node": "lo3",
+        "file": "target_03_centerline.vtk"
+      },
+      {
+        "target_index": 4,
+        "outlet_node": "ro1",
+        "file": "target_04_centerline.vtk"
+      },
+      {
+        "target_index": 5,
+        "outlet_node": "ro2",
+        "file": "target_05_centerline.vtk"
+      },
+      {
+        "target_index": 6,
+        "outlet_node": "ro3",
+        "file": "target_06_centerline.vtk"
+      }
+    ],
+    "default_target_centerline": "target_01_centerline.vtk",
+    "full_graph_centerline": "centerline_graph.vtk"
+  },
+  "sdf": {
+    "convention": "negative_inside_positive_outside",
+    "scalar_name": "signed_distance_mm",
+    "spacing_mm": 1.0,
+    "origin_mm": [
+      -76.0,
+      -12.0,
+      -24.0
+    ],
+    "dimensions_xyz": [
+      156,
+      309,
+      47
+    ]
+  },
+  "collision_validation": {
+    "triangle_count": 50968,
+    "degenerate_triangles": 0,
+    "bounds_min_mm": [
+      -66.67106,
+      -3.84611,
+      -14.52
+    ],
+    "bounds_max_mm": [
+      69.62919,
+      285.56345,
+      12.888
+    ],
+    "area_mm2_min_mean_max": [
+      4.996891220798716e-07,
+      0.4509189597892397,
+      2.73030523199083
+    ],
+    "edge_mm_min_mean_max": [
+      0.0005338329881605273,
+      1.1295919971649855,
+      3.4473878939283362
+    ]
+  },
+  "visual_validation": {
+    "triangle_count": 129696,
+    "degenerate_triangles": 0,
+    "bounds_min_mm": [
+      -67.62248,
+      -4.6346,
+      -15.60277
+    ],
+    "bounds_max_mm": [
+      70.5457,
+      286.11588,
+      13.883
+    ],
+    "area_mm2_min_mean_max": [
+      1.2371823880793545e-07,
+      0.22006780163257922,
+      1.276033483792579
+    ],
+    "edge_mm_min_mean_max": [
+      0.0003976284420732619,
+      0.7893531490074821,
+      2.4214137776052893
+    ]
+  }
+}
