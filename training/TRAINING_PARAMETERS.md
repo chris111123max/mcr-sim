@@ -37,7 +37,7 @@
 
 ## 奖励
 
-Reward profile v10.1 使用选定中心线上的真实连续弧长势函数 `Phi=600×s(m)`，进度 shaping 为
+Reward profile v10.2 使用选定中心线上的真实连续弧长势函数 `Phi=600×s(m)`，进度 shaping 为
 `gamma×Phi(s_next)-Phi(s_prev)`，默认 `gamma=0.9995`，终止状态的 `Phi` 严格为 0。
 这是标准 potential-based shaping：在算法实际优化的折扣回报中整段 shaping 会望远镜消去，
 只把学习信号提前，不改变成功/失败的策略排序；同时不再按路线总长归一化而对 C 路线每毫米降权。
@@ -53,13 +53,14 @@ Reward profile v10.1 使用选定中心线上的真实连续弧长势函数 `Phi
 | 最终成功 | +500 | 进入 3 mm 目标、路线剩余小于 5 mm，且导管在血管内 |
 | 出血管 | -500 | 整段导管中心超出 SDF 管壁 0.5 mm，连续 3 步时终止 |
 | 非有限状态 | -500 | observation/reward 出现非有限值时紧急终止 |
-| 超时 | -700 | 2048 步仍未完成；抵消折扣后“拖延失败比立即出界便宜”的局部最优 |
-| 时间代价 | -0.20×(0.25+0.75×剩余路线比例) | 起点约 -0.20/步，目标附近约 -0.05/步；立即约束停滞，同时允许末段精细调整 |
+| 超时 | -1050 | 2048 步仍未完成；连同短窗口停滞代价后，折扣回报也严格差于立即出血管 |
+| 每步代价 | -0.01 | 小型时间成本，不把正常探索与停滞一并压低 |
+| 持续停滞 | -0.10×feature | 64 步宽限后，最近 32 步净路线推进不足 1 mm 时线性启用；只扣分，绝不终止 |
 
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
 `max_grad_norm=0.5` 和 `ent_coef=0.001`。PPO/LSTM-PPO 保留已经验证过的动作标准差
 下限 `0.25`，SAC 自动熵系数下限为 `0.02`；策略参数自身仍可自然退火到这些下限。
-`run_config.json` 会完整保存 Reward v10.1、实际 observation shape/dtype，`train_summary.csv`
+`run_config.json` 会完整保存 Reward v10.2、实际 observation shape/dtype，`train_summary.csv`
 同时记录四类奖励分项（progress/terminal/safety/step）、无进展/错误分支诊断事件、正回报失败率、终止路线势、
 中心线跳变拒绝次数、课程阶段、当前阶段每根血管的回合数与成功率、无进展次数、
 正负插入比例和最终插入长度。

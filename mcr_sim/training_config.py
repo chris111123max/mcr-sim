@@ -94,7 +94,7 @@ ENTRY_TANGENT_POINTS = 5
 # shaping redistributes feedback without changing the policy ordering defined by
 # the base terminal/safety/time objective.  Retraction is naturally negative;
 # curve anticipation is learned from state instead of action-dependent shaping.
-REWARD_PROFILE_VERSION = "10.1"
+REWARD_PROFILE_VERSION = "10.2"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
 REWARD_PROGRESS_PER_M = 600.0
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_PER_M
@@ -107,15 +107,15 @@ REWARD_OFF_TARGET_BRANCH = -0.10
 REWARD_SUCCESS = 500.0
 REWARD_OUT_OF_VESSEL = -500.0
 REWARD_NON_FINITE = -500.0
-REWARD_TIMEOUT = -700.0
-REWARD_STEP = -0.20
-REWARD_STEP_MIN_FRACTION = 0.25
-REWARD_STEP_REMAINING_FRACTION = 0.75
+REWARD_TIMEOUT = -1050.0
+REWARD_STEP = -0.01
+REWARD_STAGNATION = -0.10
 
-# Net continuous route progress is measured over a long window for diagnostics.
-# It neither changes reward nor terminates an episode in Reward V10.
-NO_PROGRESS_WINDOW_STEPS = 256
-NO_PROGRESS_GRACE_STEPS = 256
+# A short, rollout-visible window distinguishes deliberate steering pauses from
+# a policy that has collapsed to zero insertion/retraction.  It never terminates
+# the episode; it only adds one bounded cost after the initial grace period.
+NO_PROGRESS_WINDOW_STEPS = 32
+NO_PROGRESS_GRACE_STEPS = 64
 NO_PROGRESS_CONFIRM_STEPS = 512
 NO_PROGRESS_MIN_NET_APPROACH_M = 0.001
 
@@ -145,9 +145,8 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "non_finite": REWARD_NON_FINITE,
         "timeout": REWARD_TIMEOUT,
         "step": REWARD_STEP,
-        "step_feature": "0.25+0.75*remaining_route_ratio",
-        "step_min_fraction": REWARD_STEP_MIN_FRACTION,
-        "step_remaining_fraction": REWARD_STEP_REMAINING_FRACTION,
+        "stagnation": REWARD_STAGNATION,
+        "stagnation_formula": "window32_net_route_progress_below_1mm",
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
@@ -574,17 +573,12 @@ def validate_training_defaults() -> None:
             REWARD_DISCOUNT_GAMMA * TRAIN_ROUTE_MAX_LENGTH_M
             - (TRAIN_ROUTE_MAX_LENGTH_M - MAX_INSERTION_PER_ACTION_M)
         )
-        + REWARD_STEP * REWARD_STEP_MIN_FRACTION
+        + REWARD_STEP
     )
     if longest_route_safe_forward_reward <= 0.0:
         raise ValueError("Safe full insertion must remain positive on the longest route.")
-    if not math.isclose(
-        REWARD_STEP_MIN_FRACTION + REWARD_STEP_REMAINING_FRACTION,
-        1.0,
-        rel_tol=0.0,
-        abs_tol=1e-12,
-    ) or not (0.0 < REWARD_STEP_MIN_FRACTION <= 1.0):
-        raise ValueError("Reward V10.1 time-cost fractions must be positive and sum to one.")
+    if REWARD_STAGNATION >= 0.0:
+        raise ValueError("Reward V10.2 stagnation cost must be negative.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS

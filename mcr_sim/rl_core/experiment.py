@@ -327,7 +327,8 @@ class EpochExperimentCallback(BaseCallback):
                 reward_progress,
                 reward_terminal,
                 reward_safety,
-                float(info.get("episode_reward_step_penalty", 0.0)),
+                float(info.get("episode_reward_step_penalty", 0.0))
+                + float(info.get("episode_reward_stagnation_penalty", 0.0)),
                 float(info.get("insert_action_mean_episode", 0.0)),
                 float(info.get("insert_positive_fraction_episode", 0.0)),
                 float(info.get("insert_negative_fraction_episode", 0.0)),

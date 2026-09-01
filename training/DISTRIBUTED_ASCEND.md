@@ -192,9 +192,10 @@ terminal potential fixed to zero. It redistributes learning signal without chang
 the learner's discounted policy ordering, and removes route-length normalization that
 previously weakened each millimetre on C vessels. The only other terms are bounded wall risk,
 bounded off-route risk, a small step cost, and success/failure terminals. With maximum
-training-route potential below +297. Timeout is -700, while the time cost is
-`-0.20 * (0.25 + 0.75 * remaining_route_ratio)`; this prevents delayed timeout
-from becoming cheaper than early vessel exit. PPO/SAC default to gamma 0.9995 (PPO GAE lambda
+training-route potential below +297. Timeout is -1050, the ordinary step cost is
+`-0.01`, and a bounded `-0.10` stagnation cost becomes visible when 32-step net
+route progress remains below 1 mm after a 64-step grace period. It never terminates
+an episode or moves the full-route target. PPO/SAC default to gamma 0.9995 (PPO GAE lambda
 0.98) so distant timeout/failure consequences remain visible. This contract is
 intentionally incompatible with old 78-dimensional checkpoints.
 

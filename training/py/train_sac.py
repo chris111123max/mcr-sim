@@ -53,6 +53,7 @@ from mcr_sim.training_config import (
     REWARD_NON_FINITE,
     REWARD_ROUTE_PROGRESS,
     REWARD_STEP,
+    REWARD_STAGNATION,
     REWARD_SUCCESS,
     REWARD_TIMEOUT,
     REWARD_WALL_PROXIMITY,
@@ -274,7 +275,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
             ),
-            "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0)),
+            "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0))
+            + self._safe_float(info.get("episode_reward_stagnation_penalty", 0.0)),
             "insert_action_mean": self._safe_float(
                 info.get("insert_action_mean_episode", np.nan)
             ),
@@ -1611,7 +1613,8 @@ def main():
                 f"off_route={REWARD_OFF_TARGET_BRANCH:g} "
                 f"success={REWARD_SUCCESS:g} out/non_finite="
                 f"{REWARD_OUT_OF_VESSEL:g}/{REWARD_NON_FINITE:g} "
-                f"timeout={REWARD_TIMEOUT:g} step={REWARD_STEP:g} "
+                f"timeout={REWARD_TIMEOUT:g} step/stagnation="
+                f"{REWARD_STEP:g}/{REWARD_STAGNATION:g} "
                 f"grad_clip={SAC_MAX_GRAD_NORM:g}"
             )
             print(
