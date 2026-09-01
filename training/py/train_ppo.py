@@ -43,6 +43,7 @@ from mcr_sim.training_config import (
     PPO_LEARNING_RATE,
     PPO_MAX_GRAD_NORM,
     PPO_MAX_ACTION_STD,
+    PPO_INITIAL_ACTION_STD,
     PPO_MIN_ACTION_STD,
     PPO_N_ENVS,
     PPO_N_EPOCHS,
@@ -116,6 +117,7 @@ def parse_args(configure_parser=None):
     parser.add_argument("--max-grad-norm", type=float, default=PPO_MAX_GRAD_NORM)
     parser.add_argument("--min-action-std", type=float, default=PPO_MIN_ACTION_STD)
     parser.add_argument("--max-action-std", type=float, default=PPO_MAX_ACTION_STD)
+    parser.add_argument("--initial-action-std", type=float, default=PPO_INITIAL_ACTION_STD)
 
     parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
     parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
@@ -194,6 +196,8 @@ def parse_args(configure_parser=None):
         parser.error("vessel scale bounds must satisfy 0.5 <= min <= max <= 1.0")
     if not (0.0 < args.min_action_std <= args.max_action_std):
         parser.error("PPO action std bounds must satisfy 0 < min <= max")
+    if not (args.min_action_std <= args.initial_action_std <= args.max_action_std):
+        parser.error("--initial-action-std must lie within the action std bounds")
     args.steps_per_epoch = args.episodes_per_epoch * args.max_episode_steps
     args.episode_mode = True
     return args
@@ -399,6 +403,9 @@ def main():
                     math.ceil(completed_global_steps / context.world_size)
                 )
         else:
+            policy_kwargs = {
+                "log_std_init": math.log(float(args.initial_action_std)),
+            }
             kwargs = dict(
                 policy="MlpPolicy",
                 env=env,
@@ -412,6 +419,7 @@ def main():
                 ent_coef=args.ent_coef,
                 vf_coef=args.vf_coef,
                 max_grad_norm=args.max_grad_norm,
+                policy_kwargs=policy_kwargs,
                 tensorboard_log=tensorboard_log,
                 seed=args.rank_seed,
                 device=args.resolved_device,

@@ -26,7 +26,7 @@ MAX_EPISODE_STEPS = 2048
 RADIUS_OBSERVATION_SCALE_M = 0.005
 ACTOR_HISTORY_STEPS = 1
 ACTOR_SHAFT_LOOKBACK_DISTANCES_M = (0.010, 0.030, 0.060)
-VESSEL_SECTION_FEATURE_DIM = 33
+VESSEL_SECTION_FEATURE_DIM = 26
 ACTOR_STATIC_ROUTE_FEATURE_DIM = 12
 ACTOR_CURRENT_GEOMETRY_DIM = ACTOR_STATIC_ROUTE_FEATURE_DIM + VESSEL_SECTION_FEATURE_DIM
 ACTOR_DYNAMIC_STEP_DIM = 7
@@ -59,7 +59,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V10
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V11
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -89,27 +89,31 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v10.  The dense term is a potential over physical selected-route
-# metres, not a route-length-normalized percentage.  Discount-matched potential
-# shaping redistributes feedback without changing the policy ordering defined by
-# the base terminal/safety/time objective.  Retraction is naturally negative;
-# curve anticipation is learned from state instead of action-dependent shaping.
-REWARD_PROFILE_VERSION = "10.2"
-REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
-REWARD_PROGRESS_PER_M = 600.0
-REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_PER_M
-REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_PER_M * TRAIN_ROUTE_MAX_LENGTH_M
+# Reward profile v11.  All learning signals are deliberately O(1..35).  Route
+# completion is the sole dense task reward and is implemented as a normalized,
+# discount-matched potential.  This removes route-length-dependent reward scale
+# and preserves the ordering of policies defined by success/failure/time.
+REWARD_PROFILE_VERSION = "11.0"
+REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
+REWARD_PROGRESS_SCALE = 10.0
+# Compatibility alias for older reporting code.  In V11 this is per unit route
+# completion, not per physical metre.
+REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
+REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
+REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
 # Potential-based route shaping must use the same discount as every learner:
 # F(s,s') = gamma * Phi(s') - Phi(s).  Terminal Phi is exactly zero.
 REWARD_DISCOUNT_GAMMA = 0.9995
-REWARD_WALL_PROXIMITY = -0.10
-REWARD_OFF_TARGET_BRANCH = -0.10
-REWARD_SUCCESS = 500.0
-REWARD_OUT_OF_VESSEL = -500.0
-REWARD_NON_FINITE = -500.0
-REWARD_TIMEOUT = -1050.0
-REWARD_STEP = -0.01
-REWARD_STAGNATION = -0.10
+REWARD_WALL_PROXIMITY = -0.002
+REWARD_OFF_TARGET_BRANCH = -0.005
+REWARD_SUCCESS = 30.0
+REWARD_OUT_OF_VESSEL = -30.0
+REWARD_NON_FINITE = -30.0
+REWARD_TIMEOUT = -35.0
+REWARD_STEP = -0.005
+# Stagnation remains an info diagnostic.  It is intentionally not a second
+# time penalty because the fixed step cost and timeout already price waiting.
+REWARD_STAGNATION = 0.0
 
 # A short, rollout-visible window distinguishes deliberate steering pauses from
 # a policy that has collapsed to zero insertion/retraction.  It never terminates
@@ -131,11 +135,11 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
 
     return {
         "version": REWARD_PROFILE_VERSION,
-        "progress_normalization": "physical_selected_route_potential_m",
+        "progress_normalization": "selected_route_completion_potential_0_1",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
-        "progress_per_m": REWARD_PROGRESS_PER_M,
+        "progress_scale": REWARD_PROGRESS_SCALE,
         "discount_gamma": float(discount_gamma),
-        "progress_formula": "gamma*route_progress_m_next-route_progress_m_previous",
+        "progress_formula": "scale*(gamma*completion_next-completion_previous)",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
@@ -146,7 +150,7 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "timeout": REWARD_TIMEOUT,
         "step": REWARD_STEP,
         "stagnation": REWARD_STAGNATION,
-        "stagnation_formula": "window32_net_route_progress_below_1mm",
+        "stagnation_formula": "diagnostic_only_window32_net_route_progress_below_1mm",
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
@@ -236,7 +240,7 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.25,) * 5
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.08,) * 5
 SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 5
 
 
@@ -341,6 +345,8 @@ def curriculum_protocol_profile() -> dict:
         "difficulty_power": TRAINING_CURRICULUM_DIFFICULTY_POWER,
         "max_sampling_factor": TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR,
         "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
+        "ppo_initial_action_std": PPO_INITIAL_ACTION_STD,
+        "ppo_max_action_std": PPO_MAX_ACTION_STD,
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
         "actor_future_tangent_features": "tip_local_tangents_5_10_20mm",
@@ -508,11 +514,12 @@ PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.98
 PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.001
+PPO_ENT_COEF = 0.0
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
-PPO_MIN_ACTION_STD = 0.25
-PPO_MAX_ACTION_STD = 1.0
+PPO_INITIAL_ACTION_STD = 0.50
+PPO_MIN_ACTION_STD = 0.08
+PPO_MAX_ACTION_STD = 0.60
 
 
 def validate_training_defaults() -> None:
@@ -559,26 +566,16 @@ def validate_training_defaults() -> None:
         and REWARD_TIMEOUT < 0.0
         and REWARD_STEP < 0.0
     ):
-        raise ValueError("Reward V10 signs are invalid.")
+        raise ValueError("Reward V11 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
         and REWARD_NON_FINITE < -maximum_navigation_credit
-        and REWARD_TIMEOUT <= -maximum_navigation_credit
+        and REWARD_SUCCESS > maximum_navigation_credit
     ):
-        raise ValueError("Every terminal failure must remain negative after maximum navigation credit.")
-    longest_route_safe_forward_reward = (
-        REWARD_ROUTE_PROGRESS
-        * (
-            REWARD_DISCOUNT_GAMMA * TRAIN_ROUTE_MAX_LENGTH_M
-            - (TRAIN_ROUTE_MAX_LENGTH_M - MAX_INSERTION_PER_ACTION_M)
-        )
-        + REWARD_STEP
-    )
-    if longest_route_safe_forward_reward <= 0.0:
-        raise ValueError("Safe full insertion must remain positive on the longest route.")
-    if REWARD_STAGNATION >= 0.0:
-        raise ValueError("Reward V10.2 stagnation cost must be negative.")
+        raise ValueError("Reward V11 terminal outcomes must dominate shaping.")
+    if REWARD_STAGNATION != 0.0:
+        raise ValueError("Reward V11 stagnation must remain diagnostic-only.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS
@@ -656,6 +653,8 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum success thresholds must be in (0, 1].")
     if not (0.0 < PPO_MIN_ACTION_STD <= PPO_MAX_ACTION_STD):
         raise ValueError("Invalid PPO action standard-deviation bounds.")
+    if not (PPO_MIN_ACTION_STD <= PPO_INITIAL_ACTION_STD <= PPO_MAX_ACTION_STD):
+        raise ValueError("Invalid PPO initial action standard deviation.")
     if any(
         not (PPO_MIN_ACTION_STD <= floor <= PPO_MAX_ACTION_STD)
         for floor in PPO_ACTION_STD_FLOOR_BY_STAGE

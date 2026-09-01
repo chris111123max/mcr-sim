@@ -426,8 +426,8 @@ class MCREnv(SofaEnv):
             )
         )
 
-        # Actor observation V10: 45-D current local state plus the latest 7-D
-        # action/response tuple = 52-D.  Redundant bend, contact, waypoint and
+        # Actor observation V11: 38-D current local state plus the latest 7-D
+        # action/response tuple = 45-D.  Redundant bend, contact, waypoint and
         # multi-frame history values are removed.  Three points along the
         # physically inserted shaft, elapsed-time budget and inserted length
         # make the flexible-catheter state substantially less aliased while
@@ -501,8 +501,8 @@ class MCREnv(SofaEnv):
         self.previous_route_potential = 0.0
         self.current_route_potential = 0.0
         self.current_route_potential_delta = 0.0
-        self.current_reward_route_potential_m = 0.0
-        self.previous_reward_route_potential_m = 0.0
+        self.current_reward_route_potential = 0.0
+        self.previous_reward_route_potential = 0.0
         self.route_progress_shaping_terminalized = False
 
         # Centerline and continuous selected-route buffers.
@@ -1184,8 +1184,8 @@ class MCREnv(SofaEnv):
         self.previous_route_potential = 0.0
         self.current_route_potential = 0.0
         self.current_route_potential_delta = 0.0
-        self.current_reward_route_potential_m = 0.0
-        self.previous_reward_route_potential_m = 0.0
+        self.current_reward_route_potential = 0.0
+        self.previous_reward_route_potential = 0.0
         self.route_progress_shaping_terminalized = False
 
         self.mcr_controller_sofa.reset()
@@ -1212,12 +1212,11 @@ class MCREnv(SofaEnv):
         self._initialize_continuous_route_from_current_tip()
         self.current_route_potential = self._continuous_route_potential()
         self.previous_route_potential = self.current_route_potential
-        self.current_reward_route_potential_m = max(
-            float(self.current_route_progress) - float(self.current_route_start_progress),
-            0.0,
+        self.current_reward_route_potential = float(
+            np.clip(self.current_route_potential, 0.0, 1.0)
         )
-        self.previous_reward_route_potential_m = float(
-            self.current_reward_route_potential_m
+        self.previous_reward_route_potential = float(
+            self.current_reward_route_potential
         )
         return self._get_observation(image_observation=self._maybe_update_rgb_buffer()), {}
 
@@ -1328,8 +1327,8 @@ class MCREnv(SofaEnv):
     def _build_actor_current_geometry_observation(
         self,
         magnetic_field_norm: np.ndarray,
+        near_guidance_vector_local: np.ndarray,
         far_guidance_vector_local: np.ndarray,
-        centerline_correction_vec_local: np.ndarray,
         remaining_route_distance_norm: float,
         time_remaining_norm: float,
         inserted_length_norm: float,
@@ -1338,8 +1337,8 @@ class MCREnv(SofaEnv):
         obs = np.concatenate(
             [
                 np.asarray(magnetic_field_norm, dtype=np.float32).reshape(3),
+                np.asarray(near_guidance_vector_local, dtype=np.float32).reshape(3),
                 np.asarray(far_guidance_vector_local, dtype=np.float32).reshape(3),
-                np.asarray(centerline_correction_vec_local, dtype=np.float32).reshape(3),
                 np.array(
                     [np.clip(float(remaining_route_distance_norm), 0.0, 1.0)],
                     dtype=np.float32,
@@ -1417,6 +1416,12 @@ class MCREnv(SofaEnv):
                 axis=0,
             )
         self.current_route_guidance_points = guidance_points.copy()
+        near_guidance_world = guidance_points[0] - tip_pos
+        near_guidance_vector_local = np.clip(
+            self._world_vec_to_local(near_guidance_world, frame) / guidance_scale,
+            -5.0,
+            5.0,
+        ).astype(np.float32)
         far_guidance_world = guidance_points[1] - tip_pos
         far_guidance_vector_local = np.clip(
             self._world_vec_to_local(far_guidance_world, frame) / guidance_scale,
@@ -1424,14 +1429,6 @@ class MCREnv(SofaEnv):
             5.0,
         ).astype(np.float32)
 
-        centerline_proj = np.asarray(getattr(self, "current_centerline_projection", tip_pos), dtype=np.float32).reshape(3)
-        centerline_correction_world = centerline_proj - tip_pos
-        centerline_correction_vec_local = np.clip(
-            self._world_vec_to_local(centerline_correction_world, frame)
-            / guidance_scale,
-            -5.0,
-            5.0,
-        ).astype(np.float32)
         remaining_route_distance_norm = float(
             np.clip(
                 remaining_route_distance
@@ -1465,8 +1462,8 @@ class MCREnv(SofaEnv):
         )
         actor_current_geometry = self._build_actor_current_geometry_observation(
             magnetic_field_norm=magnetic_field_norm,
+            near_guidance_vector_local=near_guidance_vector_local,
             far_guidance_vector_local=far_guidance_vector_local,
-            centerline_correction_vec_local=centerline_correction_vec_local,
             remaining_route_distance_norm=remaining_route_distance_norm,
             time_remaining_norm=time_remaining_norm,
             inserted_length_norm=inserted_length_norm,
@@ -1541,7 +1538,7 @@ class MCREnv(SofaEnv):
             self.no_progress_counter = 0
         if self.no_progress_feature > 0.0:
             self.no_progress_this_episode = True
-        # Reward V10 keeps stagnation as a diagnostic only.  The immediate
+        # Reward V11 keeps stagnation as a diagnostic only.  The immediate
         # time cost and longer algorithmic discount horizon make waiting
         # costly without another stateful reward term.
         self.no_progress_failure = False
@@ -1556,8 +1553,7 @@ class MCREnv(SofaEnv):
                 max(0.0, inserted_length),
             )
 
-        # Keep normalized completion as a diagnostic; reward uses the physical
-        # route potential below.
+        # Normalized completion is both a diagnostic and the V11 potential.
         if valid_inside_vessel:
             self.current_route_potential = self._continuous_route_potential()
             self.current_route_potential_delta = float(
@@ -1628,33 +1624,20 @@ class MCREnv(SofaEnv):
             or self.current_out_of_vessel
             or self.non_finite_failure
         )
-        raw_current_progress_m = (
-            float(self.current_route_progress)
-            - float(self.current_route_start_progress)
-        )
-        if not np.isfinite(raw_current_progress_m):
-            raw_current_progress_m = float(self.previous_reward_route_potential_m)
+        current_completion = float(self.current_route_potential)
+        if not np.isfinite(current_completion):
+            current_completion = float(self.previous_reward_route_potential)
             self.non_finite_failure = True
             terminal_now = True
-        current_progress_m = float(
-            np.clip(
-                raw_current_progress_m,
-                0.0,
-                max(
-                    float(self.current_route_target_progress)
-                    - float(self.current_route_start_progress),
-                    0.0,
-                ),
-            )
-        )
-        previous_progress_m = float(self.previous_reward_route_potential_m)
-        next_potential_m = 0.0 if terminal_now else current_progress_m
+        current_completion = float(np.clip(current_completion, 0.0, 1.0))
+        previous_completion = float(self.previous_reward_route_potential)
+        next_potential = 0.0 if terminal_now else current_completion
         approach_feature = (
-            float(self.reward_discount_gamma) * next_potential_m
-            - previous_progress_m
+            float(self.reward_discount_gamma) * next_potential
+            - previous_completion
         )
-        self.current_reward_route_potential_m = current_progress_m
-        self.previous_reward_route_potential_m = next_potential_m
+        self.current_reward_route_potential = current_completion
+        self.previous_reward_route_potential = next_potential
         self.route_progress_shaping_terminalized = terminal_now
 
         reward_features = {
@@ -1694,7 +1677,7 @@ class MCREnv(SofaEnv):
         if bool(getattr(self, "route_progress_shaping_terminalized", False)):
             return float(reward)
         correction_feature = -float(self.reward_discount_gamma) * float(
-            self.current_reward_route_potential_m
+            self.current_reward_route_potential
         )
         correction_reward = (
             float(self.reward_amount_dict["route_progress"])
@@ -1707,7 +1690,7 @@ class MCREnv(SofaEnv):
             self.reward_info.get("reward_route_progress", 0.0) + correction_reward
         )
         self.episode_reward_totals["route_progress"] += correction_reward
-        self.previous_reward_route_potential_m = 0.0
+        self.previous_reward_route_potential = 0.0
         self.route_progress_shaping_terminalized = True
         corrected = float(reward) + correction_reward
         self.reward_info["reward"] = corrected
@@ -2592,28 +2575,6 @@ class MCREnv(SofaEnv):
                     2.0,
                 )
             )
-            outside_counter_feature = float(
-                np.clip(
-                    self.sdf_outside_counter
-                    / max(1.0, float(self.sdf_outside_confirm_steps)),
-                    0.0,
-                    1.0,
-                )
-            )
-            inward_local = self._world_vec_to_local(
-                self.current_sdf_inward_world,
-                tip_frame,
-            )
-            inward_norm = float(np.linalg.norm(inward_local))
-            if np.isfinite(inward_norm) and inward_norm > 1e-9:
-                inward_local = inward_local / inward_norm
-            else:
-                inward_local = np.zeros(3, dtype=np.float32)
-            worst_position_local = self._world_vec_to_local(
-                np.asarray(self.current_sdf_worst_point_sim, dtype=np.float32)
-                - np.asarray(tip_pos, dtype=np.float32),
-                tip_frame,
-            ) / max(float(self.current_sdf_inserted_length), 0.001)
             worst_inward_local = self._world_vec_to_local(
                 self.current_sdf_worst_inward_world,
                 tip_frame,
@@ -2628,9 +2589,6 @@ class MCREnv(SofaEnv):
                 np.clip(self.current_centerline_safety_margin, -2.0, 1.0)
             )
             body_clearance_feature = clearance_feature
-            outside_counter_feature = 0.0
-            inward_local = np.zeros(3, dtype=np.float32)
-            worst_position_local = np.zeros(3, dtype=np.float32)
             worst_inward_local = np.zeros(3, dtype=np.float32)
         shaft_points = np.asarray(
             self.current_sdf_shaft_sample_points_sim,
@@ -2656,15 +2614,15 @@ class MCREnv(SofaEnv):
         )
         self.current_curve_bend_features = bend_features
         self.current_curve_alignment_features = alignment_features
+        # V11 keeps only non-redundant, actionable local safety/shape signals:
+        # radius, tip/body clearance, direction and shaft location of the worst
+        # SDF point, branch risk, shaft shape, and three future route tangents.
         return np.array(
             [
                 np.clip(self.current_centerline_local_radius_norm, 0.0, 5.0),
                 clearance_feature,
                 body_clearance_feature,
-                outside_counter_feature,
-                *np.clip(inward_local, -1.0, 1.0).tolist(),
                 np.clip(self.current_sdf_worst_arc_fraction, 0.0, 1.0),
-                *np.clip(worst_position_local, -1.0, 1.0).tolist(),
                 *np.clip(worst_inward_local, -1.0, 1.0).tolist(),
                 np.clip(self.current_off_target_branch_feature, 0.0, 1.0),
                 *np.clip(shaft_landmarks_local, -1.0, 1.0).tolist(),

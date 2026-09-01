@@ -275,7 +275,7 @@ class EpochExperimentCallback(BaseCallback):
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        # Compact V10 event schema.  Removed V9 behavior/retraction/stagnation
+        # Compact V11 event schema.  Removed legacy behavior/retraction/stagnation
         # reward slots are intentionally not retained: old runs are not
         # resume-compatible with the new observation/reward contract.
         events = np.zeros((len(dones), 24), dtype=np.float32)

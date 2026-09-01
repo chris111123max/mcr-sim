@@ -393,6 +393,7 @@ def main():
                 )
         else:
             policy_kwargs = {
+                "log_std_init": math.log(float(args.initial_action_std)),
                 "lstm_hidden_size": args.lstm_hidden_size,
                 "n_lstm_layers": args.lstm_num_layers,
                 "shared_lstm": False,

@@ -1,4 +1,4 @@
-"""CPU-only wiring checks for the shared Reward/Observation V10 state."""
+"""CPU-only wiring checks for the shared Reward/Observation V11 state."""
 
 from __future__ import annotations
 
@@ -16,18 +16,16 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class BodySafetySourceContractTest(unittest.TestCase):
-    def test_all_algorithms_share_the_52_dimensional_environment_state(self):
+    def test_all_algorithms_share_the_45_dimensional_environment_state(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
             encoding="utf-8"
         )
-        self.assertEqual(VESSEL_SECTION_FEATURE_DIM, 33)
-        self.assertEqual(ACTOR_CURRENT_GEOMETRY_DIM, 45)
-        self.assertEqual(ACTOR_OBSERVATION_DIM, 52)
+        self.assertEqual(VESSEL_SECTION_FEATURE_DIM, 26)
+        self.assertEqual(ACTOR_CURRENT_GEOMETRY_DIM, 38)
+        self.assertEqual(ACTOR_OBSERVATION_DIM, 45)
         self.assertIn("self.vessel_section_feature_dim = VESSEL_SECTION_FEATURE_DIM", source)
         self.assertIn("body_clearance_feature", source)
-        self.assertIn("outside_counter_feature", source)
         self.assertIn("current_sdf_worst_arc_fraction", source)
-        self.assertIn("worst_position_local", source)
         self.assertIn("worst_inward_local", source)
         self.assertIn("shaft_landmarks_local", source)
         self.assertIn("_get_centerline_lookahead_tangent_features", source)
@@ -88,7 +86,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn("self.curriculum_success_streak += 1", experiment_source)
         self.assertIn("self.curriculum_success_streak = 0", experiment_source)
 
-    def test_reward_v10_uses_only_ordinary_terminal_failures(self):
+    def test_reward_v11_uses_only_ordinary_terminal_failures(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
             encoding="utf-8"
         )
