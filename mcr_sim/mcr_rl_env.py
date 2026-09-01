@@ -40,6 +40,8 @@ from .training_config import (
     REWARD_PROGRESS_NORMALIZATION_M,
     REWARD_ROUTE_PROGRESS,
     REWARD_STEP,
+    REWARD_STEP_MIN_FRACTION,
+    REWARD_STEP_REMAINING_FRACTION,
     REWARD_SUCCESS,
     REWARD_TIMEOUT,
     REWARD_WALL_PROXIMITY,
@@ -1655,6 +1657,23 @@ class MCREnv(SofaEnv):
         self.previous_reward_route_potential_m = next_potential_m
         self.route_progress_shaping_terminalized = terminal_now
 
+        route_span_m = max(
+            float(self.current_route_target_progress)
+            - float(self.current_route_start_progress),
+            1e-9,
+        )
+        remaining_route_ratio = float(
+            np.clip(
+                1.0 - current_progress_m / route_span_m,
+                0.0,
+                1.0,
+            )
+        )
+        step_cost_feature = float(
+            REWARD_STEP_MIN_FRACTION
+            + REWARD_STEP_REMAINING_FRACTION * remaining_route_ratio
+        )
+
         reward_features = {
             "route_progress": approach_feature,
             "wall_proximity_penalty": near_wall_feature,
@@ -1662,7 +1681,7 @@ class MCREnv(SofaEnv):
             "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
             "non_finite_penalty": 1.0 if self.non_finite_failure else 0.0,
             "timeout_penalty": 0.0,
-            "step_penalty": 1.0,
+            "step_penalty": step_cost_feature,
             "successful_task": 0.0,
         }
         if self.current_target_reached_this_step:

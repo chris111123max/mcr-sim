@@ -187,13 +187,14 @@ in the current catheter-tip frame; absolute XYZ and route-completion percentage 
 absent.
 
 Dense progress is now the potential-based term
-`gamma * (400 * next_route_metres) - (400 * previous_route_metres)`, with
+`gamma * (600 * next_route_metres) - (600 * previous_route_metres)`, with
 terminal potential fixed to zero. It redistributes learning signal without changing
 the learner's discounted policy ordering, and removes route-length normalization that
 previously weakened each millimetre on C vessels. The only other terms are bounded wall risk,
 bounded off-route risk, a small step cost, and success/failure terminals. With maximum
-training-route potential below +198 and every failure terminal at -500, a failed episode
-cannot obtain a positive undiscounted return. PPO/SAC default to gamma 0.9995 (PPO GAE lambda
+training-route potential below +297. Timeout is -700, while the time cost is
+`-0.20 * (0.25 + 0.75 * remaining_route_ratio)`; this prevents delayed timeout
+from becoming cheaper than early vessel exit. PPO/SAC default to gamma 0.9995 (PPO GAE lambda
 0.98) so distant timeout/failure consequences remain visible. This contract is
 intentionally incompatible with old 78-dimensional checkpoints.
 

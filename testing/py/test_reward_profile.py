@@ -26,6 +26,8 @@ from mcr_sim.training_config import (
     REWARD_PROGRESS_PER_M,
     REWARD_SUCCESS,
     REWARD_STEP,
+    REWARD_STEP_MIN_FRACTION,
+    REWARD_STEP_REMAINING_FRACTION,
     REWARD_TIMEOUT,
     REWARD_WALL_PROXIMITY,
     SAC_MIN_ENT_COEF,
@@ -62,7 +64,7 @@ class RewardProfileTest(unittest.TestCase):
                 REWARD_DISCOUNT_GAMMA * TRAIN_ROUTE_MAX_LENGTH_M
                 - (TRAIN_ROUTE_MAX_LENGTH_M - MAX_INSERTION_PER_ACTION_M)
             )
-            + REWARD_STEP
+            + REWARD_STEP * REWARD_STEP_MIN_FRACTION
         )
         self.assertGreater(reward, 0.0)
 
@@ -288,11 +290,25 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLess(stationary_return, -10.0)
         self.assertLess(stationary_return, REWARD_OUT_OF_VESSEL)
 
+    def test_discounted_timeout_is_worse_than_immediate_vessel_exit(self) -> None:
+        gamma_power = SAC_GAMMA ** MAX_EPISODE_STEPS
+        discounted_stall = (
+            REWARD_STEP * (1.0 - gamma_power) / (1.0 - SAC_GAMMA)
+            + gamma_power * REWARD_TIMEOUT
+        )
+        self.assertLess(discounted_stall, REWARD_OUT_OF_VESSEL)
+
     def test_reward_profile_is_minimal_v10(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, 10)
-        self.assertEqual(REWARD_PROGRESS_PER_M, 400.0)
+        self.assertEqual(REWARD_PROFILE_VERSION, "10.1")
+        self.assertEqual(REWARD_PROGRESS_PER_M, 600.0)
         self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
         self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)
+        self.assertEqual(REWARD_TIMEOUT, -700.0)
+        self.assertEqual(REWARD_STEP, -0.20)
+        self.assertAlmostEqual(
+            REWARD_STEP_MIN_FRACTION + REWARD_STEP_REMAINING_FRACTION,
+            1.0,
+        )
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
     def test_observation_v10_is_compact_and_contains_one_response_step(self) -> None:
