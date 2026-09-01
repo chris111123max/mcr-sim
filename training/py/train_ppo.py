@@ -452,8 +452,14 @@ def main():
                 f"fused_adam={args.npu_fused_adam_status}"
             )
         model.distributed_world_size_at_save = context.world_size
+        # ``DistributedPPO`` is also used for the single-device path so that
+        # optimizer/observation semantics stay identical.  The context is a
+        # no-op when distributed execution is disabled, but it must still be
+        # attached after loading a checkpoint: ``distributed_context`` is an
+        # intentionally excluded save parameter and otherwise resumed
+        # single-device runs fail on the first optimizer update.
+        model.set_distributed_context(context)
         if context.enabled:
-            model.set_distributed_context(context)
             model.synchronize_parameters()
 
         if context.is_main:
