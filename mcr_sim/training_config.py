@@ -24,9 +24,10 @@ SETTLE_STEPS = 8
 TARGET_THRESHOLD_M = 0.003
 MAX_EPISODE_STEPS = 2048
 RADIUS_OBSERVATION_SCALE_M = 0.005
-ACTOR_HISTORY_STEPS = 4
-VESSEL_SECTION_FEATURE_DIM = 30
-ACTOR_STATIC_ROUTE_FEATURE_DIM = 20
+ACTOR_HISTORY_STEPS = 1
+ACTOR_SHAFT_LOOKBACK_DISTANCES_M = (0.010, 0.030, 0.060)
+VESSEL_SECTION_FEATURE_DIM = 33
+ACTOR_STATIC_ROUTE_FEATURE_DIM = 12
 ACTOR_CURRENT_GEOMETRY_DIM = ACTOR_STATIC_ROUTE_FEATURE_DIM + VESSEL_SECTION_FEATURE_DIM
 ACTOR_DYNAMIC_STEP_DIM = 7
 ACTOR_OBSERVATION_DIM = (
@@ -36,7 +37,7 @@ ACTOR_OBSERVATION_DIM = (
 # Continuous selected-route tracking. Initial localization may inspect the
 # complete route; recurrent tracking is local and physically gated so nearby
 # arms of a U-turn cannot create artificial progress. Two moving guidance
-# points replace discrete waypoint spheres without changing observation size.
+# points replace discrete waypoint spheres.
 ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.020)
 ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.020
 # Translation/rotation-invariant horizon feature used by the actor instead of
@@ -58,7 +59,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V9
+# at least 0.5 mm outside for three consecutive environment steps.  Reward V10
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -67,7 +68,6 @@ SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
 SDF_BODY_WARNING_MARGIN_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
 SDF_SAMPLE_STEP_FRACTION = 0.5
-SDF_FORWARD_PROBE_DISTANCES_M = (0.001, 0.002, 0.004)
 CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.005, 0.010, 0.020)
 TIP_NEAR_WALL_GRACE_STEPS = 5
 TIP_NEAR_WALL_RAMP_STEPS = 20
@@ -89,42 +89,29 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v9. Dense navigation credit is the difference of continuous
-# selected-route completion in [0, 1]. It therefore telescopes over a trajectory:
-# forward/backward oscillation cannot farm reward, while progress credit becomes
-# available again after a necessary correction in a tight bend. V9 retains the
-# V8 removal of no-progress and wrong-branch termination: a normal episode ends only on
-# target success, confirmed vessel exit, or the step limit (non-finite simulator
-# state remains an emergency stop).  A bounded action-dependent term discourages
-# positive insertion while the catheter is not aligned with the 20 mm route
-# tangent.  It teaches bend anticipation without prescribing a turn direction
-# or introducing vessel/global coordinates.
-REWARD_PROFILE_VERSION = 9
+# Reward profile v10.  The dense term is a potential over physical selected-route
+# metres, not a route-length-normalized percentage.  Discount-matched potential
+# shaping redistributes feedback without changing the policy ordering defined by
+# the base terminal/safety/time objective.  Retraction is naturally negative;
+# curve anticipation is learned from state instead of action-dependent shaping.
+REWARD_PROFILE_VERSION = 10
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # fallback before route setup
-REWARD_PROGRESS_BUDGET = 200.0
-REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_BUDGET
-REWARD_WALL_PROXIMITY = -0.04
-REWARD_WALL_PENETRATION = -1.00
-REWARD_UNSAFE_CURVE_INSERTION = -0.10
-REWARD_OFF_TARGET_BRANCH = -0.20
-REWARD_RETRACTION = -0.002
-# Stagnation remains observable and logged, but carries no separate cost. The
-# step cost plus timeout already makes waiting undesirable; another cumulative
-# term would make deliberate vessel exit cheaper than waiting for the step limit.
-REWARD_NO_PROGRESS = 0.0
-# This is a per-step penalty after the five-step branch confirmation, not a
-# terminal value. The agent may retract and recover to the selected route.
-REWARD_WRONG_BRANCH = -1.0
-REWARD_SUCCESS = 300.0
-REWARD_OUT_OF_VESSEL = -210.0
-REWARD_NON_FINITE = -220.0
-REWARD_TIMEOUT = -200.0
-# Retained as a zero-valued metadata key for old run readers. V9 never applies it.
-REWARD_NO_PROGRESS_TERMINAL = 0.0
-REWARD_STEP = -0.002
+REWARD_PROGRESS_PER_M = 400.0
+REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_PER_M
+REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_PER_M * TRAIN_ROUTE_MAX_LENGTH_M
+# Potential-based route shaping must use the same discount as every learner:
+# F(s,s') = gamma * Phi(s') - Phi(s).  Terminal Phi is exactly zero.
+REWARD_DISCOUNT_GAMMA = 0.9995
+REWARD_WALL_PROXIMITY = -0.10
+REWARD_OFF_TARGET_BRANCH = -0.10
+REWARD_SUCCESS = 500.0
+REWARD_OUT_OF_VESSEL = -500.0
+REWARD_NON_FINITE = -500.0
+REWARD_TIMEOUT = -500.0
+REWARD_STEP = -0.01
 
 # Net continuous route progress is measured over a long window for diagnostics.
-# It neither changes reward nor terminates an episode in Reward V9.
+# It neither changes reward nor terminates an episode in Reward V10.
 NO_PROGRESS_WINDOW_STEPS = 256
 NO_PROGRESS_GRACE_STEPS = 256
 NO_PROGRESS_CONFIRM_STEPS = 512
@@ -137,27 +124,24 @@ SAC_MAX_GRAD_NORM = 10.0
 SAC_MIN_ENT_COEF = 0.02
 
 
-def reward_profile() -> dict:
-    """Return the exact shared reward/no-progress settings for run metadata."""
+def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
+    """Return the exact shared reward settings for run metadata."""
 
     return {
         "version": REWARD_PROFILE_VERSION,
-        "progress_normalization": "continuous_selected_route_difference",
+        "progress_normalization": "physical_selected_route_potential_m",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
+        "progress_per_m": REWARD_PROGRESS_PER_M,
+        "discount_gamma": float(discount_gamma),
+        "progress_formula": "gamma*route_progress_m_next-route_progress_m_previous",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
-        "wall_penetration": REWARD_WALL_PENETRATION,
-        "unsafe_curve_insertion": REWARD_UNSAFE_CURVE_INSERTION,
         "off_target_branch": REWARD_OFF_TARGET_BRANCH,
-        "retraction": REWARD_RETRACTION,
-        "no_progress": REWARD_NO_PROGRESS,
-        "wrong_branch": REWARD_WRONG_BRANCH,
         "success": REWARD_SUCCESS,
         "out_of_vessel": REWARD_OUT_OF_VESSEL,
         "non_finite": REWARD_NON_FINITE,
         "timeout": REWARD_TIMEOUT,
-        "no_progress_terminal": REWARD_NO_PROGRESS_TERMINAL,
         "step": REWARD_STEP,
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
@@ -355,11 +339,12 @@ def curriculum_protocol_profile() -> dict:
         "ppo_action_std_floor_by_stage": list(PPO_ACTION_STD_FLOOR_BY_STAGE),
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
-        "actor_curve_features": "bend_severity_5_10_20mm",
+        "actor_future_tangent_features": "tip_local_tangents_5_10_20mm",
+        "actor_shaft_lookback_distances_m": list(ACTOR_SHAFT_LOOKBACK_DISTANCES_M),
+        "actor_time_feature": "fraction_of_episode_remaining",
+        "actor_inserted_length_feature": "controller_insertion_fraction",
+        "actor_history_steps": ACTOR_HISTORY_STEPS,
         "local_field_action_angle_deg": math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD),
-        "unsafe_curve_insertion_feature": (
-            "positive_insert_x_4_x_bend20_x_alignment_error20"
-        ),
         "navigation": "continuous_selected_route",
         "route_guidance_lookahead_distances_m": list(
             ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M
@@ -505,7 +490,7 @@ SAC_LEARNING_STARTS = 50_000
 SAC_TRAIN_FREQ = 1
 SAC_GRADIENT_STEPS = 1
 SAC_TAU = 0.005
-SAC_GAMMA = 0.995
+SAC_GAMMA = REWARD_DISCOUNT_GAMMA
 
 # PPO baseline defaults.  ``n_steps`` is per environment; batch size is global
 # and is divided evenly between synchronized ranks, just like SAC.
@@ -517,7 +502,7 @@ PPO_N_STEPS = 256
 PPO_BATCH_SIZE = 1024
 PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
-PPO_GAE_LAMBDA = 0.95
+PPO_GAE_LAMBDA = 0.98
 PPO_CLIP_RANGE = 0.2
 PPO_ENT_COEF = 0.001
 PPO_VF_COEF = 0.5
@@ -561,15 +546,16 @@ def validate_training_defaults() -> None:
     ):
         raise ValueError("Continuous route tracking settings are invalid.")
     if not (
-        REWARD_SUCCESS > 0.0
+        REWARD_ROUTE_PROGRESS > 0.0
+        and REWARD_WALL_PROXIMITY < 0.0
+        and REWARD_OFF_TARGET_BRANCH < 0.0
+        and REWARD_SUCCESS > 0.0
         and REWARD_OUT_OF_VESSEL < 0.0
-        and REWARD_WRONG_BRANCH < 0.0
         and REWARD_NON_FINITE < 0.0
         and REWARD_TIMEOUT < 0.0
-        and REWARD_NO_PROGRESS_TERMINAL == 0.0
-        and REWARD_UNSAFE_CURVE_INSERTION < 0.0
+        and REWARD_STEP < 0.0
     ):
-        raise ValueError("Reward V9 signs are invalid.")
+        raise ValueError("Reward V10 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
@@ -577,14 +563,15 @@ def validate_training_defaults() -> None:
         and REWARD_TIMEOUT <= -maximum_navigation_credit
     ):
         raise ValueError("Every terminal failure must remain negative after maximum navigation credit.")
-    longest_route_forward_reward = (
-        REWARD_PROGRESS_BUDGET
-        * MAX_INSERTION_PER_ACTION_M
-        / TRAIN_ROUTE_MAX_LENGTH_M
-        + REWARD_WALL_PROXIMITY
+    longest_route_safe_forward_reward = (
+        REWARD_ROUTE_PROGRESS
+        * (
+            REWARD_DISCOUNT_GAMMA * TRAIN_ROUTE_MAX_LENGTH_M
+            - (TRAIN_ROUTE_MAX_LENGTH_M - MAX_INSERTION_PER_ACTION_M)
+        )
         + REWARD_STEP
     )
-    if longest_route_forward_reward <= 0.0:
+    if longest_route_safe_forward_reward <= 0.0:
         raise ValueError("Safe full insertion must remain positive on the longest route.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
@@ -679,12 +666,12 @@ def validate_training_defaults() -> None:
     if not (0.0 < SDF_SAMPLE_STEP_FRACTION <= 1.0):
         raise ValueError("SDF sample step fraction must be in (0, 1].")
     if (
-        len(SDF_FORWARD_PROBE_DISTANCES_M) == 0
-        or any(distance <= 0.0 for distance in SDF_FORWARD_PROBE_DISTANCES_M)
-        or tuple(sorted(SDF_FORWARD_PROBE_DISTANCES_M))
-        != tuple(SDF_FORWARD_PROBE_DISTANCES_M)
+        len(ACTOR_SHAFT_LOOKBACK_DISTANCES_M) != 3
+        or any(distance <= 0.0 for distance in ACTOR_SHAFT_LOOKBACK_DISTANCES_M)
+        or tuple(sorted(ACTOR_SHAFT_LOOKBACK_DISTANCES_M))
+        != tuple(ACTOR_SHAFT_LOOKBACK_DISTANCES_M)
     ):
-        raise ValueError("SDF forward probe distances must be positive and ordered.")
+        raise ValueError("Actor shaft lookback distances must contain three ordered values.")
     if (
         len(CENTERLINE_LOOKAHEAD_DISTANCES_M) != 3
         or any(distance <= 0.0 for distance in CENTERLINE_LOOKAHEAD_DISTANCES_M)

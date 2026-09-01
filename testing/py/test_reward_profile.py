@@ -6,13 +6,16 @@ import math
 import unittest
 
 from mcr_sim.training_config import (
+    ACTOR_HISTORY_STEPS,
+    ACTOR_OBSERVATION_DIM,
+    ACTOR_SHAFT_LOOKBACK_DISTANCES_M,
+    ACTOR_STATIC_ROUTE_FEATURE_DIM,
     MAX_INSERTION_PER_ACTION_M,
     LOCAL_FIELD_ACTION_ANGLE_RAD,
     MAX_EPISODE_STEPS,
-    NO_PROGRESS_GRACE_STEPS,
     REWARD_NON_FINITE,
-    REWARD_NO_PROGRESS,
-    REWARD_NO_PROGRESS_TERMINAL,
+    REWARD_DISCOUNT_GAMMA,
+    REWARD_OFF_TARGET_BRANCH,
     REWARD_OUT_OF_VESSEL,
     REWARD_PROFILE_VERSION,
     PPO_ENT_COEF,
@@ -20,18 +23,17 @@ from mcr_sim.training_config import (
     PPO_GAE_LAMBDA,
     PPO_N_STEPS,
     REWARD_PROGRESS_BUDGET,
-    REWARD_RETRACTION,
+    REWARD_PROGRESS_PER_M,
     REWARD_SUCCESS,
     REWARD_STEP,
     REWARD_TIMEOUT,
     REWARD_WALL_PROXIMITY,
-    REWARD_UNSAFE_CURVE_INSERTION,
-    REWARD_WRONG_BRANCH,
     SAC_MIN_ENT_COEF,
     SAC_BATCH_SIZE,
     SAC_GAMMA,
     SAC_GRADIENT_STEPS,
     TRAIN_ROUTE_MAX_LENGTH_M,
+    VESSEL_SECTION_FEATURE_DIM,
     PPO_MAX_ACTION_STD,
     PPO_MIN_ACTION_STD,
     TRAINING_CURRICULUM_MODELS,
@@ -55,19 +57,26 @@ from mcr_sim.training_config import (
 class RewardProfileTest(unittest.TestCase):
     def test_one_full_safe_insert_is_positive_on_longest_route(self) -> None:
         reward = (
-            REWARD_PROGRESS_BUDGET
-            * MAX_INSERTION_PER_ACTION_M
-            / TRAIN_ROUTE_MAX_LENGTH_M
-            + REWARD_WALL_PROXIMITY
+            REWARD_PROGRESS_PER_M
+            * (
+                REWARD_DISCOUNT_GAMMA * TRAIN_ROUTE_MAX_LENGTH_M
+                - (TRAIN_ROUTE_MAX_LENGTH_M - MAX_INSERTION_PER_ACTION_M)
+            )
             + REWARD_STEP
         )
         self.assertGreater(reward, 0.0)
 
-    def test_potential_difference_restores_credit_after_correction(self) -> None:
-        potentials = [0.0, 0.3, 0.2, 0.3, 0.7]
-        deltas = [b - a for a, b in zip(potentials, potentials[1:])]
-        self.assertAlmostEqual(sum(deltas), potentials[-1] - potentials[0])
-        self.assertAlmostEqual(deltas[1] + deltas[2], 0.0)
+    def test_discounted_potential_shaping_cancels_at_terminal(self) -> None:
+        potentials = [0.0, 100.0, 80.0, 140.0, 0.0]
+        shaping = [
+            REWARD_DISCOUNT_GAMMA * nxt - current
+            for current, nxt in zip(potentials, potentials[1:])
+        ]
+        discounted = sum(
+            (REWARD_DISCOUNT_GAMMA ** index) * value
+            for index, value in enumerate(shaping)
+        )
+        self.assertAlmostEqual(discounted, 0.0, places=9)
 
     def test_curriculum_requires_three_consecutive_success_episodes(self) -> None:
         required = TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES
@@ -212,10 +221,10 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLessEqual(PPO_MAX_ACTION_STD, 1.0)
 
     def test_stable_ppo_credit_assignment_defaults(self) -> None:
-        self.assertEqual(SAC_GAMMA, 0.995)
+        self.assertEqual(SAC_GAMMA, 0.9995)
         self.assertEqual(PPO_N_STEPS, 256)
         self.assertEqual(PPO_BATCH_SIZE, 1024)
-        self.assertEqual(PPO_GAE_LAMBDA, 0.95)
+        self.assertEqual(PPO_GAE_LAMBDA, 0.98)
 
     def test_stable_sac_update_to_data_defaults(self) -> None:
         self.assertEqual(SAC_BATCH_SIZE, 1024)
@@ -274,35 +283,46 @@ class RewardProfileTest(unittest.TestCase):
             0.0,
         )
 
-    def test_stationary_episode_reaches_timeout_instead_of_no_progress_terminal(self) -> None:
-        stationary_return = (
-            REWARD_STEP * MAX_EPISODE_STEPS
-            + REWARD_NO_PROGRESS * (MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS)
-            + REWARD_TIMEOUT
-        )
-        self.assertEqual(REWARD_NO_PROGRESS_TERMINAL, 0.0)
+    def test_stationary_episode_reaches_timeout_with_negative_return(self) -> None:
+        stationary_return = REWARD_STEP * MAX_EPISODE_STEPS + REWARD_TIMEOUT
         self.assertLess(stationary_return, -10.0)
-        self.assertGreater(stationary_return, REWARD_OUT_OF_VESSEL)
+        self.assertLess(stationary_return, REWARD_OUT_OF_VESSEL)
 
-    def test_continuous_full_retraction_is_penalized_without_being_worse_than_crash(self) -> None:
-        stationary_return = (
-            REWARD_STEP * MAX_EPISODE_STEPS
-            + REWARD_NO_PROGRESS * (MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS)
-            + REWARD_TIMEOUT
-        )
-        retraction_return = stationary_return + REWARD_RETRACTION * MAX_EPISODE_STEPS
-        self.assertLess(retraction_return, stationary_return)
-        self.assertLess(retraction_return, 0.0)
-        self.assertGreater(retraction_return, REWARD_OUT_OF_VESSEL)
-
-    def test_reward_profile_is_v9(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, 9)
-        self.assertLess(REWARD_UNSAFE_CURVE_INSERTION, 0.0)
+    def test_reward_profile_is_minimal_v10(self) -> None:
+        self.assertEqual(REWARD_PROFILE_VERSION, 10)
+        self.assertEqual(REWARD_PROGRESS_PER_M, 400.0)
+        self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
+        self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
-    def test_wrong_branch_is_recoverable_dense_cost(self) -> None:
-        self.assertGreater(REWARD_WRONG_BRANCH, -10.0)
-        self.assertLess(REWARD_WRONG_BRANCH, 0.0)
+    def test_observation_v10_is_compact_and_contains_one_response_step(self) -> None:
+        self.assertEqual(ACTOR_HISTORY_STEPS, 1)
+        self.assertEqual(ACTOR_SHAFT_LOOKBACK_DISTANCES_M, (0.010, 0.030, 0.060))
+        self.assertEqual(VESSEL_SECTION_FEATURE_DIM, 33)
+        self.assertEqual(ACTOR_STATIC_ROUTE_FEATURE_DIM, 12)
+        self.assertEqual(ACTOR_OBSERVATION_DIM, 52)
+
+    def test_equal_physical_progress_has_equal_reward_on_short_and_long_routes(self) -> None:
+        delta_m = 0.001
+        previous_progress_m = 0.100
+        short_route_reward = REWARD_PROGRESS_PER_M * (
+            REWARD_DISCOUNT_GAMMA * (previous_progress_m + delta_m)
+            - previous_progress_m
+        )
+        long_route_reward = REWARD_PROGRESS_PER_M * (
+            REWARD_DISCOUNT_GAMMA * (previous_progress_m + delta_m)
+            - previous_progress_m
+        )
+        self.assertAlmostEqual(short_route_reward, long_route_reward)
+
+    def test_two_step_forward_retract_oscillation_is_not_profitable(self) -> None:
+        potential = REWARD_PROGRESS_PER_M * MAX_INSERTION_PER_ACTION_M
+        discounted_return = (
+            REWARD_DISCOUNT_GAMMA * potential
+            + REWARD_STEP
+            + SAC_GAMMA * (-potential + REWARD_STEP)
+        )
+        self.assertLess(discounted_return, 0.0)
 
     def test_more_progress_can_beat_waiting_for_timeout(self) -> None:
         waiting_return = (

@@ -208,7 +208,7 @@ def _override_learning_rate(model: PPO, learning_rate: float) -> None:
 
 def main():
     args = parse_args()
-    args.reward_profile = reward_profile()
+    args.reward_profile = reward_profile(args.gamma)
     args.curriculum_protocol = curriculum_protocol_profile()
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(

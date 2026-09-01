@@ -175,23 +175,27 @@ as the primary criterion; ties are resolved by route completion, route potential
 then smaller final target distance. Thus a 0%-success validation phase can still
 retain the checkpoint with the strongest measurable progress.
 
-Reward V9 exposes the same 78-dimensional observation to SAC, PPO, and
-LSTM-PPO. In addition to tip SDF probes, it includes whole-body minimum surface
-clearance, outside-confirmation progress, the worst shaft point and inward
-direction, moving route guidance 10/20 mm ahead, plus selected-route tangents
-5/10/20 mm ahead. Three formerly constant tip-forward slots now explicitly encode
-the matching bend severities, so observation size remains unchanged. Continuous progress uses recurrent local projection with a
-physical step gate, so adjacent U-turn arms cannot create an arc-length jump. The existing wall
-proximity and penetration reward components take the maximum of tip and
-whole-body risk, so unsafe shaft contact is visible before the terminal
-whole-body SDF check fires. Every actor vector is expressed in the catheter-tip
-frame. Absolute XYZ and route completion percentage are absent; the single route
-horizon scalar is remaining centerline distance normalized by the longest training
-route. Navigation semantics changed even though the state remains 78-dimensional.
-Reward V9 also penalizes positive insertion while the catheter is not aligned with
-an upcoming 20 mm bend, and increases the bounded local magnetic turn from 2° to
-3° per step. It retains no-progress/wrong-branch recovery semantics, so older
-checkpoints must not be resumed.
+Reward/Observation V10 exposes the same 52-dimensional state to SAC, PPO, and
+LSTM-PPO: 45 current local features plus one 7-dimensional action-response tuple.
+The current state contains magnetic field, far route guidance, centreline correction,
+remaining route/time/insertion budgets, tip and whole-body SDF risk, the worst shaft
+sample, shaft landmarks 10/30/60 mm behind the tip, and selected-route tangents
+5/10/20 mm ahead.
+Redundant bend scalars, contact flags, forward probes, duplicate near guidance and
+four-frame mixed-coordinate history were removed. Every spatial vector is expressed
+in the current catheter-tip frame; absolute XYZ and route-completion percentage remain
+absent.
+
+Dense progress is now the potential-based term
+`gamma * (400 * next_route_metres) - (400 * previous_route_metres)`, with
+terminal potential fixed to zero. It redistributes learning signal without changing
+the learner's discounted policy ordering, and removes route-length normalization that
+previously weakened each millimetre on C vessels. The only other terms are bounded wall risk,
+bounded off-route risk, a small step cost, and success/failure terminals. With maximum
+training-route potential below +198 and every failure terminal at -500, a failed episode
+cannot obtain a positive undiscounted return. PPO/SAC default to gamma 0.9995 (PPO GAE lambda
+0.98) so distant timeout/failure consequences remain visible. This contract is
+intentionally incompatible with old 78-dimensional checkpoints.
 
 ## Checkpoint and resume
 

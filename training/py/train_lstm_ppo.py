@@ -174,7 +174,7 @@ def main():
     sb3_version, sb3_contrib_version = _dependency_versions()
     args.stable_baselines3_version = sb3_version
     args.sb3_contrib_version = sb3_contrib_version
-    args.reward_profile = reward_profile()
+    args.reward_profile = reward_profile(args.gamma)
     args.curriculum_protocol = curriculum_protocol_profile()
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(

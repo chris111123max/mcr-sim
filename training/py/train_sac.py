@@ -50,18 +50,12 @@ from mcr_sim.training_config import (
     RADIUS_OBSERVATION_SCALE_M,
     REWARD_OUT_OF_VESSEL,
     REWARD_OFF_TARGET_BRANCH,
-    REWARD_NO_PROGRESS,
-    REWARD_NO_PROGRESS_TERMINAL,
     REWARD_NON_FINITE,
-    REWARD_RETRACTION,
     REWARD_ROUTE_PROGRESS,
     REWARD_STEP,
     REWARD_SUCCESS,
     REWARD_TIMEOUT,
-    REWARD_WALL_PENETRATION,
     REWARD_WALL_PROXIMITY,
-    REWARD_UNSAFE_CURVE_INSERTION,
-    REWARD_WRONG_BRANCH,
     SAC_BATCH_SIZE,
     SAC_BUFFER_SIZE,
     SAC_EPOCHS,
@@ -204,7 +198,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
     def _episode_from_info(self, info: dict) -> dict:
         episode_info = info.get("episode", {}) if isinstance(info.get("episode", {}), dict) else {}
 
-        # Reward V9 emits continuous selected-route completion and bend control.
+        # Reward V10 emits physical selected-route progress and bounded safety.
         route_progress_ratio = self._safe_float(
             info.get("route_progress_ratio", np.nan)
         )
@@ -273,32 +267,12 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             )
             + self._safe_float(info.get("episode_reward_out_of_vessel_penalty", 0.0))
             + self._safe_float(info.get("episode_reward_non_finite_penalty", 0.0))
-            + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0))
-            + self._safe_float(info.get("episode_reward_no_progress_terminal_penalty", 0.0)),
+            + self._safe_float(info.get("episode_reward_timeout_penalty", 0.0)),
             "reward_safety": self._safe_float(
                 info.get("episode_reward_wall_proximity_penalty", 0.0)
             )
             + self._safe_float(
-                info.get("episode_reward_wall_penetration_penalty", 0.0)
-            )
-            + self._safe_float(
-                info.get("episode_reward_unsafe_curve_insertion_penalty", 0.0)
-            )
-            + self._safe_float(
                 info.get("episode_reward_off_target_branch_penalty", 0.0)
-            )
-            + self._safe_float(info.get("episode_reward_wrong_branch_penalty", 0.0)),
-            "reward_retraction": self._safe_float(
-                info.get("episode_reward_retraction_penalty", 0.0)
-            ),
-            "reward_no_progress_dense": self._safe_float(
-                info.get("episode_reward_no_progress_penalty", 0.0)
-            ),
-            "reward_behavior": self._safe_float(
-                info.get("episode_reward_retraction_penalty", 0.0)
-            )
-            + self._safe_float(
-                info.get("episode_reward_no_progress_penalty", 0.0)
             ),
             "reward_step": self._safe_float(info.get("episode_reward_step_penalty", 0.0)),
             "insert_action_mean": self._safe_float(
@@ -389,9 +363,6 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"reward_components/progress_w{self.window_size}", self._mean(ep["reward_progress"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/terminal_w{self.window_size}", self._mean(ep["reward_terminal"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/safety_w{self.window_size}", self._mean(ep["reward_safety"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/behavior_w{self.window_size}", self._mean(ep["reward_behavior"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/retraction_w{self.window_size}", self._mean(ep["reward_retraction"] for ep in recent), exclude="stdout")
-            self.logger.record(f"reward_components/no_progress_dense_w{self.window_size}", self._mean(ep["reward_no_progress_dense"] for ep in recent), exclude="stdout")
             self.logger.record(f"reward_components/step_w{self.window_size}", self._mean(ep["reward_step"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/route_potential_w{self.window_size}", self._mean(ep["route_potential"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/curriculum_stage_w{self.window_size}", self._mean(ep["curriculum_stage"] for ep in recent), exclude="stdout")
@@ -1152,6 +1123,7 @@ def build_env(args):
             create_scene_kwargs = {
                 "radius_observation_scale": float(args.radius_observation_scale),
                 "actor_history_steps": ACTOR_HISTORY_STEPS,
+                "reward_discount_gamma": float(args.gamma),
                 "randomize_start_target": bool(args.randomize_start_target),
                 "start_window_distance_m": float(args.start_window_mm) / 1000.0,
                 "target_window_distance_m": float(args.target_window_mm) / 1000.0,
@@ -1571,7 +1543,7 @@ def main():
         args.npu_fused_adam_status = fused_status
         args.npu_fused_adam_enabled = fused_adam_enabled
         args.npu_replay_buffer_fallbacks = replay_fallbacks
-        args.reward_profile = reward_profile()
+        args.reward_profile = reward_profile(args.gamma)
         args.curriculum_protocol = curriculum_protocol_profile()
         args.sac_max_grad_norm = float(SAC_MAX_GRAD_NORM)
         args.sac_min_ent_coef = float(args.min_ent_coef)
@@ -1634,14 +1606,12 @@ def main():
             )
             print(
                 f"[MCR TRAIN] reward route_progress={REWARD_ROUTE_PROGRESS:g} "
-                f"wall={REWARD_WALL_PROXIMITY:g}/{REWARD_WALL_PENETRATION:g} "
-                f"unsafe_curve_insert={REWARD_UNSAFE_CURVE_INSERTION:g} "
-                f"branch={REWARD_OFF_TARGET_BRANCH:g}/{REWARD_WRONG_BRANCH:g} "
-                f"retract/no_progress={REWARD_RETRACTION:g}/{REWARD_NO_PROGRESS:g} "
+                f"potential_gamma={args.gamma:g} "
+                f"wall={REWARD_WALL_PROXIMITY:g} "
+                f"off_route={REWARD_OFF_TARGET_BRANCH:g} "
                 f"success={REWARD_SUCCESS:g} out/non_finite="
                 f"{REWARD_OUT_OF_VESSEL:g}/{REWARD_NON_FINITE:g} "
-                f"timeout/no_progress_terminal={REWARD_TIMEOUT:g}/"
-                f"{REWARD_NO_PROGRESS_TERMINAL:g} step={REWARD_STEP:g} "
+                f"timeout={REWARD_TIMEOUT:g} step={REWARD_STEP:g} "
                 f"grad_clip={SAC_MAX_GRAD_NORM:g}"
             )
             print(
