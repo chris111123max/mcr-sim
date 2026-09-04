@@ -53,6 +53,12 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         out_infos = []
         for index, info in enumerate(infos):
             info = dict(info or {})
+            if "terminal_observation" in info and info["terminal_observation"] is not None:
+                terminal = np.asarray(info["terminal_observation"], dtype=np.float32).reshape(-1)
+                if terminal.shape[0] == self.base_observation_dim:
+                    info["terminal_observation"] = np.concatenate(
+                        [terminal, np.array([self.desired_goals[index, 0]], dtype=np.float32)]
+                    )
             # These fields are consumed by SafeHerReplayBuffer and are also
             # useful in the standalone CSV/log diagnostics.
             info["original_desired_goal"] = float(self.desired_goals[index, 0])
