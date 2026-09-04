@@ -37,6 +37,8 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         )
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
         self.desired_goals = np.full((self.num_envs, 1), self.final_goal, dtype=np.float32)
+        self._goal_episode_returns = np.zeros(self.num_envs, dtype=np.float64)
+        self._goal_episode_lengths = np.zeros(self.num_envs, dtype=np.int64)
 
     def _augment(self, observations):
         obs = np.asarray(observations, dtype=np.float32)
@@ -44,13 +46,24 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             obs = obs.reshape(1, -1)
         return np.concatenate([obs, self.desired_goals], axis=1).astype(np.float32, copy=False)
 
+    @staticmethod
+    def _finite_risk(info, key):
+        try:
+            value = float(info.get(key, 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+        return float(np.clip(value, 0.0, 1.0)) if np.isfinite(value) else 0.0
+
     def reset(self):
         self.desired_goals.fill(self.final_goal)
+        self._goal_episode_returns.fill(0.0)
+        self._goal_episode_lengths.fill(0)
         return self._augment(self.venv.reset())
 
     def step_wait(self):
         observations, rewards, dones, infos = self.venv.step_wait()
         out_infos = []
+        sparse_rewards = np.empty(self.num_envs, dtype=np.float32)
         for index, info in enumerate(infos):
             info = dict(info or {})
             if "terminal_observation" in info and info["terminal_observation"] is not None:
@@ -69,12 +82,28 @@ class GoalConditionedVecEnv(VecEnvWrapper):
                 and not info.get("done_by_non_finite", False)
                 and not info.get("route_projection_jump_rejected", False)
             )
+            wall_risk = self._finite_risk(info, "sdf_body_warning_feature")
+            branch_risk = self._finite_risk(info, "off_target_branch_feature")
+            safety_penalty = -0.05 * wall_risk - 0.05 * branch_risk
+            sparse_rewards[index] = np.float32(
+                (0.0 if info.get("done_by_target", False) else -1.0) + safety_penalty
+            )
+            self._goal_episode_returns[index] += float(sparse_rewards[index])
+            self._goal_episode_lengths[index] += 1
+            info["goal_sparse_reward"] = float(sparse_rewards[index])
+            info["goal_safety_penalty"] = float(safety_penalty)
             if dones[index]:
                 # The next reset happens inside VecEnv.step_wait.  Keep the
                 # original final goal in this transition's info.
                 self.desired_goals[index, 0] = self.final_goal
+                episode = dict(info.get("episode", {}))
+                episode["r"] = float(self._goal_episode_returns[index])
+                episode["l"] = int(self._goal_episode_lengths[index])
+                info["episode"] = episode
+                self._goal_episode_returns[index] = 0.0
+                self._goal_episode_lengths[index] = 0
             out_infos.append(info)
-        return self._augment(observations), rewards, dones, out_infos
+        return self._augment(observations), sparse_rewards, dones, out_infos
 
 
 class SafeHerReplayBuffer(ReplayBuffer):

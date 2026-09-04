@@ -15,14 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-import torch as th
-
 TRAINING_PY_DIR = Path(__file__).resolve().parent
 PYTHON_ROOT = TRAINING_PY_DIR.parent.parent
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
-
-from stable_baselines3.common.callbacks import CheckpointCallback
 
 from mcr_sim.goal_conditioned_env import GoalConditionedVecEnv, SafeHerReplayBuffer
 from mcr_sim.goal_sac_config import *  # noqa: F401,F403 - explicit run metadata
@@ -34,10 +30,10 @@ from mcr_sim.distributed import (
 )
 from mcr_sim.paths import PROJECT_ROOT, TRAINING_RUNS_DIR
 from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
+from mcr_sim.rl_core.experiment import EpochExperimentCallback
 from mcr_sim.rl_core.evaluation import (
     discover_validation_vessels,
     evaluate_policy,
-    validation_result_to_json,
 )
 from mcr_sim.training_config import (
     ENTRY_TANGENT_POINTS,
@@ -109,6 +105,8 @@ def parse_args():
     parser.add_argument("--resume-from", default="")
     parser.add_argument("--valid-dir", default=str(PROJECT_ROOT / "mesh" / "valid"))
     parser.add_argument("--valid-episodes-per-vessel", type=int, default=2)
+    parser.add_argument("--validation-interval", type=int, default=2)
+    parser.add_argument("--valid-min-train-success-rate", type=float, default=0.20)
     parser.add_argument("--skip-validation", action="store_true")
     parser.add_argument("--no-npu-fused-adam", action="store_true")
     parser.add_argument("--no-npu-fast-execution", action="store_true")
@@ -225,10 +223,49 @@ def main():
             if critic_status in {"enabled", "already_enabled"}:
                 model.critic.optimizer = critic_opt
             print(f"[GOAL SAC] fused_adam actor={actor_status} critic={critic_status}")
-        callback = None
-        if context.is_main:
-            freq = max(1, int(args.save_freq or (args.max_episode_steps * args.episodes_per_epoch)))
-            callback = CheckpointCallback(save_freq=freq, save_path=str(model_dir), name_prefix="goal_sac")
+        valid_dir = Path(args.valid_dir).expanduser()
+        if not valid_dir.is_absolute():
+            valid_dir = PROJECT_ROOT / valid_dir
+        valid_vessels = [] if args.skip_validation else discover_validation_vessels(
+            valid_dir, expected_vessels=5
+        )
+
+        def run_validation(current_model, epoch):
+            def valid_factory(vessel_id):
+                valid_args = _baseline_args(args, context)
+                valid_args.force_model = str(vessel_id)
+                valid_args.asset_root = str(valid_dir.resolve())
+                valid_args.local_n_envs = 1
+                valid_args.n_envs = 1
+                valid_args.render = "headless"
+                return GoalConditionedVecEnv(build_env(valid_args))
+
+            return evaluate_policy(
+                vessel_ids=valid_vessels,
+                env_factory=valid_factory,
+                deterministic_action=lambda observation: current_model.predict(
+                    observation, deterministic=True
+                )[0],
+                episodes_per_vessel=args.valid_episodes_per_vessel,
+                max_episode_steps=args.max_episode_steps,
+                task_rank=context.rank,
+                task_world_size=context.world_size,
+            )
+
+        callback = EpochExperimentCallback(
+            context=context,
+            algorithm_name="goal_sac",
+            variant="safeher",
+            epochs=args.epochs,
+            episodes_per_epoch=args.episodes_per_epoch,
+            model_dir=model_dir,
+            run_dir=log_dir,
+            validation_interval=args.validation_interval,
+            validation_min_train_success_rate=args.valid_min_train_success_rate,
+            validation_fn=None if args.skip_validation else run_validation,
+            resume_progress=False,
+            training_curriculum_enabled=False,
+        )
         print(
             f"[GOAL SAC] device={context.device.resolved} world={context.world_size} "
             f"envs={args.n_envs}/{args.local_n_envs} obs={env.observation_space.shape} "
@@ -242,42 +279,6 @@ def main():
             final_path = model_dir / f"goal_sac_final_{args.epochs:03d}ep"
             model.save(str(final_path))
             print(f"[DONE] model={final_path}.zip")
-            if not args.skip_validation:
-                valid_dir = Path(args.valid_dir).expanduser()
-                if not valid_dir.is_absolute():
-                    valid_dir = PROJECT_ROOT / valid_dir
-                try:
-                    vessels = discover_validation_vessels(valid_dir, expected_vessels=5)
-
-                    def valid_factory(vessel_id):
-                        valid_args = _baseline_args(args, context)
-                        valid_args.force_model = str(vessel_id)
-                        valid_args.asset_root = str(valid_dir.resolve())
-                        valid_args.local_n_envs = 1
-                        valid_args.n_envs = 1
-                        valid_args.render = "headless"
-                        return GoalConditionedVecEnv(build_env(valid_args))
-
-                    result = evaluate_policy(
-                        vessel_ids=vessels,
-                        env_factory=valid_factory,
-                        deterministic_action=lambda observation: model.predict(
-                            observation, deterministic=True
-                        )[0],
-                        episodes_per_vessel=args.valid_episodes_per_vessel,
-                        max_episode_steps=args.max_episode_steps,
-                    )
-                    (log_dir / "valid_result.json").write_text(
-                        validation_result_to_json(result), encoding="utf-8"
-                    )
-                    print(
-                        f"[VALID] success={result.valid_success_rate:.3f} "
-                        f"route_completion={result.valid_route_completion_mean:.3f}"
-                    )
-                except Exception as exc:
-                    # Validation must never turn a completed training run into
-                    # a failed run; the error remains visible in launcher.log.
-                    print(f"[VALID][ERROR] {type(exc).__name__}: {exc}")
     finally:
         if env is not None:
             env.close()
