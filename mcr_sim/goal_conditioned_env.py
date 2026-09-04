@@ -23,12 +23,24 @@ class GoalConditionedVecEnv(VecEnvWrapper):
     never changed.
     """
 
-    def __init__(self, venv, final_goal: float = 1.0):
+    def __init__(
+        self,
+        venv,
+        final_goal: float = 1.0,
+        step_cost: float = 0.01,
+        safety_weight: float = 0.0005,
+        failure_terminal_penalty: float = 10.0,
+        max_episode_steps: int = 2048,
+    ):
         super().__init__(venv)
         if getattr(venv.observation_space, "shape", None) is None:
             raise ValueError("GoalConditionedVecEnv requires a flat state observation.")
         self.base_observation_dim = int(venv.observation_space.shape[0])
         self.final_goal = float(np.clip(final_goal, 0.0, 1.0))
+        self.step_cost = float(max(0.0, step_cost))
+        self.safety_weight = float(max(0.0, safety_weight))
+        self.failure_terminal_penalty = float(max(0.0, failure_terminal_penalty))
+        self.max_episode_steps = max(1, int(max_episode_steps))
         low = np.concatenate(
             [np.asarray(venv.observation_space.low, dtype=np.float32), np.array([0.0], dtype=np.float32)]
         )
@@ -84,10 +96,22 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             )
             wall_risk = self._finite_risk(info, "sdf_body_warning_feature")
             branch_risk = self._finite_risk(info, "off_target_branch_feature")
-            safety_penalty = -0.05 * wall_risk - 0.05 * branch_risk
-            sparse_rewards[index] = np.float32(
-                (0.0 if info.get("done_by_target", False) else -1.0) + safety_penalty
-            )
+            safety_penalty = -self.safety_weight * (wall_risk + branch_risk)
+            success = bool(info.get("done_by_target", False))
+            completed_steps = int(self._goal_episode_lengths[index]) + 1
+            if success:
+                task_reward = 0.0
+            elif bool(dones[index]):
+                # A terminated trajectory must not become attractive merely
+                # because it avoided future step costs.  Charge all remaining
+                # horizon costs, then add a fixed failure margin.  Consequently
+                # every non-success episode has the same undiscounted base cost
+                # regardless of whether it exits at step 20 or times out.
+                remaining_steps = max(1, self.max_episode_steps - completed_steps + 1)
+                task_reward = -self.step_cost * remaining_steps - self.failure_terminal_penalty
+            else:
+                task_reward = -self.step_cost
+            sparse_rewards[index] = np.float32(task_reward + safety_penalty)
             self._goal_episode_returns[index] += float(sparse_rewards[index])
             self._goal_episode_lengths[index] += 1
             info["goal_sparse_reward"] = float(sparse_rewards[index])
@@ -123,6 +147,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         goal_tolerance: float = 0.01,
         future_short_fraction: float = 0.25,
         future_medium_fraction: float = 0.35,
+        step_cost: float = 0.01,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -132,6 +157,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         self.goal_tolerance = float(max(1e-6, goal_tolerance))
         self.future_short_fraction = float(np.clip(future_short_fraction, 0.0, 1.0))
         self.future_medium_fraction = float(np.clip(future_medium_fraction, 0.0, 1.0))
+        self.step_cost = float(max(0.0, step_cost))
         self.achieved_goals = np.zeros((self.buffer_size, self.n_envs, 1), dtype=np.float32)
         self.safe_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.episode_ids = np.zeros((self.buffer_size, self.n_envs), dtype=np.int64)
@@ -139,6 +165,11 @@ class SafeHerReplayBuffer(ReplayBuffer):
         self._episode_id = np.zeros(self.n_envs, dtype=np.int64)
         self._episode_step = np.zeros(self.n_envs, dtype=np.int64)
         self._episode_safe = np.ones(self.n_envs, dtype=np.bool_)
+        # (env, episode) -> [first_safe_step, chronological replay slots].
+        # This removes the old O(buffer_size) scan for every relabelled row.
+        # Safe HER accepts only a contiguous safe prefix, so step-to-list
+        # offsets remain exact and future sampling is O(1).
+        self._safe_episode_slots = {}
         self.safety_penalties = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.success_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.her_stats = {
@@ -163,6 +194,23 @@ class SafeHerReplayBuffer(ReplayBuffer):
         slot = int(self.pos)
         infos = list(infos or [{} for _ in range(self.n_envs)])
         for env_index in range(self.n_envs):
+            if self.full and self.safe_flags[slot, env_index]:
+                old_key = (env_index, int(self.episode_ids[slot, env_index]))
+                old_entry = self._safe_episode_slots.get(old_key)
+                if old_entry is not None:
+                    old_slots = old_entry[1]
+                    if old_slots and old_slots[0] == slot:
+                        old_slots.pop(0)
+                        old_entry[0] += 1
+                    else:
+                        # Defensive fallback for a replay restored or altered
+                        # outside the normal chronological add path.
+                        try:
+                            old_slots.remove(slot)
+                        except ValueError:
+                            pass
+                    if not old_slots:
+                        self._safe_episode_slots.pop(old_key, None)
             info = dict(infos[env_index] or {})
             self.achieved_goals[slot, env_index, 0] = np.clip(
                 self._info_float(info, "achieved_goal", self._info_float(info, "route_progress_ratio")), 0.0, 1.0
@@ -177,12 +225,18 @@ class SafeHerReplayBuffer(ReplayBuffer):
             self._episode_safe[env_index] = bool(self._episode_safe[env_index] and frame_safe)
             self.safe_flags[slot, env_index] = self._episode_safe[env_index]
             self.safety_penalties[slot, env_index] = np.float32(
-                -0.05 * np.clip(self._info_float(info, "sdf_body_warning_feature"), 0.0, 1.0)
-                -0.05 * np.clip(self._info_float(info, "off_target_branch_feature"), 0.0, 1.0)
+                self._info_float(info, "goal_safety_penalty", 0.0)
             )
             self.success_flags[slot, env_index] = bool(info.get("done_by_target", False))
             self.episode_ids[slot, env_index] = self._episode_id[env_index]
             self.episode_steps[slot, env_index] = self._episode_step[env_index]
+            if self.safe_flags[slot, env_index]:
+                key = (env_index, int(self._episode_id[env_index]))
+                entry = self._safe_episode_slots.get(key)
+                if entry is None:
+                    entry = [int(self._episode_step[env_index]), []]
+                    self._safe_episode_slots[key] = entry
+                entry[1].append(slot)
             self._episode_step[env_index] += 1
             if bool(np.asarray(done).reshape(-1)[env_index]):
                 self._episode_id[env_index] += 1
@@ -190,43 +244,39 @@ class SafeHerReplayBuffer(ReplayBuffer):
                 self._episode_safe[env_index] = True
         super().add(obs, next_obs, action, reward, done, infos)
 
-    def _valid_indices(self, env_index: int, episode_id: int, after_step: int):
-        limit = self.buffer_size if self.full else self.pos
-        if limit <= 0:
-            return np.empty(0, dtype=np.int64)
-        mask = (
-            (self.episode_ids[:limit, env_index] == episode_id)
-            & (self.episode_steps[:limit, env_index] > after_step)
-            & self.safe_flags[:limit, env_index]
-        )
-        return np.flatnonzero(mask)
-
     def _sample_future_goal(self, env_index: int, episode_id: int, current_step: int):
-        candidates = self._valid_indices(env_index, episode_id, current_step)
-        if candidates.size == 0:
+        entry = self._safe_episode_slots.get((env_index, episode_id))
+        if entry is None:
             self.her_stats["rejected_candidates"] += 1
             return None
-        self.her_stats["safe_candidates"] += int(candidates.size)
+        first_step, slots = entry
+        start = max(0, int(current_step) + 1 - int(first_step))
+        candidate_count = len(slots) - start
+        if candidate_count <= 0:
+            self.her_stats["rejected_candidates"] += 1
+            return None
+        self.her_stats["safe_candidates"] += int(candidate_count)
         # Short/medium/far future mixture; far candidates are biased toward the
         # maximum safe progress of this episode.
         draw = np.random.random()
         if draw < self.future_short_fraction:
-            subset = candidates[: max(1, int(np.ceil(candidates.size * 0.33)))]
+            low = start
+            high = start + max(1, int(np.ceil(candidate_count * 0.33)))
             self.her_stats["future_short"] += 1
         elif draw < self.future_short_fraction + self.future_medium_fraction:
-            lo = max(0, int(candidates.size * 0.25))
-            hi = max(lo + 1, int(np.ceil(candidates.size * 0.75)))
-            subset = candidates[lo:hi]
+            low = start + int(candidate_count * 0.25)
+            high = start + max(int(candidate_count * 0.25) + 1, int(np.ceil(candidate_count * 0.75)))
             self.her_stats["future_medium"] += 1
         else:
-            subset = candidates[-max(1, int(np.ceil(candidates.size * 0.50))) :]
+            low = start + candidate_count - max(1, int(np.ceil(candidate_count * 0.50)))
+            high = start + candidate_count
             self.her_stats["future_far"] += 1
-        index = int(np.random.choice(subset))
+        index = int(slots[int(np.random.randint(low, high))])
         return float(self.achieved_goals[index, env_index, 0])
 
     def _sparse_reward(self, next_achieved, goal, safety_penalty):
         reached = bool(float(next_achieved) + self.goal_tolerance >= float(goal))
-        return np.float32((0.0 if reached else -1.0) + float(safety_penalty))
+        return np.float32((0.0 if reached else -self.step_cost) + float(safety_penalty))
 
     def sample(self, batch_size: int, env: Optional[Any] = None) -> ReplayBufferSamples:
         if self.n_envs <= 0:
@@ -262,14 +312,9 @@ class SafeHerReplayBuffer(ReplayBuffer):
             dones[row] = float(next_achieved + self.goal_tolerance >= desired_goals[row])
         observations[:, -1] = desired_goals
         next_observations[:, -1] = desired_goals
-        # Original-goal samples use the independent sparse reward too; the
-        # stored V11 reward is deliberately never reused by this branch.
-        original = ~relabel
-        if np.any(original):
-            original_success = self.success_flags[batch_inds[original], env_indices[original]]
-            original_penalty = self.safety_penalties[batch_inds[original], env_indices[original]]
-            rewards[original] = np.where(original_success, 0.0, -1.0).astype(np.float32)
-            rewards[original] += original_penalty
+        # Original-goal rows retain the sparse reward stored by the wrapper,
+        # including horizon-compensated terminal failure penalties.  Only HER
+        # rows are recomputed for their substituted goals.
         self.her_stats["samples"] += int(batch_size)
         self.her_stats["her_samples"] += int(np.count_nonzero(relabel))
         return ReplayBufferSamples(
@@ -284,4 +329,8 @@ class SafeHerReplayBuffer(ReplayBuffer):
         """Gym goal API compatible sparse reward helper for diagnostics."""
         achieved = np.asarray(achieved_goal, dtype=np.float32)
         desired = np.asarray(desired_goal, dtype=np.float32)
-        return np.where(achieved[..., 0] + self.goal_tolerance >= desired[..., 0], 0.0, -1.0)
+        return np.where(
+            achieved[..., 0] + self.goal_tolerance >= desired[..., 0],
+            0.0,
+            -self.step_cost,
+        )

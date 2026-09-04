@@ -27,10 +27,12 @@ from .npu_performance import zero_optimizer_grad
 class GoalConditionedSAC(SAC):
     """SAC variant for flat ``state + desired_goal`` observations.
 
-    ``critic_ensemble_size`` is the number of independent twin-critic
-    modules.  The target uses the minimum of a fresh random subset, while the
-    actor uses the mean over all modules.  This is intentionally implemented
-    without changing the baseline SAC class.
+    ``critic_ensemble_size`` is the number of individual Q functions.  SB3's
+    SAC critic contains two Q functions per module, so a ten-Q ensemble uses
+    five modules (not ten twin modules / twenty Q functions).  The target uses
+    the minimum of a fresh random Q subset, while the actor uses the mean over
+    all Q functions.  This is intentionally implemented without changing the
+    baseline SAC class.
     """
 
     def __init__(
@@ -43,6 +45,7 @@ class GoalConditionedSAC(SAC):
         utd_warmup_steps: int = 50_000,
         actor_update_interval: int = 2,
         critic_layer_norm: bool = True,
+        metric_log_interval: int = 64,
         **kwargs,
     ):
         self.distributed_context = distributed_context
@@ -54,6 +57,7 @@ class GoalConditionedSAC(SAC):
         self.utd_warmup_steps = max(0, int(utd_warmup_steps))
         self.actor_update_interval = max(1, int(actor_update_interval))
         self.critic_layer_norm = bool(critic_layer_norm)
+        self.metric_log_interval = max(1, int(metric_log_interval))
         super().__init__(*args, **kwargs)
         self._build_critic_ensemble()
 
@@ -79,14 +83,18 @@ class GoalConditionedSAC(SAC):
     def _build_critic_ensemble(self) -> None:
         base = self.critic
         targets = self.critic_target
+        self._q_heads_per_module = max(1, len(base.q_networks))
+        self._critic_module_count = int(
+            math.ceil(self.critic_ensemble_size / self._q_heads_per_module)
+        )
         self.critic_ensemble = nn.ModuleList([base])
         self.critic_target_ensemble = nn.ModuleList([targets])
-        for _ in range(1, self.critic_ensemble_size):
+        for _ in range(1, self._critic_module_count):
             self.critic_ensemble.append(copy.deepcopy(base))
             self.critic_target_ensemble.append(copy.deepcopy(targets))
         obs_dim = int(self.observation_space.shape[0])
         self.critic_input_norms = nn.ModuleList(
-            [nn.LayerNorm(obs_dim).to(self.device) for _ in range(self.critic_ensemble_size)]
+            [nn.LayerNorm(obs_dim).to(self.device) for _ in range(self._critic_module_count)]
         ) if self.critic_layer_norm else nn.ModuleList()
         # Keep SB3 aliases pointing at the first member for compatibility with
         # callbacks and model metadata.
@@ -115,12 +123,27 @@ class GoalConditionedSAC(SAC):
             context.average_gradients(parameters)
 
     def _utd_for_replay(self) -> int:
-        replay_size = int(getattr(self.replay_buffer, "pos", 0))
+        replay_slots = int(getattr(self.replay_buffer, "pos", 0))
         if getattr(self.replay_buffer, "full", False):
-            replay_size = int(self.replay_buffer.buffer_size)
-        if replay_size < self.utd_warmup_steps:
-            return max(1, min(self.utd_ratio, max(1, replay_size // 10_000)))
+            replay_slots = int(self.replay_buffer.buffer_size)
+        # ReplayBuffer.pos counts vector slots, not transitions.  With 32
+        # environments one slot represents 32 transitions.
+        replay_transitions = replay_slots * int(getattr(self.replay_buffer, "n_envs", 1))
+        if self.utd_ratio <= 1 or self.utd_warmup_steps <= 0:
+            return self.utd_ratio
+        since_learning_start = max(0, replay_transitions - int(self.learning_starts))
+        if since_learning_start < self.utd_warmup_steps // 2:
+            return 1
+        if since_learning_start < self.utd_warmup_steps:
+            return min(5, self.utd_ratio)
         return self.utd_ratio
+
+    def _flat_q_values(self, modules, observations, actions):
+        """Return exactly ``critic_ensemble_size`` individual Q tensors."""
+        values = []
+        for index, critic in enumerate(modules):
+            values.extend(critic(self._critic_obs(index, observations), actions))
+        return values[: self.critic_ensemble_size]
 
     def train(self, gradient_steps: int, batch_size: int = 64) -> None:
         started = __import__("time").perf_counter()
@@ -140,8 +163,8 @@ class GoalConditionedSAC(SAC):
         if self.ent_coef_optimizer is not None:
             optimizers.append(self.ent_coef_optimizer)
         self._update_learning_rate(optimizers)
-        ent_coef_losses, ent_coefs, actor_losses, critic_losses = [], [], [], []
-        q_means, q_stds = [], []
+        metric_sums = th.zeros(8, dtype=th.float32, device=self.device)
+        metric_counts = th.zeros(4, dtype=th.float32, device=self.device)
         actor_update_count = 0
         for update_index in range(int(gradient_steps)):
             replay_data = self.replay_buffer.sample(batch_size, env=self._vec_normalize_env)
@@ -159,46 +182,50 @@ class GoalConditionedSAC(SAC):
                 self.ent_coef_optimizer.step()
                 with th.no_grad():
                     self.log_ent_coef.clamp_(min=math.log(1e-4))
-                ent_coef_losses.append(ent_coef_loss.detach())
+                metric_sums[3].add_(ent_coef_loss.detach())
+                metric_counts[3].add_(1.0)
                 ent_coef = th.exp(self.log_ent_coef.detach())
             else:
                 ent_coef = self.ent_coef_tensor
-            ent_coefs.append(ent_coef.detach())
+            metric_sums[2].add_(ent_coef.detach())
+            metric_counts[2].add_(1.0)
 
             with th.no_grad():
                 next_actions, next_log_prob = self.actor.action_log_prob(
                     replay_data.next_observations
                 )
-                subset = random.sample(
-                    range(self.critic_ensemble_size), self.target_critic_subset_size
-                )
-                target_values = []
-                for index in subset:
-                    q_pair = self.critic_target_ensemble[index](
-                        self._critic_obs(index, replay_data.next_observations),
-                        next_actions,
+                subset = random.sample(range(self.critic_ensemble_size), self.target_critic_subset_size)
+                required_modules = sorted({index // self._q_heads_per_module for index in subset})
+                module_values = {}
+                for module_index in required_modules:
+                    module_values[module_index] = self.critic_target_ensemble[module_index](
+                        self._critic_obs(module_index, replay_data.next_observations), next_actions
                     )
-                    target_values.append(th.cat(q_pair, dim=1).min(dim=1, keepdim=True).values)
+                target_values = [
+                    module_values[index // self._q_heads_per_module][index % self._q_heads_per_module]
+                    for index in subset
+                ]
                 next_q = th.cat(target_values, dim=1).min(dim=1, keepdim=True).values
                 target_q = replay_data.rewards + (1.0 - replay_data.dones) * self.gamma * (
                     next_q - ent_coef * next_log_prob.reshape(-1, 1)
                 )
 
             zero_optimizer_grad(self.critic.optimizer)
-            critic_loss = th.zeros((), device=replay_data.observations.device)
-            for index, critic in enumerate(self.critic_ensemble):
-                q_pair = critic(self._critic_obs(index, replay_data.observations), replay_data.actions)
-                q_stack = th.cat(q_pair, dim=1)
-                q_means.append(q_stack.mean().detach())
-                q_stds.append(q_stack.std(unbiased=False).detach())
-                critic_loss = critic_loss + 0.5 * sum(
-                    F.mse_loss(q_value, target_q) for q_value in q_pair
-                )
+            q_values = self._flat_q_values(
+                self.critic_ensemble, replay_data.observations, replay_data.actions
+            )
+            q_stack = th.cat(q_values, dim=1)
+            critic_loss = sum(F.mse_loss(q_value, target_q) for q_value in q_values)
             critic_loss = critic_loss / float(self.critic_ensemble_size)
             critic_loss.backward()
             self._reduce_gradients(self.critic.optimizer.param_groups[0]["params"])
             self.critic.optimizer.step()
-            critic_losses.append(critic_loss.detach())
+            metric_sums[1].add_(critic_loss.detach())
+            metric_sums[4].add_(q_stack.detach().mean())
+            metric_sums[5].add_(q_stack.detach().std(dim=1, unbiased=False).mean())
+            metric_sums[6].add_(target_q.detach().mean())
+            metric_sums[7].add_((q_stack.detach().mean(dim=1, keepdim=True) - target_q).abs().mean())
+            metric_counts[1].add_(1.0)
 
             if update_index % self.actor_update_interval == 0:
                 critic_states = [p.requires_grad for p in self.critic_ensemble.parameters()]
@@ -208,17 +235,17 @@ class GoalConditionedSAC(SAC):
                 for parameter in self.critic_input_norms.parameters():
                     parameter.requires_grad_(False)
                 try:
-                    q_values = []
-                    for index, critic in enumerate(self.critic_ensemble):
-                        pair = critic(self._critic_obs(index, replay_data.observations), actions_pi)
-                        q_values.append(th.cat(pair, dim=1).min(dim=1, keepdim=True).values)
+                    q_values = self._flat_q_values(
+                        self.critic_ensemble, replay_data.observations, actions_pi
+                    )
                     mean_q = th.cat(q_values, dim=1).mean(dim=1, keepdim=True)
                     actor_loss = (ent_coef * log_prob - mean_q).mean()
                     zero_optimizer_grad(self.actor.optimizer)
                     actor_loss.backward()
                     self._reduce_gradients(self.actor.parameters())
                     self.actor.optimizer.step()
-                    actor_losses.append(actor_loss.detach())
+                    metric_sums[0].add_(actor_loss.detach())
+                    metric_counts[0].add_(1.0)
                     actor_update_count += 1
                 finally:
                     for parameter, state in zip(self.critic_ensemble.parameters(), critic_states):
@@ -235,21 +262,28 @@ class GoalConditionedSAC(SAC):
         self.logger.record("train/n_updates", self._n_updates, exclude="tensorboard")
         self.logger.record("train/goal_sac_actual_utd", float(gradient_steps))
         self.logger.record("train/goal_sac_actor_updates", float(actor_update_count))
-        if q_means:
-            self.logger.record("train/q_mean", float(th.stack(q_means).mean().cpu()))
-            self.logger.record("train/q_std", float(th.stack(q_stds).mean().cpu()))
-        if actor_losses:
-            self.logger.record("train/actor_loss", float(th.stack(actor_losses).mean().detach().cpu()))
-        self.logger.record("train/critic_loss", float(th.stack(critic_losses).mean().detach().cpu()))
-        self.logger.record("train/ent_coef", float(th.stack(ent_coefs).mean().detach().cpu()))
-        if ent_coef_losses:
-            self.logger.record("train/ent_coef_loss", float(th.stack(ent_coef_losses).mean().detach().cpu()))
-        stats = getattr(self.replay_buffer, "her_stats", {})
-        if stats:
-            samples = max(1, int(stats.get("samples", 0)))
-            self.logger.record("replay/her_fraction", float(stats.get("her_samples", 0)) / samples)
-            self.logger.record("replay/safe_candidates", float(stats.get("safe_candidates", 0)))
-            self.logger.record("replay/rejected_candidates", float(stats.get("rejected_candidates", 0)))
+        denominators = th.stack(
+            [metric_counts[0], metric_counts[1], metric_counts[2], metric_counts[3],
+             metric_counts[1], metric_counts[1], metric_counts[1], metric_counts[1]]
+        ).clamp_min_(1.0)
+        local_metrics = metric_sums / denominators
+        context = self.distributed_context
+        values = context.reduce_metrics_periodically(
+            "goal_sac_train", local_metrics, self.metric_log_interval
+        ) if context is not None else local_metrics.detach().cpu().tolist()
+        if values is not None:
+            names = (
+                "actor_loss", "critic_loss", "ent_coef", "ent_coef_loss",
+                "q_mean", "q_ensemble_std", "target_q_mean", "td_error_abs",
+            )
+            for name, value in zip(names, values):
+                self.logger.record(f"train/{name}", float(value))
+            stats = getattr(self.replay_buffer, "her_stats", {})
+            if stats:
+                samples = max(1, int(stats.get("samples", 0)))
+                self.logger.record("replay/her_fraction", float(stats.get("her_samples", 0)) / samples)
+                self.logger.record("replay/safe_candidates", float(stats.get("safe_candidates", 0)))
+                self.logger.record("replay/rejected_candidates", float(stats.get("rejected_candidates", 0)))
 
     def _get_torch_save_params(self):
         names, state_dicts = super()._get_torch_save_params()

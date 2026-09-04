@@ -76,11 +76,24 @@ def parse_args():
     parser.add_argument("--her-ratio", type=float, default=GOAL_SAC_HER_RATIO)
     parser.add_argument("--her-safe-margin-mm", type=float, default=GOAL_SAC_HER_SAFE_MARGIN_M * 1000.0)
     parser.add_argument("--goal-tolerance", type=float, default=GOAL_SAC_GOAL_TOLERANCE)
+    parser.add_argument("--goal-step-cost", type=float, default=GOAL_SAC_STEP_COST)
+    parser.add_argument("--goal-safety-weight", type=float, default=GOAL_SAC_SAFETY_WEIGHT)
+    parser.add_argument(
+        "--goal-failure-terminal-penalty",
+        type=float,
+        default=GOAL_SAC_FAILURE_TERMINAL_PENALTY,
+    )
     parser.add_argument("--critic-ensemble-size", type=int, default=GOAL_SAC_CRITIC_ENSEMBLE_SIZE)
     parser.add_argument("--target-critic-subset-size", type=int, default=GOAL_SAC_TARGET_CRITIC_SUBSET_SIZE)
     parser.add_argument("--utd-ratio", type=int, default=GOAL_SAC_UTD_RATIO)
     parser.add_argument("--utd-warmup-steps", type=int, default=GOAL_SAC_UTD_WARMUP_STEPS)
     parser.add_argument("--actor-update-interval", type=int, default=GOAL_SAC_ACTOR_UPDATE_INTERVAL)
+    parser.add_argument("--metric-log-interval", type=int, default=GOAL_SAC_METRIC_LOG_INTERVAL)
+    parser.add_argument(
+        "--performance-log-interval-steps",
+        type=int,
+        default=GOAL_SAC_PERFORMANCE_LOG_INTERVAL_STEPS,
+    )
     parser.add_argument("--no-critic-layer-norm", action="store_true")
     parser.add_argument("--randomize-start-target", action="store_true", default=True)
     parser.add_argument("--no-randomize-start-target", dest="randomize_start_target", action="store_false")
@@ -162,10 +175,12 @@ def main():
     args.goal_sac = True
     args.goal_conditioning = "route_completion_scalar"
     args.reward_profile = {
-        "version": "goal_sparse_v1",
-        "goal_reward": "-1 until achieved, 0 when achieved",
+        "version": "goal_sparse_v2",
+        "goal_reward": f"-{args.goal_step_cost:g} until achieved, 0 when achieved",
         "dense_route_progress": False,
-        "safety": "surface-clearance and wrong-branch bounded terms",
+        "safety_weight": args.goal_safety_weight,
+        "failure_terminal_penalty": args.goal_failure_terminal_penalty,
+        "failure_horizon_compensation": True,
         "her": "safe_future",
         "original_her_ratio": [1.0 - args.her_ratio, args.her_ratio],
     }
@@ -175,6 +190,8 @@ def main():
         "utd_ratio": args.utd_ratio,
         "utd_warmup_steps": args.utd_warmup_steps,
         "actor_update_interval": args.actor_update_interval,
+        "metric_log_interval": args.metric_log_interval,
+        "performance_log_interval_steps": args.performance_log_interval_steps,
         "critic_layer_norm": not args.no_critic_layer_norm,
     }
     run_root = Path(args.log_root).expanduser()
@@ -193,7 +210,13 @@ def main():
     start_run_log_capture(log_dir, context.rank)
     env = None
     try:
-        env = GoalConditionedVecEnv(build_env(_baseline_args(args, context)))
+        env = GoalConditionedVecEnv(
+            build_env(_baseline_args(args, context)),
+            step_cost=args.goal_step_cost,
+            safety_weight=args.goal_safety_weight,
+            failure_terminal_penalty=args.goal_failure_terminal_penalty,
+            max_episode_steps=args.max_episode_steps,
+        )
         model = GoalConditionedSAC(
             policy="MlpPolicy", env=env, learning_rate=args.learning_rate,
             buffer_size=args.buffer_size, learning_starts=args.learning_starts,
@@ -204,6 +227,7 @@ def main():
                 her_ratio=args.her_ratio,
                 her_safe_margin_m=args.her_safe_margin_mm / 1000.0,
                 goal_tolerance=args.goal_tolerance,
+                step_cost=args.goal_step_cost,
             ), tensorboard_log=str(tb_dir) if context.is_main else None,
             seed=args.seed + context.rank, device=args.resolved_device,
             verbose=1 if context.is_main else 0, distributed_context=context,
@@ -212,6 +236,7 @@ def main():
             utd_ratio=args.utd_ratio, utd_warmup_steps=args.utd_warmup_steps,
             actor_update_interval=args.actor_update_interval,
             critic_layer_norm=not args.no_critic_layer_norm,
+            metric_log_interval=args.metric_log_interval,
         )
         if context.enabled:
             model.synchronize_parameters()
@@ -238,7 +263,13 @@ def main():
                 valid_args.local_n_envs = 1
                 valid_args.n_envs = 1
                 valid_args.render = "headless"
-                return GoalConditionedVecEnv(build_env(valid_args))
+                return GoalConditionedVecEnv(
+                    build_env(valid_args),
+                    step_cost=args.goal_step_cost,
+                    safety_weight=args.goal_safety_weight,
+                    failure_terminal_penalty=args.goal_failure_terminal_penalty,
+                    max_episode_steps=args.max_episode_steps,
+                )
 
             return evaluate_policy(
                 vessel_ids=valid_vessels,
@@ -265,11 +296,13 @@ def main():
             validation_fn=None if args.skip_validation else run_validation,
             resume_progress=False,
             training_curriculum_enabled=False,
+            performance_log_interval_steps=args.performance_log_interval_steps,
         )
         print(
             f"[GOAL SAC] device={context.device.resolved} world={context.world_size} "
             f"envs={args.n_envs}/{args.local_n_envs} obs={env.observation_space.shape} "
-            f"batch={args.batch_size}/{local_batch} ensemble={args.critic_ensemble_size} "
+            f"batch={args.batch_size}/{local_batch} q_ensemble={args.critic_ensemble_size} "
+            f"critic_modules={model._critic_module_count} "
             f"target_subset={args.target_critic_subset_size} utd={args.utd_ratio} "
             f"her={args.her_ratio:.2f} output={run_dir}"
         )
