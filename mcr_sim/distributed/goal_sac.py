@@ -86,7 +86,7 @@ class GoalConditionedSAC(SAC):
             self.critic_target_ensemble.append(copy.deepcopy(targets))
         obs_dim = int(self.observation_space.shape[0])
         self.critic_input_norms = nn.ModuleList(
-            [nn.LayerNorm(obs_dim) for _ in range(self.critic_ensemble_size)]
+            [nn.LayerNorm(obs_dim).to(self.device) for _ in range(self.critic_ensemble_size)]
         ) if self.critic_layer_norm else nn.ModuleList()
         # Keep SB3 aliases pointing at the first member for compatibility with
         # callbacks and model metadata.

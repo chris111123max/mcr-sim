@@ -1,4 +1,10 @@
-"""Defaults for the isolated Goal-conditioned SAC experiment."""
+"""Defaults for the isolated Goal-conditioned SAC experiment.
+
+The server target is Huawei Ascend 910B3 (64 GiB HBM).  These defaults are
+intentionally conservative for a ten-critic ensemble: the default single-card
+minibatch is 1024; distributed runs divide the same global batch by rank.
+Arguments remain overrideable only for explicit ablation/smoke tests.
+"""
 
 GOAL_SAC_BATCH_SIZE = 1024
 GOAL_SAC_BUFFER_SIZE = 500_000
