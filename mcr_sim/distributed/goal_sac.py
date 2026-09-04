@@ -182,12 +182,15 @@ class GoalConditionedSAC(SAC):
                 self.ent_coef_optimizer.step()
                 with th.no_grad():
                     self.log_ent_coef.clamp_(min=math.log(1e-4))
-                metric_sums[3].add_(ent_coef_loss.detach())
+                metric_sums[3].add_(ent_coef_loss.detach().reshape(()))
                 metric_counts[3].add_(1.0)
                 ent_coef = th.exp(self.log_ent_coef.detach())
             else:
                 ent_coef = self.ent_coef_tensor
-            metric_sums[2].add_(ent_coef.detach())
+            # torch-npu does not allow inplace broadcasting from [1] into a
+            # scalar tensor view.  Normalize all diagnostic values to true
+            # zero-dimensional tensors before accumulating them.
+            metric_sums[2].add_(ent_coef.detach().reshape(()))
             metric_counts[2].add_(1.0)
 
             with th.no_grad():
@@ -220,7 +223,7 @@ class GoalConditionedSAC(SAC):
             critic_loss.backward()
             self._reduce_gradients(self.critic.optimizer.param_groups[0]["params"])
             self.critic.optimizer.step()
-            metric_sums[1].add_(critic_loss.detach())
+            metric_sums[1].add_(critic_loss.detach().reshape(()))
             metric_sums[4].add_(q_stack.detach().mean())
             metric_sums[5].add_(q_stack.detach().std(dim=1, unbiased=False).mean())
             metric_sums[6].add_(target_q.detach().mean())
@@ -244,7 +247,7 @@ class GoalConditionedSAC(SAC):
                     actor_loss.backward()
                     self._reduce_gradients(self.actor.parameters())
                     self.actor.optimizer.step()
-                    metric_sums[0].add_(actor_loss.detach())
+                    metric_sums[0].add_(actor_loss.detach().reshape(()))
                     metric_counts[0].add_(1.0)
                     actor_update_count += 1
                 finally:
