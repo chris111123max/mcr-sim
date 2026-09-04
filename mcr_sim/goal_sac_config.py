@@ -30,7 +30,10 @@ GOAL_SAC_SAFETY_WEIGHT = 0.0005
 GOAL_SAC_FAILURE_TERMINAL_PENALTY = 10.0
 GOAL_SAC_CRITIC_ENSEMBLE_SIZE = 10
 GOAL_SAC_TARGET_CRITIC_SUBSET_SIZE = 2
-GOAL_SAC_UTD_RATIO = 10
+# With 32 vector environments and a 1024-sample minibatch, UTD=10 repeats far
+# too much optimization on the earliest replay data.  A 1 -> 2 warmup keeps
+# the ten-Q ensemble useful without collapsing entropy or dominating rollout.
+GOAL_SAC_UTD_RATIO = 2
 GOAL_SAC_UTD_WARMUP_STEPS = 50_000
 GOAL_SAC_ACTOR_UPDATE_INTERVAL = 2
 GOAL_SAC_CRITIC_LAYER_NORM = True
