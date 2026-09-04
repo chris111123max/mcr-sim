@@ -9,12 +9,14 @@ from .npu_performance import (
 )
 from .replay_buffer import AcceleratorReplayBuffer
 from .sac import DistributedSAC
+from .goal_sac import GoalConditionedSAC
 from .ppo import DistributedPPO
 
 __all__ = [
     "DeviceSelection",
     "DistributedContext",
     "DistributedSAC",
+    "GoalConditionedSAC",
     "DistributedPPO",
     "AcceleratorReplayBuffer",
     "configure_npu_execution",
