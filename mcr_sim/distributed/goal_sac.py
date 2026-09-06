@@ -46,6 +46,7 @@ class GoalConditionedSAC(SAC):
         actor_update_interval: int = 2,
         critic_layer_norm: bool = True,
         metric_log_interval: int = 64,
+        min_ent_coef: float = 0.02,
         **kwargs,
     ):
         self.distributed_context = distributed_context
@@ -58,6 +59,7 @@ class GoalConditionedSAC(SAC):
         self.actor_update_interval = max(1, int(actor_update_interval))
         self.critic_layer_norm = bool(critic_layer_norm)
         self.metric_log_interval = max(1, int(metric_log_interval))
+        self.min_ent_coef = max(1e-6, float(min_ent_coef))
         super().__init__(*args, **kwargs)
         self._build_critic_ensemble()
 
@@ -181,7 +183,7 @@ class GoalConditionedSAC(SAC):
                 self._reduce_gradients([self.log_ent_coef])
                 self.ent_coef_optimizer.step()
                 with th.no_grad():
-                    self.log_ent_coef.clamp_(min=math.log(1e-4))
+                    self.log_ent_coef.clamp_(min=math.log(self.min_ent_coef))
                 metric_sums[3].add_(ent_coef_loss.detach().reshape(()))
                 metric_counts[3].add_(1.0)
                 ent_coef = th.exp(self.log_ent_coef.detach())
@@ -284,9 +286,18 @@ class GoalConditionedSAC(SAC):
             stats = getattr(self.replay_buffer, "her_stats", {})
             if stats:
                 samples = max(1, int(stats.get("samples", 0)))
+                her_samples = max(1, int(stats.get("her_samples", 0)))
                 self.logger.record("replay/her_fraction", float(stats.get("her_samples", 0)) / samples)
+                self.logger.record(
+                    "replay/her_success_fraction",
+                    float(stats.get("her_successes", 0)) / her_samples,
+                )
                 self.logger.record("replay/safe_candidates", float(stats.get("safe_candidates", 0)))
                 self.logger.record("replay/rejected_candidates", float(stats.get("rejected_candidates", 0)))
+                self.logger.record(
+                    "replay/insufficient_progress_candidates",
+                    float(stats.get("insufficient_progress_candidates", 0)),
+                )
 
     def _get_torch_save_params(self):
         names, state_dicts = super()._get_torch_save_params()

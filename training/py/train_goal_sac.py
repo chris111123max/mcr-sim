@@ -47,6 +47,8 @@ from mcr_sim.training_config import (
     TARGET_WINDOW_DISTANCE_M,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
+    TRAINING_CURRICULUM_ENABLED,
+    curriculum_protocol_profile,
 )
 from training.py.train_sac import build_env
 
@@ -76,6 +78,11 @@ def parse_args():
     parser.add_argument("--her-ratio", type=float, default=GOAL_SAC_HER_RATIO)
     parser.add_argument("--her-safe-margin-mm", type=float, default=GOAL_SAC_HER_SAFE_MARGIN_M * 1000.0)
     parser.add_argument("--goal-tolerance", type=float, default=GOAL_SAC_GOAL_TOLERANCE)
+    parser.add_argument(
+        "--her-min-goal-advance",
+        type=float,
+        default=GOAL_SAC_HER_MIN_GOAL_ADVANCE,
+    )
     parser.add_argument("--goal-step-cost", type=float, default=GOAL_SAC_STEP_COST)
     parser.add_argument("--goal-safety-weight", type=float, default=GOAL_SAC_SAFETY_WEIGHT)
     parser.add_argument(
@@ -88,6 +95,7 @@ def parse_args():
     parser.add_argument("--utd-ratio", type=int, default=GOAL_SAC_UTD_RATIO)
     parser.add_argument("--utd-warmup-steps", type=int, default=GOAL_SAC_UTD_WARMUP_STEPS)
     parser.add_argument("--actor-update-interval", type=int, default=GOAL_SAC_ACTOR_UPDATE_INTERVAL)
+    parser.add_argument("--min-ent-coef", type=float, default=GOAL_SAC_MIN_ENT_COEF)
     parser.add_argument("--metric-log-interval", type=int, default=GOAL_SAC_METRIC_LOG_INTERVAL)
     parser.add_argument(
         "--performance-log-interval-steps",
@@ -95,6 +103,14 @@ def parse_args():
         default=GOAL_SAC_PERFORMANCE_LOG_INTERVAL_STEPS,
     )
     parser.add_argument("--no-critic-layer-norm", action="store_true")
+    curriculum = parser.add_mutually_exclusive_group()
+    curriculum.add_argument(
+        "--training-curriculum", dest="training_curriculum", action="store_true"
+    )
+    curriculum.add_argument(
+        "--no-training-curriculum", dest="training_curriculum", action="store_false"
+    )
+    parser.set_defaults(training_curriculum=TRAINING_CURRICULUM_ENABLED)
     parser.add_argument("--randomize-start-target", action="store_true", default=True)
     parser.add_argument("--no-randomize-start-target", dest="randomize_start_target", action="store_false")
     parser.add_argument("--randomize-initial-orientation", action="store_true", default=True)
@@ -139,7 +155,8 @@ def _baseline_args(args, context):
         initial_orientation_max_angle_deg=args.initial_orientation_max_angle_deg,
         entry_tangent_points=args.entry_tangent_points,
         soft_randomize_single_vessel=True, vessel_scale_min=args.vessel_scale_min,
-        vessel_scale_max=args.vessel_scale_max, training_curriculum=False,
+        vessel_scale_max=args.vessel_scale_max,
+        training_curriculum=args.training_curriculum,
         scene_verbose=False, force_model=args.force_model, asset_root="",
         time_step=args.time_step, frame_skip=args.frame_skip,
         settle_steps=args.settle_steps, target_threshold=args.target_threshold,
@@ -174,6 +191,7 @@ def main():
     args.algorithm = "goal_sac"
     args.goal_sac = True
     args.goal_conditioning = "route_completion_scalar"
+    args.curriculum_protocol = curriculum_protocol_profile()
     args.reward_profile = {
         "version": "goal_sparse_v2",
         "goal_reward": f"-{args.goal_step_cost:g} until achieved, 0 when achieved",
@@ -182,6 +200,7 @@ def main():
         "failure_terminal_penalty": args.goal_failure_terminal_penalty,
         "failure_horizon_compensation": True,
         "her": "safe_future",
+        "her_min_goal_advance": args.her_min_goal_advance,
         "original_her_ratio": [1.0 - args.her_ratio, args.her_ratio],
     }
     args.goal_sac_config = {
@@ -190,6 +209,7 @@ def main():
         "utd_ratio": args.utd_ratio,
         "utd_warmup_steps": args.utd_warmup_steps,
         "actor_update_interval": args.actor_update_interval,
+        "min_ent_coef": args.min_ent_coef,
         "metric_log_interval": args.metric_log_interval,
         "performance_log_interval_steps": args.performance_log_interval_steps,
         "critic_layer_norm": not args.no_critic_layer_norm,
@@ -227,6 +247,7 @@ def main():
                 her_ratio=args.her_ratio,
                 her_safe_margin_m=args.her_safe_margin_mm / 1000.0,
                 goal_tolerance=args.goal_tolerance,
+                min_goal_advance=args.her_min_goal_advance,
                 step_cost=args.goal_step_cost,
             ), tensorboard_log=str(tb_dir) if context.is_main else None,
             seed=args.seed + context.rank, device=args.resolved_device,
@@ -237,6 +258,7 @@ def main():
             actor_update_interval=args.actor_update_interval,
             critic_layer_norm=not args.no_critic_layer_norm,
             metric_log_interval=args.metric_log_interval,
+            min_ent_coef=args.min_ent_coef,
         )
         if context.enabled:
             model.synchronize_parameters()
@@ -295,7 +317,7 @@ def main():
             validation_min_train_success_rate=args.valid_min_train_success_rate,
             validation_fn=None if args.skip_validation else run_validation,
             resume_progress=False,
-            training_curriculum_enabled=False,
+            training_curriculum_enabled=args.training_curriculum,
             performance_log_interval_steps=args.performance_log_interval_steps,
         )
         print(
@@ -304,7 +326,9 @@ def main():
             f"batch={args.batch_size}/{local_batch} q_ensemble={args.critic_ensemble_size} "
             f"critic_modules={model._critic_module_count} "
             f"target_subset={args.target_critic_subset_size} utd={args.utd_ratio} "
-            f"her={args.her_ratio:.2f} output={run_dir}"
+            f"her={args.her_ratio:.2f} her_min_advance={args.her_min_goal_advance:.3f} "
+            f"min_ent_coef={args.min_ent_coef:.3f} "
+            f"curriculum={'on' if args.training_curriculum else 'off'} output={run_dir}"
         )
         model.learn(total_timesteps=local_timesteps, callback=callback, reset_num_timesteps=True)
         context.barrier()

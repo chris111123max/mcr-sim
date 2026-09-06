@@ -264,7 +264,7 @@ class EpochExperimentCallback(BaseCallback):
             if log_std is not None:
                 with th.no_grad():
                     log_std.clamp_(min=float(np.log(floor)))
-        elif self.algorithm_name == "sac":
+        elif self.algorithm_name in {"sac", "goal_sac"}:
             floor = float(profile["sac_min_ent_coef"])
             self.model.min_ent_coef = floor
             log_ent_coef = getattr(self.model, "log_ent_coef", None)

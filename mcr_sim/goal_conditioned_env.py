@@ -7,6 +7,7 @@ boundary and stores enough episode metadata to perform safe future HER.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from typing import Any, Dict, Optional
 
 import numpy as np
@@ -145,6 +146,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         her_ratio: float = 0.5,
         her_safe_margin_m: float = 0.0005,
         goal_tolerance: float = 0.01,
+        min_goal_advance: float = 0.02,
         future_short_fraction: float = 0.25,
         future_medium_fraction: float = 0.35,
         step_cost: float = 0.01,
@@ -155,6 +157,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         self.original_ratio = 1.0 - self.her_ratio
         self.her_safe_margin_m = float(max(0.0, her_safe_margin_m))
         self.goal_tolerance = float(max(1e-6, goal_tolerance))
+        self.min_goal_advance = float(max(self.goal_tolerance, min_goal_advance))
         self.future_short_fraction = float(np.clip(future_short_fraction, 0.0, 1.0))
         self.future_medium_fraction = float(np.clip(future_medium_fraction, 0.0, 1.0))
         self.step_cost = float(max(0.0, step_cost))
@@ -165,21 +168,23 @@ class SafeHerReplayBuffer(ReplayBuffer):
         self._episode_id = np.zeros(self.n_envs, dtype=np.int64)
         self._episode_step = np.zeros(self.n_envs, dtype=np.int64)
         self._episode_safe = np.ones(self.n_envs, dtype=np.bool_)
-        # (env, episode) -> [first_safe_step, chronological replay slots].
-        # This removes the old O(buffer_size) scan for every relabelled row.
-        # Safe HER accepts only a contiguous safe prefix, so step-to-list
-        # offsets remain exact and future sampling is O(1).
-        self._safe_episode_slots = {}
+        # (env, episode) -> [steps, replay slots, monotonically increasing
+        # achieved progresses].  Only genuine progress milestones are indexed:
+        # a later timestamp at the same position must never become a HER goal.
+        self._safe_episode_milestones = {}
+        self._milestone_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.safety_penalties = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.success_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.her_stats = {
             "samples": 0,
             "her_samples": 0,
+            "her_successes": 0,
             "safe_candidates": 0,
             "rejected_candidates": 0,
             "future_short": 0,
             "future_medium": 0,
             "future_far": 0,
+            "insufficient_progress_candidates": 0,
         }
 
     @staticmethod
@@ -194,23 +199,22 @@ class SafeHerReplayBuffer(ReplayBuffer):
         slot = int(self.pos)
         infos = list(infos or [{} for _ in range(self.n_envs)])
         for env_index in range(self.n_envs):
-            if self.full and self.safe_flags[slot, env_index]:
+            if self.full and self._milestone_flags[slot, env_index]:
                 old_key = (env_index, int(self.episode_ids[slot, env_index]))
-                old_entry = self._safe_episode_slots.get(old_key)
+                old_entry = self._safe_episode_milestones.get(old_key)
                 if old_entry is not None:
-                    old_slots = old_entry[1]
-                    if old_slots and old_slots[0] == slot:
-                        old_slots.pop(0)
-                        old_entry[0] += 1
-                    else:
-                        # Defensive fallback for a replay restored or altered
-                        # outside the normal chronological add path.
-                        try:
-                            old_slots.remove(slot)
-                        except ValueError:
-                            pass
-                    if not old_slots:
-                        self._safe_episode_slots.pop(old_key, None)
+                    steps, slots, progresses = old_entry
+                    try:
+                        old_position = slots.index(slot)
+                    except ValueError:
+                        old_position = -1
+                    if old_position >= 0:
+                        steps.pop(old_position)
+                        slots.pop(old_position)
+                        progresses.pop(old_position)
+                    if not slots:
+                        self._safe_episode_milestones.pop(old_key, None)
+            self._milestone_flags[slot, env_index] = False
             info = dict(infos[env_index] or {})
             self.achieved_goals[slot, env_index, 0] = np.clip(
                 self._info_float(info, "achieved_goal", self._info_float(info, "route_progress_ratio")), 0.0, 1.0
@@ -232,11 +236,18 @@ class SafeHerReplayBuffer(ReplayBuffer):
             self.episode_steps[slot, env_index] = self._episode_step[env_index]
             if self.safe_flags[slot, env_index]:
                 key = (env_index, int(self._episode_id[env_index]))
-                entry = self._safe_episode_slots.get(key)
+                entry = self._safe_episode_milestones.get(key)
                 if entry is None:
-                    entry = [int(self._episode_step[env_index]), []]
-                    self._safe_episode_slots[key] = entry
-                entry[1].append(slot)
+                    entry = [[], [], []]
+                    self._safe_episode_milestones[key] = entry
+                progress = float(self.achieved_goals[slot, env_index, 0])
+                # A tiny epsilon removes identical/stalled frames while the
+                # stronger min_goal_advance filter is applied at sampling.
+                if not entry[2] or progress > entry[2][-1] + 1e-6:
+                    entry[0].append(int(self._episode_step[env_index]))
+                    entry[1].append(slot)
+                    entry[2].append(progress)
+                    self._milestone_flags[slot, env_index] = True
             self._episode_step[env_index] += 1
             if bool(np.asarray(done).reshape(-1)[env_index]):
                 self._episode_id[env_index] += 1
@@ -244,16 +255,32 @@ class SafeHerReplayBuffer(ReplayBuffer):
                 self._episode_safe[env_index] = True
         super().add(obs, next_obs, action, reward, done, infos)
 
-    def _sample_future_goal(self, env_index: int, episode_id: int, current_step: int):
-        entry = self._safe_episode_slots.get((env_index, episode_id))
+    def _sample_future_goal(
+        self,
+        env_index: int,
+        episode_id: int,
+        current_step: int,
+    ):
+        entry = self._safe_episode_milestones.get((env_index, episode_id))
         if entry is None:
             self.her_stats["rejected_candidates"] += 1
             return None
-        first_step, slots = entry
-        start = max(0, int(current_step) + 1 - int(first_step))
+        steps, slots, progresses = entry
+        # Future strategy is inclusive of the sampled transition.  This lets
+        # the transition that genuinely reaches a milestone provide HER's
+        # sparse success sample.  Later stalled frames are absent from the
+        # milestone index and therefore cannot repeat that success.
+        time_start = bisect_left(steps, int(current_step))
+        episode_start_progress = progresses[0]
+        progress_start = bisect_left(
+            progresses,
+            episode_start_progress + self.min_goal_advance - 1e-6,
+        )
+        start = max(time_start, progress_start)
         candidate_count = len(slots) - start
         if candidate_count <= 0:
             self.her_stats["rejected_candidates"] += 1
+            self.her_stats["insufficient_progress_candidates"] += 1
             return None
         self.her_stats["safe_candidates"] += int(candidate_count)
         # Short/medium/far future mixture; far candidates are biased toward the
@@ -271,8 +298,8 @@ class SafeHerReplayBuffer(ReplayBuffer):
             low = start + candidate_count - max(1, int(np.ceil(candidate_count * 0.50)))
             high = start + candidate_count
             self.her_stats["future_far"] += 1
-        index = int(slots[int(np.random.randint(low, high))])
-        return float(self.achieved_goals[index, env_index, 0])
+        position = int(np.random.randint(low, high))
+        return float(progresses[position])
 
     def _sparse_reward(self, next_achieved, goal, safety_penalty):
         reached = bool(float(next_achieved) + self.goal_tolerance >= float(goal))
@@ -309,7 +336,11 @@ class SafeHerReplayBuffer(ReplayBuffer):
             rewards[row] = self._sparse_reward(
                 next_achieved, desired_goals[row], self.safety_penalties[current, env_index]
             )
-            dones[row] = float(next_achieved + self.goal_tolerance >= desired_goals[row])
+            her_success = bool(
+                next_achieved + self.goal_tolerance >= desired_goals[row]
+            )
+            dones[row] = float(her_success)
+            self.her_stats["her_successes"] += int(her_success)
         observations[:, -1] = desired_goals
         next_observations[:, -1] = desired_goals
         # Original-goal rows retain the sparse reward stored by the wrapper,
