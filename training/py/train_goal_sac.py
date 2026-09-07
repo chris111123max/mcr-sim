@@ -84,6 +84,8 @@ def parse_args():
         default=GOAL_SAC_HER_MIN_GOAL_ADVANCE,
     )
     parser.add_argument("--goal-step-cost", type=float, default=GOAL_SAC_STEP_COST)
+    parser.add_argument("--goal-potential-scale", type=float, default=GOAL_SAC_POTENTIAL_SCALE)
+    parser.add_argument("--goal-success-bonus", type=float, default=GOAL_SAC_SUCCESS_BONUS)
     parser.add_argument("--goal-safety-weight", type=float, default=GOAL_SAC_SAFETY_WEIGHT)
     parser.add_argument(
         "--goal-failure-terminal-penalty",
@@ -102,7 +104,7 @@ def parse_args():
         type=int,
         default=GOAL_SAC_PERFORMANCE_LOG_INTERVAL_STEPS,
     )
-    parser.add_argument("--no-critic-layer-norm", action="store_true")
+    parser.add_argument("--no-critic-layer-norm", action="store_true", default=True)
     curriculum = parser.add_mutually_exclusive_group()
     curriculum.add_argument(
         "--training-curriculum", dest="training_curriculum", action="store_true"
@@ -190,15 +192,19 @@ def main():
     args.resolved_device = context.device.resolved
     args.algorithm = "goal_sac"
     args.goal_sac = True
-    args.goal_conditioning = "route_completion_scalar"
+    args.goal_conditioning = "route_context_achieved_desired_v3_obs47"
     args.curriculum_protocol = curriculum_protocol_profile()
     args.reward_profile = {
-        "version": "goal_sparse_v2",
-        "goal_reward": f"-{args.goal_step_cost:g} until achieved, 0 when achieved",
-        "dense_route_progress": False,
+        "version": "goal_potential_v3",
+        "goal_reward": "base + gamma*Phi(next)-Phi(previous); terminal Phi=0",
+        "dense_route_progress": True,
+        "potential_scale": args.goal_potential_scale,
+        "success_bonus": args.goal_success_bonus,
+        "gamma": args.gamma,
         "safety_weight": args.goal_safety_weight,
         "failure_terminal_penalty": args.goal_failure_terminal_penalty,
-        "failure_horizon_compensation": True,
+        "failure_horizon_compensation": False,
+        "timeout_bootstrap": False,
         "her": "safe_future",
         "her_min_goal_advance": args.her_min_goal_advance,
         "original_her_ratio": [1.0 - args.her_ratio, args.her_ratio],
@@ -229,12 +235,15 @@ def main():
     context.barrier()
     start_run_log_capture(log_dir, context.rank)
     env = None
+    reward_kwargs = dict(
+        step_cost=args.goal_step_cost, gamma=args.gamma,
+        potential_scale=args.goal_potential_scale, success_bonus=args.goal_success_bonus,
+        failure_terminal_penalty=args.goal_failure_terminal_penalty)
     try:
         env = GoalConditionedVecEnv(
             build_env(_baseline_args(args, context)),
-            step_cost=args.goal_step_cost,
+            **reward_kwargs,
             safety_weight=args.goal_safety_weight,
-            failure_terminal_penalty=args.goal_failure_terminal_penalty,
             max_episode_steps=args.max_episode_steps,
         )
         model = GoalConditionedSAC(
@@ -248,7 +257,7 @@ def main():
                 her_safe_margin_m=args.her_safe_margin_mm / 1000.0,
                 goal_tolerance=args.goal_tolerance,
                 min_goal_advance=args.her_min_goal_advance,
-                step_cost=args.goal_step_cost,
+                **reward_kwargs,
             ), tensorboard_log=str(tb_dir) if context.is_main else None,
             seed=args.seed + context.rank, device=args.resolved_device,
             verbose=1 if context.is_main else 0, distributed_context=context,
@@ -285,11 +294,11 @@ def main():
                 valid_args.local_n_envs = 1
                 valid_args.n_envs = 1
                 valid_args.render = "headless"
+                valid_args.training_curriculum = False
                 return GoalConditionedVecEnv(
                     build_env(valid_args),
-                    step_cost=args.goal_step_cost,
+                    **reward_kwargs,
                     safety_weight=args.goal_safety_weight,
-                    failure_terminal_penalty=args.goal_failure_terminal_penalty,
                     max_episode_steps=args.max_episode_steps,
                 )
 

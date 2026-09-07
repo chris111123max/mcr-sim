@@ -3,6 +3,8 @@
 本文件记录 B01..B05、C01..C05 人工血管对应的训练参数。唯一配置源是
 `mcr_sim/training_config.py`；训练脚本、SOFA 场景和 Web 预检均从该文件取默认值。
 
+例外：独立 Goal-SAC 使用 `mcr_sim/goal_sac_config.py`；v3 的双 Q、47 维目标观测、奖励与启动说明见 [GOAL_SAC_V3.md](GOAL_SAC_V3.md)，不使用下文 baseline reward 默认值。
+
 ## 血管与导管尺寸包络
 
 生成器中的长度单位转换为 SOFA 米制单位后，十条血管的有效范围为：

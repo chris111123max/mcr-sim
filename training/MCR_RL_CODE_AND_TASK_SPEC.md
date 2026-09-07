@@ -161,12 +161,12 @@ episode 在成功、确认出血管或 non-finite 时终止；达到 2048 step �
 当前还新增了一条与 V11 baseline 隔离的实验路线：
 `training/py/train_goal_sac.py` + `training/sh/run_train_goal_sac.sh`。
 
-它复用 SOFA、血管资产、route tracking、SDF 和原环境控制动作，但不修改 `MCREnv`、Reward V11 或原 PPO/LSTM-PPO/SAC 入口。新增路线在向量观测末尾附加一个 desired goal 标量：真实任务为路线完成度 `1.0`，HER 在 replay 内改成同一安全轨迹未来的中间路线目标。
+它复用 SOFA、血管资产、route tracking、SDF 和原环境控制动作，不修改 `MCREnv`、Reward V11 或原 PPO/LSTM-PPO/SAC 入口。Goal-SAC v3 使用 47 维观测：45 维基础状态中 index 9 重算为目标剩余路线比例，末尾附加 achieved/desired goal。真实目标恒为 `1.0`，成功仍要求原环境的物理到达条件；HER 使用同一安全轨迹上的内部路线目标。
 
-新路线的 reward 是独立的 sparse goal reward：未达到目标为 `-1`，达到为 `0`，另加很小的 surface-clearance/wrong-branch safety 项；不使用 V11 dense route-progress、waypoint 或 no-progress reward。Safe HER 只接受正确路线、有效投影、未出血管且表面 clearance 达到安全 margin 的连续安全前缀状态，原始目标与 HER 样本默认 50:50。
+奖励使用共享 `GoalReward`：普通步 `-0.01`、成功 `+10`、失败（包括 horizon）`-20`，加 `gamma*Phi(next)-Phi(previous)` 与小安全代价；`Phi=-5*max(goal-achieved,0)`，终止势能为零。真实和 HER 使用相同函数，不再补扣剩余步数。此版本不再是纯 sparse reward。Safe HER 保留连续安全前缀过滤，去掉相对 episode 首个保留样本的 2% 门槛，改为目标不能在当前 transition 开始前就被达到。申请 HER 比例为 50%，实际比例由安全候选决定，不能假设始终 50:50。
 
-Goal-SAC 默认使用 10 个 twin-critic 模块、随机抽取 2 个 target critic、critic LayerNorm、critic-heavy UTD=10（带 warm-up）和较低频率 actor update。新实验的配置、模型和日志仍写入独立的 `training_runs/<exp_name>_<timestamp>/` 目录。
+默认标准双 Q，无输入 LayerNorm，actor/target 均取 min(Q1,Q2)。32 环境、batch 1024、每 vector step 更新 1→2 次，actor 每次更新，300 epoch。详细参数、验证命令与已知边界见 [GOAL_SAC_V3.md](GOAL_SAC_V3.md)。日志仍保存至独立 `training_runs/<exp_name>_<timestamp>/`。
 
 训练结束后新入口可调用公共 validation evaluator 对 `V01～V05` 做独立 deterministic 评估；缺失验证资产或单次验证异常只写入 `[VALID][ERROR]`，不会改变已完成的训练结果。用 `--skip-validation` 可显式跳过。
 
-建议先做以下消融顺序：Sparse SAC → Sparse SAC + HER → Sparse SAC + Safe HER → 加入 ensemble/UTD；否则无法判断提升来自稀疏目标、HER 还是 critic 优化。
+新旧观测/奖励不兼容，应从头训练。不能用负回报或低 alpha 单独判断失败：应结合真实物理成功率、当前窗口 HER 比例、策略熵和各血管结果。该实现修复不代表已经验证了 SOFA 中的收敛效果。

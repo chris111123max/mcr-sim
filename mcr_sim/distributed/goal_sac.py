@@ -1,16 +1,8 @@
-"""Goal-conditioned SAC with Safe-HER replay and a critic ensemble.
-
-This module is deliberately separate from ``distributed.sac.DistributedSAC``.
-It keeps the baseline SAC implementation untouched while adding randomized
-target subsets, LayerNorm inputs, critic-heavy UTD, and optional HCCL gradient
-averaging for the new goal-conditioned experiment.
-"""
+"""Isolated twin-Q Goal-SAC with Safe HER and optional gradient averaging."""
 
 from __future__ import annotations
 
-import copy
 import math
-import random
 from typing import Optional
 
 import torch as th
@@ -25,26 +17,18 @@ from .npu_performance import zero_optimizer_grad
 
 
 class GoalConditionedSAC(SAC):
-    """SAC variant for flat ``state + desired_goal`` observations.
-
-    ``critic_ensemble_size`` is the number of individual Q functions.  SB3's
-    SAC critic contains two Q functions per module, so a ten-Q ensemble uses
-    five modules (not ten twin modules / twenty Q functions).  The target uses
-    the minimum of a fresh random Q subset, while the actor uses the mean over
-    all Q functions.  This is intentionally implemented without changing the
-    baseline SAC class.
-    """
+    """Twin-Q baseline. Both actor and bootstrap use min(Q1, Q2)."""
 
     def __init__(
         self,
         *args,
         distributed_context: Optional[DistributedContext] = None,
-        critic_ensemble_size: int = 10,
+        critic_ensemble_size: int = 2,
         target_critic_subset_size: int = 2,
-        utd_ratio: int = 10,
+        utd_ratio: int = 2,
         utd_warmup_steps: int = 50_000,
-        actor_update_interval: int = 2,
-        critic_layer_norm: bool = True,
+        actor_update_interval: int = 1,
+        critic_layer_norm: bool = False,
         metric_log_interval: int = 64,
         min_ent_coef: float = 0.02,
         **kwargs,
@@ -60,7 +44,18 @@ class GoalConditionedSAC(SAC):
         self.critic_layer_norm = bool(critic_layer_norm)
         self.metric_log_interval = max(1, int(metric_log_interval))
         self.min_ent_coef = max(1e-6, float(min_ent_coef))
+        if critic_ensemble_size != 2 or target_critic_subset_size != 2 or critic_layer_norm:
+            raise ValueError("Goal-SAC v3 uses twin Q, both targets, and no input LayerNorm")
         super().__init__(*args, **kwargs)
+
+    def _setup_model(self):
+        super()._setup_model()
+        contract = getattr(self.replay_buffer, "reward_contract", None)
+        if contract is not None and not math.isclose(contract.gamma, self.gamma):
+            raise ValueError("HER reward gamma must equal SAC gamma")
+        env_contract = getattr(self.env, "reward_contract", None)
+        if env_contract is not None and contract != env_contract:
+            raise ValueError("Rollout and HER must use identical reward contracts")
         self._build_critic_ensemble()
 
     def set_distributed_context(self, context: DistributedContext) -> None:
@@ -85,28 +80,18 @@ class GoalConditionedSAC(SAC):
     def _build_critic_ensemble(self) -> None:
         base = self.critic
         targets = self.critic_target
-        self._q_heads_per_module = max(1, len(base.q_networks))
-        self._critic_module_count = int(
-            math.ceil(self.critic_ensemble_size / self._q_heads_per_module)
-        )
+        self._q_heads_per_module = len(base.q_networks)
+        if self._q_heads_per_module != 2:
+            raise ValueError("Goal-SAC requires policy_kwargs n_critics=2")
+        self._critic_module_count = 1
         self.critic_ensemble = nn.ModuleList([base])
         self.critic_target_ensemble = nn.ModuleList([targets])
-        for _ in range(1, self._critic_module_count):
-            self.critic_ensemble.append(copy.deepcopy(base))
-            self.critic_target_ensemble.append(copy.deepcopy(targets))
-        obs_dim = int(self.observation_space.shape[0])
-        self.critic_input_norms = nn.ModuleList(
-            [nn.LayerNorm(obs_dim).to(self.device) for _ in range(self._critic_module_count)]
-        ) if self.critic_layer_norm else nn.ModuleList()
+        self.critic_input_norms = nn.ModuleList()
         # Keep SB3 aliases pointing at the first member for compatibility with
         # callbacks and model metadata.
         self.critic = self.critic_ensemble[0]
         self.critic_target = self.critic_target_ensemble[0]
-        lr = float(self.lr_schedule(1.0))
-        critic_parameters = list(self.critic_ensemble.parameters()) + list(
-            self.critic_input_norms.parameters()
-        )
-        self.critic.optimizer = th.optim.Adam(critic_parameters, lr=lr)
+        # Retain SB3's optimizer and policy optimizer kwargs for the twin Q.
         for critic in self.critic_target_ensemble:
             critic.set_training_mode(False)
             for parameter in critic.parameters():
@@ -115,8 +100,6 @@ class GoalConditionedSAC(SAC):
         self._goal_sac_actor_updates = 0
 
     def _critic_obs(self, index: int, observations):
-        if self.critic_layer_norm:
-            return self.critic_input_norms[index](observations)
         return observations
 
     def _reduce_gradients(self, parameters) -> None:
@@ -165,7 +148,7 @@ class GoalConditionedSAC(SAC):
         if self.ent_coef_optimizer is not None:
             optimizers.append(self.ent_coef_optimizer)
         self._update_learning_rate(optimizers)
-        metric_sums = th.zeros(8, dtype=th.float32, device=self.device)
+        metric_sums = th.zeros(9, dtype=th.float32, device=self.device)
         metric_counts = th.zeros(4, dtype=th.float32, device=self.device)
         actor_update_count = 0
         for update_index in range(int(gradient_steps)):
@@ -174,6 +157,7 @@ class GoalConditionedSAC(SAC):
                 self.actor.reset_noise()
             actions_pi, log_prob = self.actor.action_log_prob(replay_data.observations)
             log_prob = log_prob.reshape(-1, 1)
+            metric_sums[8].add_(-log_prob.detach().mean())
             if self.ent_coef_optimizer is not None and self.log_ent_coef is not None:
                 ent_coef_loss = -(
                     self.log_ent_coef * (log_prob + self.target_entropy).detach()
@@ -199,17 +183,7 @@ class GoalConditionedSAC(SAC):
                 next_actions, next_log_prob = self.actor.action_log_prob(
                     replay_data.next_observations
                 )
-                subset = random.sample(range(self.critic_ensemble_size), self.target_critic_subset_size)
-                required_modules = sorted({index // self._q_heads_per_module for index in subset})
-                module_values = {}
-                for module_index in required_modules:
-                    module_values[module_index] = self.critic_target_ensemble[module_index](
-                        self._critic_obs(module_index, replay_data.next_observations), next_actions
-                    )
-                target_values = [
-                    module_values[index // self._q_heads_per_module][index % self._q_heads_per_module]
-                    for index in subset
-                ]
+                target_values = self.critic_target(replay_data.next_observations, next_actions)
                 next_q = th.cat(target_values, dim=1).min(dim=1, keepdim=True).values
                 target_q = replay_data.rewards + (1.0 - replay_data.dones) * self.gamma * (
                     next_q - ent_coef * next_log_prob.reshape(-1, 1)
@@ -232,7 +206,7 @@ class GoalConditionedSAC(SAC):
             metric_sums[7].add_((q_stack.detach().mean(dim=1, keepdim=True) - target_q).abs().mean())
             metric_counts[1].add_(1.0)
 
-            if update_index % self.actor_update_interval == 0:
+            if (self._n_updates + update_index) % self.actor_update_interval == 0:
                 critic_states = [p.requires_grad for p in self.critic_ensemble.parameters()]
                 norm_states = [p.requires_grad for p in self.critic_input_norms.parameters()]
                 for parameter in self.critic_ensemble.parameters():
@@ -243,8 +217,8 @@ class GoalConditionedSAC(SAC):
                     q_values = self._flat_q_values(
                         self.critic_ensemble, replay_data.observations, actions_pi
                     )
-                    mean_q = th.cat(q_values, dim=1).mean(dim=1, keepdim=True)
-                    actor_loss = (ent_coef * log_prob - mean_q).mean()
+                    min_q = th.cat(q_values, dim=1).min(dim=1, keepdim=True).values
+                    actor_loss = (ent_coef * log_prob - min_q).mean()
                     zero_optimizer_grad(self.actor.optimizer)
                     actor_loss.backward()
                     self._reduce_gradients(self.actor.parameters())
@@ -258,7 +232,7 @@ class GoalConditionedSAC(SAC):
                     for parameter, state in zip(self.critic_input_norms.parameters(), norm_states):
                         parameter.requires_grad_(state)
 
-            if update_index % self.target_update_interval == 0:
+            if (self._n_updates + update_index) % self.target_update_interval == 0:
                 for critic, target in zip(self.critic_ensemble, self.critic_target_ensemble):
                     polyak_update(critic.parameters(), target.parameters(), self.tau)
         self._goal_sac_n_updates += int(gradient_steps)
@@ -269,7 +243,7 @@ class GoalConditionedSAC(SAC):
         self.logger.record("train/goal_sac_actor_updates", float(actor_update_count))
         denominators = th.stack(
             [metric_counts[0], metric_counts[1], metric_counts[2], metric_counts[3],
-             metric_counts[1], metric_counts[1], metric_counts[1], metric_counts[1]]
+             metric_counts[1], metric_counts[1], metric_counts[1], metric_counts[1], metric_counts[1]]
         ).clamp_min_(1.0)
         local_metrics = metric_sums / denominators
         context = self.distributed_context
@@ -279,11 +253,12 @@ class GoalConditionedSAC(SAC):
         if values is not None:
             names = (
                 "actor_loss", "critic_loss", "ent_coef", "ent_coef_loss",
-                "q_mean", "q_ensemble_std", "target_q_mean", "td_error_abs",
+                "q_mean", "q_ensemble_std", "target_q_mean", "td_error_abs", "policy_entropy",
             )
             for name, value in zip(names, values):
                 self.logger.record(f"train/{name}", float(value))
-            stats = getattr(self.replay_buffer, "her_stats", {})
+            stats = self.replay_buffer.pop_window_stats() if hasattr(
+                self.replay_buffer, "pop_window_stats") else {}
             if stats:
                 samples = max(1, int(stats.get("samples", 0)))
                 her_samples = max(1, int(stats.get("her_samples", 0)))
@@ -303,5 +278,9 @@ class GoalConditionedSAC(SAC):
         names, state_dicts = super()._get_torch_save_params()
         return (
             list(dict.fromkeys(names + ["critic_ensemble", "critic_target_ensemble", "critic_input_norms"])),
-            list(dict.fromkeys(state_dicts + ["critic.optimizer"])),
+            state_dicts,
         )
+
+    def _excluded_save_params(self):
+        return super()._excluded_save_params() + [
+            "distributed_context", "critic_ensemble", "critic_target_ensemble", "critic_input_norms"]

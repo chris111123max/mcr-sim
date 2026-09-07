@@ -266,6 +266,9 @@ class EpochExperimentCallback(BaseCallback):
                     log_std.clamp_(min=float(np.log(floor)))
         elif self.algorithm_name in {"sac", "goal_sac"}:
             floor = float(profile["sac_min_ent_coef"])
+            if self.algorithm_name == "goal_sac":
+                floor = float(self.model.min_ent_coef)
+                profile["sac_min_ent_coef"] = floor
             self.model.min_ent_coef = floor
             log_ent_coef = getattr(self.model, "log_ent_coef", None)
             if log_ent_coef is not None:
