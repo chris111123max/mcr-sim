@@ -426,7 +426,7 @@ class MCREnv(SofaEnv):
             )
         )
 
-        # Actor observation V11: 38-D current local state plus the latest 7-D
+        # Actor observation V12: 38-D current local state plus the latest 7-D
         # action/response tuple = 45-D.  Redundant bend, contact, waypoint and
         # multi-frame history values are removed.  Three points along the
         # physically inserted shaft, elapsed-time budget and inserted length
@@ -503,7 +503,6 @@ class MCREnv(SofaEnv):
         self.current_route_potential_delta = 0.0
         self.current_reward_route_potential = 0.0
         self.previous_reward_route_potential = 0.0
-        self.route_progress_shaping_terminalized = False
 
         # Centerline and continuous selected-route buffers.
         self.centerline_points = None
@@ -1186,7 +1185,6 @@ class MCREnv(SofaEnv):
         self.current_route_potential_delta = 0.0
         self.current_reward_route_potential = 0.0
         self.previous_reward_route_potential = 0.0
-        self.route_progress_shaping_terminalized = False
 
         self.mcr_controller_sofa.reset()
         if bool(single_vessel_mode and getattr(self, "soft_randomize_single_vessel", True)):
@@ -1267,7 +1265,6 @@ class MCREnv(SofaEnv):
             non_finite_failure = True
         if non_finite_failure:
             self.non_finite_failure = True
-            reward = self._terminalize_route_progress_shaping(reward)
             non_finite_penalty = float(self.reward_amount_dict["non_finite_penalty"])
             penalty_already_applied = bool(
                 float(self.reward_features.get("non_finite_penalty", 0.0)) > 0.5
@@ -1288,7 +1285,6 @@ class MCREnv(SofaEnv):
         truncated = (self._elapsed_steps >= self.max_episode_steps) and (not terminated)
 
         if truncated:
-            reward = self._terminalize_route_progress_shaping(reward)
             timeout_penalty = float(self.reward_amount_dict["timeout_penalty"])
             if np.isfinite(timeout_penalty):
                 reward += timeout_penalty
@@ -1538,7 +1534,7 @@ class MCREnv(SofaEnv):
             self.no_progress_counter = 0
         if self.no_progress_feature > 0.0:
             self.no_progress_this_episode = True
-        # Reward V11 keeps stagnation as a diagnostic only.  The immediate
+        # Reward V12 keeps stagnation as a diagnostic only. The immediate
         # time cost and longer algorithmic discount horizon make waiting
         # costly without another stateful reward term.
         self.no_progress_failure = False
@@ -1553,7 +1549,7 @@ class MCREnv(SofaEnv):
                 max(0.0, inserted_length),
             )
 
-        # Normalized completion is both a diagnostic and the V11 potential.
+        # Normalized completion is both a diagnostic and the V12 progress state.
         if valid_inside_vessel:
             self.current_route_potential = self._continuous_route_potential()
             self.current_route_potential_delta = float(
@@ -1619,26 +1615,18 @@ class MCREnv(SofaEnv):
         self.current_target_reached_this_step = bool(
             valid_inside_vessel and route_ready and final_close
         )
-        terminal_now = bool(
-            self.current_target_reached_this_step
-            or self.current_out_of_vessel
-            or self.non_finite_failure
-        )
         current_completion = float(self.current_route_potential)
         if not np.isfinite(current_completion):
             current_completion = float(self.previous_reward_route_potential)
             self.non_finite_failure = True
-            terminal_now = True
         current_completion = float(np.clip(current_completion, 0.0, 1.0))
         previous_completion = float(self.previous_reward_route_potential)
-        next_potential = 0.0 if terminal_now else current_completion
-        approach_feature = (
-            float(self.reward_discount_gamma) * next_potential
-            - previous_completion
-        )
+        # Preserve genuine partial progress on failure/timeout. A later
+        # retraction produces the matching negative delta, so oscillation
+        # cannot manufacture route-progress return.
+        approach_feature = current_completion - previous_completion
         self.current_reward_route_potential = current_completion
-        self.previous_reward_route_potential = next_potential
-        self.route_progress_shaping_terminalized = terminal_now
+        self.previous_reward_route_potential = current_completion
 
         reward_features = {
             "route_progress": approach_feature,
@@ -1670,31 +1658,6 @@ class MCREnv(SofaEnv):
             self.is_out_of_bounds = True
 
         return {k: float(v) for k, v in reward_features.items()}
-
-    def _terminalize_route_progress_shaping(self, reward: float) -> float:
-        """Replace a nonterminal shaping transition with terminal Phi=0."""
-
-        if bool(getattr(self, "route_progress_shaping_terminalized", False)):
-            return float(reward)
-        correction_feature = -float(self.reward_discount_gamma) * float(
-            self.current_reward_route_potential
-        )
-        correction_reward = (
-            float(self.reward_amount_dict["route_progress"])
-            * correction_feature
-        )
-        self.reward_features["route_progress"] = float(
-            self.reward_features.get("route_progress", 0.0) + correction_feature
-        )
-        self.reward_info["reward_route_progress"] = float(
-            self.reward_info.get("reward_route_progress", 0.0) + correction_reward
-        )
-        self.episode_reward_totals["route_progress"] += correction_reward
-        self.previous_reward_route_potential = 0.0
-        self.route_progress_shaping_terminalized = True
-        corrected = float(reward) + correction_reward
-        self.reward_info["reward"] = corrected
-        return corrected
 
     def _get_reward(self) -> float:
         reward = 0.0
@@ -2614,7 +2577,7 @@ class MCREnv(SofaEnv):
         )
         self.current_curve_bend_features = bend_features
         self.current_curve_alignment_features = alignment_features
-        # V11 keeps only non-redundant, actionable local safety/shape signals:
+        # V12 keeps only non-redundant, actionable local safety/shape signals:
         # radius, tip/body clearance, direction and shaft location of the worst
         # SDF point, branch risk, shaft shape, and three future route tangents.
         return np.array(

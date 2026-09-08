@@ -59,7 +59,7 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps.  Reward V11
+# at least 0.5 mm outside for three consecutive environment steps. Reward V12
 # exposes the already-computed whole-body margin and starts a bounded warning
 # ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
@@ -89,28 +89,26 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v11.  All learning signals are deliberately O(1..35).  Route
-# completion is the sole dense task reward and is implemented as a normalized,
-# discount-matched potential.  This removes route-length-dependent reward scale
-# and preserves the ordering of policies defined by success/failure/time.
-REWARD_PROFILE_VERSION = "11.0"
+# Reward profile v12. PPO receives direct normalized route-completion change.
+# Earned partial progress is no longer removed in one large terminal transition;
+# retraction still cancels forward credit, so oscillation cannot create return.
+REWARD_PROFILE_VERSION = "12.0"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
-REWARD_PROGRESS_SCALE = 10.0
-# Compatibility alias for older reporting code.  In V11 this is per unit route
+REWARD_PROGRESS_SCALE = 30.0
+# Compatibility alias for older reporting code. In V12 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
 REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
-# Potential-based route shaping must use the same discount as every learner:
-# F(s,s') = gamma * Phi(s') - Phi(s).  Terminal Phi is exactly zero.
+# Common learner discount; V12 progress itself is an undiscounted difference.
 REWARD_DISCOUNT_GAMMA = 0.9995
 REWARD_WALL_PROXIMITY = -0.002
 REWARD_OFF_TARGET_BRANCH = -0.005
-REWARD_SUCCESS = 30.0
-REWARD_OUT_OF_VESSEL = -30.0
-REWARD_NON_FINITE = -30.0
-REWARD_TIMEOUT = -35.0
-REWARD_STEP = -0.005
+REWARD_SUCCESS = 100.0
+REWARD_OUT_OF_VESSEL = -80.0
+REWARD_NON_FINITE = -100.0
+REWARD_TIMEOUT = -50.0
+REWARD_STEP = -0.002
 # Stagnation remains an info diagnostic.  It is intentionally not a second
 # time penalty because the fixed step cost and timeout already price waiting.
 REWARD_STAGNATION = 0.0
@@ -139,7 +137,7 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_scale": REWARD_PROGRESS_SCALE,
         "discount_gamma": float(discount_gamma),
-        "progress_formula": "scale*(gamma*completion_next-completion_previous)",
+        "progress_formula": "scale*(completion_next-completion_previous)",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
@@ -566,16 +564,16 @@ def validate_training_defaults() -> None:
         and REWARD_TIMEOUT < 0.0
         and REWARD_STEP < 0.0
     ):
-        raise ValueError("Reward V11 signs are invalid.")
+        raise ValueError("Reward V12 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
         and REWARD_NON_FINITE < -maximum_navigation_credit
         and REWARD_SUCCESS > maximum_navigation_credit
     ):
-        raise ValueError("Reward V11 terminal outcomes must dominate shaping.")
+        raise ValueError("Reward V12 terminal outcomes must dominate shaping.")
     if REWARD_STAGNATION != 0.0:
-        raise ValueError("Reward V11 stagnation must remain diagnostic-only.")
+        raise ValueError("Reward V12 stagnation must remain diagnostic-only.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS

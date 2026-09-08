@@ -54,7 +54,7 @@ tools/                        人工血管生成与检查
 
 设计目的是依赖局部几何并泛化到新血管。潜在不足是：MLP 没有长期历史；20 mm 前视对急弯可能不足；路线投影跳变会污染状态；近壁信号可能触发偏晚。
 
-## 4. 当前奖励：Reward V11
+## 4. 当前奖励：Reward V12
 
 ```text
 reward = route progress
@@ -66,29 +66,28 @@ reward = route progress
 
 | 奖励项 | 当前值 |
 |---|---:|
-| route progress potential scale | `10.0` |
+| route progress scale | `30.0` |
 | near-wall | `-0.002/step` |
 | wrong branch | `-0.005/step` |
-| step cost | `-0.005/step` |
-| success | `+30` |
-| out of vessel | `-30` |
-| non-finite | `-30` |
-| timeout | `-35` |
+| step cost | `-0.002/step` |
+| success | `+100` |
+| out of vessel | `-80` |
+| non-finite | `-100` |
+| timeout | `-50` |
 | no progress | `0`，只记录 |
 
 progress 公式：
 
 ```text
 completion_t = route_progress_t / target_route_length
-r_progress = 10 × (gamma × completion_t - completion_(t-1))
-gamma = 0.9995
+r_progress = 30 × (completion_t - completion_(t-1))
 ```
 
-它不是“每前进一步奖励 10”。终止时会闭合 potential，防止失败轨迹保留中途 progress 收益。
+它不是“每前进一步奖励 30”。前进和后退按净路线完成度严格抵消，但失败或超时时不再一次性抹掉此前的真实净进度，从而给 PPO 保留连续学习信号。
 
-Reward V11 已取消 waypoint 一次性奖励，以及 no-progress 惩罚和提前终止。若走满 2048 步，仅 step cost 累计就是 `-10.24`，之后再加 timeout `-35`。
+Reward V12 不使用 waypoint 一次性奖励，也不使用 no-progress 惩罚或提前终止。若走满 2048 步，step cost 累计为 `-4.096`，之后再加 timeout `-50`。
 
-当前风险是：progress 高度依赖路线投影；potential、timeout 和 PPO bootstrap 必须一致；近壁惩罚较小且可能出现偏晚；参数尚未通过高成功率实验验证。
+当前风险是：progress 高度依赖路线投影；近壁惩罚较小且可能出现偏晚；参数尚未通过高成功率实验验证。
 
 ## 5. 安全与终止
 
@@ -122,7 +121,7 @@ episode 在成功、确认出血管或 non-finite 时终止；达到 2048 step �
 - **LSTM-PPO**：状态相同，用循环隐藏状态处理物理滞后；
 - **SAC**：off-policy，使用 replay buffer。
 
-三者原则上共享相同的任务、状态、Reward V11、课程、成功标准和验证集，以便公平比较 MLP、RNN 和未来 Transformer。
+三者原则上共享相同的任务、状态、Reward V12、课程、成功标准和验证集，以便公平比较 MLP、RNN 和未来 Transformer。
 
 训练支持单 NPU、多环境和 HCCL 多 NPU。多卡时各 rank 收集本地环境并同步梯度。由于网络较小，SOFA、进程调度和通信占比较高，多卡 FPS 不会简单等于单卡乘卡数。
 
@@ -148,7 +147,7 @@ episode 在成功、确认出血管或 non-finite 时终止；达到 2048 step �
 3. route projection 是否在急弯或邻近中心线段间跳变；
 4. SDF wall-risk 是否能在真正碰壁前及时出现；
 5. 插入速度和动作限速是否导致来不及提前转向；
-6. Reward V11 的 potential 与 PPO timeout bootstrap 是否一致；
+6. Reward V12 的净路线增量是否稳定提升且不被路线投影噪声污染；
 7. curriculum 是否过早把任务从 B 类扩展到 C 类；
 8. C03/C05 是否超出当前控制器和观测的可学习范围；
 9. 低成功率主要来自 reward、partial observability、控制可达性，还是任务难度；
@@ -158,10 +157,10 @@ episode 在成功、确认出血管或 non-finite 时终止；达到 2048 step �
 
 ## 11. 独立 Goal-conditioned SAC 实验路线
 
-当前还新增了一条与 V11 baseline 隔离的实验路线：
+当前还新增了一条与 V12 baseline 隔离的实验路线：
 `training/py/train_goal_sac.py` + `training/sh/run_train_goal_sac.sh`。
 
-它复用 SOFA、血管资产、route tracking、SDF 和原环境控制动作，不修改 `MCREnv`、Reward V11 或原 PPO/LSTM-PPO/SAC 入口。Goal-SAC v3 使用 47 维观测：45 维基础状态中 index 9 重算为目标剩余路线比例，末尾附加 achieved/desired goal。真实目标恒为 `1.0`，成功仍要求原环境的物理到达条件；HER 使用同一安全轨迹上的内部路线目标。
+它复用 SOFA、血管资产、route tracking、SDF 和原环境控制动作，并在 `MCREnv` 的 Reward V12 之外使用独立 Goal reward。Goal-SAC v3 使用 47 维观测：45 维基础状态中 index 9 重算为目标剩余路线比例，末尾附加 achieved/desired goal。真实目标恒为 `1.0`，成功仍要求原环境的物理到达条件；HER 使用同一安全轨迹上的内部路线目标。
 
 奖励使用共享 `GoalReward`：普通步 `-0.01`、成功 `+10`、失败（包括 horizon）`-20`，加 `gamma*Phi(next)-Phi(previous)` 与小安全代价；`Phi=-5*max(goal-achieved,0)`，终止势能为零。真实和 HER 使用相同函数，不再补扣剩余步数。此版本不再是纯 sparse reward。Safe HER 保留连续安全前缀过滤，去掉相对 episode 首个保留样本的 2% 门槛，改为目标不能在当前 transition 开始前就被达到。申请 HER 比例为 50%，实际比例由安全候选决定，不能假设始终 50:50。
 

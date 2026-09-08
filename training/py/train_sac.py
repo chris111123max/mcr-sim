@@ -199,7 +199,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
     def _episode_from_info(self, info: dict) -> dict:
         episode_info = info.get("episode", {}) if isinstance(info.get("episode", {}), dict) else {}
 
-        # Reward V11 emits normalized selected-route completion and bounded safety.
+        # Reward V12 emits normalized selected-route completion and bounded safety.
         route_progress_ratio = self._safe_float(
             info.get("route_progress_ratio", np.nan)
         )

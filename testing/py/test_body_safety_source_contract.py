@@ -1,4 +1,4 @@
-"""CPU-only wiring checks for the shared Reward/Observation V11 state."""
+"""CPU-only wiring checks for the shared Reward V12 / Observation V12 state."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn("self.curriculum_success_streak += 1", experiment_source)
         self.assertIn("self.curriculum_success_streak = 0", experiment_source)
 
-    def test_reward_v11_uses_only_ordinary_terminal_failures(self):
+    def test_reward_v12_uses_only_ordinary_terminal_failures(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
             encoding="utf-8"
         )
@@ -101,11 +101,11 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertNotIn('"unsafe_curve_insertion_penalty"', source)
         self.assertNotIn('"no_progress_penalty"', source)
         self.assertIn('"step_penalty"', source)
-        self.assertIn("def _terminalize_route_progress_shaping", source)
+        self.assertNotIn("def _terminalize_route_progress_shaping", source)
         timeout_block = source.split("if truncated:", 1)[1].split(
             "info = self._get_info", 1
         )[0]
-        self.assertIn("_terminalize_route_progress_shaping", timeout_block)
+        self.assertNotIn("_terminalize_route_progress_shaping", timeout_block)
         self.assertIn("_get_curve_control_features", source)
 
 

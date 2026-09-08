@@ -63,17 +63,13 @@ class RewardProfileTest(unittest.TestCase):
         reward = REWARD_PROGRESS_PER_M * completion_delta + REWARD_STEP
         self.assertGreater(reward, 0.0)
 
-    def test_discounted_potential_shaping_cancels_at_terminal(self) -> None:
-        potentials = [0.0, 100.0, 80.0, 140.0, 0.0]
+    def test_direct_progress_telescopes_without_terminal_erasure(self) -> None:
+        completions = [0.0, 0.10, 0.08, 0.14]
         shaping = [
-            REWARD_DISCOUNT_GAMMA * nxt - current
-            for current, nxt in zip(potentials, potentials[1:])
+            REWARD_PROGRESS_PER_M * (nxt - current)
+            for current, nxt in zip(completions, completions[1:])
         ]
-        discounted = sum(
-            (REWARD_DISCOUNT_GAMMA ** index) * value
-            for index, value in enumerate(shaping)
-        )
-        self.assertAlmostEqual(discounted, 0.0, places=9)
+        self.assertAlmostEqual(sum(shaping), REWARD_PROGRESS_PER_M * 0.14)
 
     def test_curriculum_requires_three_consecutive_success_episodes(self) -> None:
         required = TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES
@@ -283,13 +279,13 @@ class RewardProfileTest(unittest.TestCase):
         stationary_return = REWARD_STEP * MAX_EPISODE_STEPS + REWARD_TIMEOUT
         self.assertLess(stationary_return, 0.0)
 
-    def test_reward_profile_is_minimal_v11(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, "11.0")
-        self.assertEqual(REWARD_PROGRESS_PER_M, 10.0)
+    def test_reward_profile_is_minimal_v12(self) -> None:
+        self.assertEqual(REWARD_PROFILE_VERSION, "12.0")
+        self.assertEqual(REWARD_PROGRESS_PER_M, 30.0)
         self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
         self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)
-        self.assertEqual(REWARD_TIMEOUT, -35.0)
-        self.assertEqual(REWARD_STEP, -0.005)
+        self.assertEqual(REWARD_TIMEOUT, -50.0)
+        self.assertEqual(REWARD_STEP, -0.002)
         self.assertEqual(REWARD_STAGNATION, 0.0)
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
@@ -303,29 +299,21 @@ class RewardProfileTest(unittest.TestCase):
     def test_equal_completion_progress_has_equal_reward_across_routes(self) -> None:
         delta_completion = 0.01
         previous_completion = 0.20
-        short_route_reward = REWARD_PROGRESS_PER_M * (
-            REWARD_DISCOUNT_GAMMA * (previous_completion + delta_completion)
-            - previous_completion
-        )
-        long_route_reward = REWARD_PROGRESS_PER_M * (
-            REWARD_DISCOUNT_GAMMA * (previous_completion + delta_completion)
-            - previous_completion
-        )
+        short_route_reward = REWARD_PROGRESS_PER_M * delta_completion
+        long_route_reward = REWARD_PROGRESS_PER_M * delta_completion
         self.assertAlmostEqual(short_route_reward, long_route_reward)
 
     def test_two_step_forward_retract_oscillation_is_not_profitable(self) -> None:
         potential = REWARD_PROGRESS_PER_M * 0.01
-        discounted_return = (
-            REWARD_DISCOUNT_GAMMA * potential
-            + REWARD_STEP
-            + SAC_GAMMA * (-potential + REWARD_STEP)
-        )
+        discounted_return = potential + REWARD_STEP + SAC_GAMMA * (-potential + REWARD_STEP)
         self.assertLess(discounted_return, 0.0)
 
-    def test_waiting_is_worse_than_immediate_unsafe_exit(self) -> None:
+    def test_waiting_and_immediate_unsafe_exit_are_both_negative(self) -> None:
         waiting_return = REWARD_TIMEOUT + REWARD_STEP * MAX_EPISODE_STEPS
         immediate_exit_return = REWARD_OUT_OF_VESSEL
-        self.assertLess(waiting_return, immediate_exit_return)
+        self.assertLess(waiting_return, 0.0)
+        self.assertLess(immediate_exit_return, 0.0)
+        self.assertLess(immediate_exit_return, waiting_return)
 
     def test_success_has_a_large_margin_over_best_failure(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET
