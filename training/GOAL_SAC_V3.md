@@ -4,7 +4,7 @@
 
 ## 范围
 
-只改独立 Goal-SAC 路线；不改基础 PPO、LSTM-PPO、SAC 的状态/奖励、血管模型、动作或物理成功门槛。不加载旧 checkpoint。保留已有五阶段血管/DR 课程，不引入短目标课程。HER 内部虚拟目标不计入真实训练成功率。
+只改独立 Goal-SAC 路线；不改基础 PPO、LSTM-PPO、SAC 的状态/奖励、血管模型、动作或物理成功门槛。不加载旧 checkpoint。保留已有五阶段血管/DR 课程，不引入短目标课程。HER 内部虚拟目标不计入真实训练成功率。当前默认 `her_ratio=0`；只有显式设置正值才启用。
 
 ## 本次解决的问题
 
@@ -26,17 +26,17 @@ HER 候选必须来自同环境、同 episode、当前或未来 transition 的�
 ## 奖励
 
 ```
-Phi(s,g) = -5 * max(g-achieved(s), 0)
-r = base + .999*Phi(next,g) - Phi(s,g) - .0005*(wall_risk+branch_risk)
-base = +10 (success), -20 (failure), -.01 (otherwise)
+Phi(s,g) = 5 * min(max(achieved(s),0), g)
+r = base + .999*Phi(next,g) - Phi(s,g) - .001*(wall_risk+branch_risk) - .001*mean((action-prev_action)^2)
+base = +20 (success), -20 (failure), -.002 (otherwise)
 Phi(terminal,g) = 0
 ```
 
 wall/branch risk 各截断至 [0,1]。真实与 HER 共用函数与参数。horizon 属于有时间状态的有限任务终止，不跨 timeout bootstrap；HER 成功提前终止，但不能抹去其它物理终止。保存的 run_config 明确记录这些约定。
 
-势能项在折扣 episode 中望远镜相消为 `-Phi(initial)`，不是重复刷 waypoint 的奖励；也不保证有限样本的优化一定成功。默认静止单步 shaping 至多 .005，小于步代价 .01。安全代价计入后无穷持续步代价上界为 11，小于失败惩罚 20；不再用未折扣剩余步数作补偿。若改 gamma 或代价，需要重新检查该尺度。
+势能项在折扣 episode 中望远镜相消为 `-Phi(initial)`，不是重复刷 waypoint 的奖励；也不保证有限样本的优化一定成功。势能采用非负已完成进度，因此静止的 shaping 不会产生正 living reward。安全和动作平滑项都有界，不再用未折扣剩余步数作补偿。若改 gamma 或代价，需要重新检查尺度。
 
-评判请看真实成功率，而不是“return 必须为正”。对于同一初始状态，折扣回报体现到达速度及失败；长时间失败不再强制显示相同的 -30.48。完整成功并不是每步给 +10，只在终止给一次。
+评判请看真实成功率，而不是“return 必须为正”。对于同一初始状态，折扣回报体现到达速度及失败；长时间失败不再强制显示相同的 -30.48。完整成功并不是每步给 +20，只在终止给一次。
 
 ## 默认值与日志
 
@@ -60,7 +60,7 @@ bash training/sh/run_train_goal_sac.sh --device npu --n-envs 4 \
   --buffer-size 8192 --skip-validation --exp-name goal_sac_v3_smoke
 ```
 
-确认无异常、Q/TD 有限、HER 样本确实生成之后，正式独立新训练：
+确认无异常、Q/TD 有限、奖励分量有限之后，正式独立新训练：
 
 ```bash
 bash training/sh/run_train_goal_sac.sh \

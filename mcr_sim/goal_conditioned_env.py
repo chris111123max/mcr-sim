@@ -23,13 +23,14 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self,
         venv,
         final_goal: float = 1.0,
-        step_cost: float = 0.01,
-        safety_weight: float = 0.0005,
+        step_cost: float = 0.002,
+        safety_weight: float = 0.001,
+        action_smoothness_weight: float = 0.001,
         failure_terminal_penalty: float = 20.0,
         max_episode_steps: int = 2048,
         gamma: float = 0.999,
         potential_scale: float = 5.0,
-        success_bonus: float = 10.0,
+        success_bonus: float = 20.0,
     ):
         super().__init__(venv)
         if getattr(venv.observation_space, "shape", None) is None:
@@ -40,6 +41,7 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             raise ValueError("Rollout must use the real endpoint (final_goal=1)")
         self.step_cost = float(max(0.0, step_cost))
         self.safety_weight = float(max(0.0, safety_weight))
+        self.action_smoothness_weight = float(max(0.0, action_smoothness_weight))
         self.failure_terminal_penalty = float(max(0.0, failure_terminal_penalty))
         self.max_episode_steps = max(1, int(max_episode_steps))
         self.reward_contract = GoalReward(gamma, step_cost, potential_scale, success_bonus,
@@ -56,6 +58,11 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self.desired_goals = np.full((self.num_envs, 1), self.final_goal, dtype=np.float32)
         self._goal_episode_returns = np.zeros(self.num_envs, dtype=np.float64)
         self._goal_episode_lengths = np.zeros(self.num_envs, dtype=np.int64)
+        action_shape = tuple(getattr(self.action_space, "shape", ()) or ())
+        if not action_shape:
+            raise ValueError("GoalConditionedVecEnv requires a continuous action space")
+        self._previous_actions = np.zeros((self.num_envs,) + action_shape, dtype=np.float32)
+        self._pending_actions = self._previous_actions.copy()
 
     def _augment(self, observations):
         obs = np.asarray(observations, dtype=np.float32)
@@ -75,9 +82,20 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self.desired_goals.fill(self.final_goal)
         self._goal_episode_returns.fill(0.0)
         self._goal_episode_lengths.fill(0)
+        self._previous_actions.fill(0.0)
+        self._pending_actions.fill(0.0)
         observations = self.venv.reset()
         self._achieved[:] = self.venv.get_attr("current_route_progress_ratio")
         return self._augment(observations)
+
+    def step_async(self, actions):
+        pending = np.asarray(actions, dtype=np.float32)
+        if pending.shape != self._previous_actions.shape:
+            raise ValueError(
+                f"Expected actions {self._previous_actions.shape}, got {pending.shape}"
+            )
+        self._pending_actions = pending.copy()
+        self.venv.step_async(actions)
 
     def step_wait(self):
         observations, rewards, dones, infos = self.venv.step_wait()
@@ -107,17 +125,26 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             wall_risk = self._finite_risk(info, "sdf_body_warning_feature")
             branch_risk = self._finite_risk(info, "off_target_branch_feature")
             safety_penalty = -self.safety_weight * (wall_risk + branch_risk)
+            action_delta = self._pending_actions[index] - self._previous_actions[index]
+            smoothness_penalty = -self.action_smoothness_weight * float(
+                np.mean(np.square(action_delta, dtype=np.float32))
+            )
+            auxiliary_penalty = safety_penalty + smoothness_penalty
             success = bool(info.get("done_by_target", False))
             sparse_rewards[index] = self.reward_contract(
-                previous, achieved, self.final_goal, success, bool(dones[index]), safety_penalty)
+                previous, achieved, self.final_goal, success, bool(dones[index]), auxiliary_penalty)
             self._achieved[index] = achieved
+            self._previous_actions[index] = self._pending_actions[index]
             # This task has an observed finite horizon (state[10]). A timeout
             # is a task failure, not an artificial training rollout truncation.
             info["TimeLimit.truncated"] = False
             self._goal_episode_returns[index] += float(sparse_rewards[index])
             self._goal_episode_lengths[index] += 1
             info["goal_sparse_reward"] = float(sparse_rewards[index])
+            info["goal_reward"] = float(sparse_rewards[index])
             info["goal_safety_penalty"] = float(safety_penalty)
+            info["goal_action_smoothness_penalty"] = float(smoothness_penalty)
+            info["goal_auxiliary_penalty"] = float(auxiliary_penalty)
             if dones[index]:
                 # The next reset happens inside VecEnv.step_wait.  Keep the
                 # original final goal in this transition's info.
@@ -130,6 +157,7 @@ class GoalConditionedVecEnv(VecEnvWrapper):
                 self._goal_episode_lengths[index] = 0
                 self._achieved[index] = self.venv.get_attr(
                     "current_route_progress_ratio", indices=index)[0]
+                self._previous_actions[index].fill(0.0)
             out_infos.append(info)
         return self._augment(observations), sparse_rewards, dones, out_infos
 
@@ -146,16 +174,16 @@ class SafeHerReplayBuffer(ReplayBuffer):
     def __init__(
         self,
         *args,
-        her_ratio: float = 0.5,
+        her_ratio: float = 0.0,
         her_safe_margin_m: float = 0.0005,
         goal_tolerance: float = 0.01,
         min_goal_advance: float = 0.0,
         future_short_fraction: float = 0.25,
         future_medium_fraction: float = 0.35,
-        step_cost: float = 0.01,
+        step_cost: float = 0.002,
         gamma: float = 0.999,
         potential_scale: float = 5.0,
-        success_bonus: float = 10.0,
+        success_bonus: float = 20.0,
         failure_terminal_penalty: float = 20.0,
         **kwargs,
     ):
@@ -184,7 +212,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         # a later timestamp at the same position must never become a HER goal.
         self._safe_episode_milestones = {}
         self._milestone_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
-        self.safety_penalties = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
+        self.auxiliary_penalties = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.success_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.her_stats = {
             "samples": 0,
@@ -237,10 +265,12 @@ class SafeHerReplayBuffer(ReplayBuffer):
             # once an episode enters a wrong branch, invalid projection, or
             # unsafe clearance region, all later states in that episode are
             # excluded even if the geometry subsequently recovers.
-            self._episode_safe[env_index] = bool(self._episode_safe[env_index] and frame_safe)
+            self._episode_safe[env_index] = bool(
+                self.her_ratio > 0.0 and self._episode_safe[env_index] and frame_safe
+            )
             self.safe_flags[slot, env_index] = self._episode_safe[env_index]
-            self.safety_penalties[slot, env_index] = np.float32(
-                self._info_float(info, "goal_safety_penalty", 0.0)
+            self.auxiliary_penalties[slot, env_index] = np.float32(
+                self._info_float(info, "goal_auxiliary_penalty", 0.0)
             )
             self.success_flags[slot, env_index] = bool(info.get("done_by_target", False))
             self.episode_ids[slot, env_index] = self._episode_id[env_index]
@@ -350,7 +380,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
             dones[row] = float(bool(dones[row]) or her_success)
             rewards[row] = self.reward_contract(
                 observations[row, -2], next_achieved, desired_goals[row],
-                her_success, bool(dones[row]), self.safety_penalties[current, env_index])
+                her_success, bool(dones[row]), self.auxiliary_penalties[current, env_index])
             self.her_stats["her_successes"] += int(her_success)
         observations = relabel_observation(observations, desired_goals)
         next_observations = relabel_observation(next_observations, desired_goals)

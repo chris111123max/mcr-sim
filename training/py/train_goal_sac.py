@@ -88,6 +88,11 @@ def parse_args():
     parser.add_argument("--goal-success-bonus", type=float, default=GOAL_SAC_SUCCESS_BONUS)
     parser.add_argument("--goal-safety-weight", type=float, default=GOAL_SAC_SAFETY_WEIGHT)
     parser.add_argument(
+        "--goal-action-smoothness-weight",
+        type=float,
+        default=GOAL_SAC_ACTION_SMOOTHNESS_WEIGHT,
+    )
+    parser.add_argument(
         "--goal-failure-terminal-penalty",
         type=float,
         default=GOAL_SAC_FAILURE_TERMINAL_PENALTY,
@@ -197,15 +202,17 @@ def main():
     args.reward_profile = {
         "version": "goal_potential_v3",
         "goal_reward": "base + gamma*Phi(next)-Phi(previous); terminal Phi=0",
+        "potential": "scale*min(max(achieved,0),goal)",
         "dense_route_progress": True,
         "potential_scale": args.goal_potential_scale,
         "success_bonus": args.goal_success_bonus,
         "gamma": args.gamma,
         "safety_weight": args.goal_safety_weight,
+        "action_smoothness_weight": args.goal_action_smoothness_weight,
         "failure_terminal_penalty": args.goal_failure_terminal_penalty,
         "failure_horizon_compensation": False,
         "timeout_bootstrap": False,
-        "her": "safe_future",
+        "her": "disabled" if args.her_ratio == 0.0 else "safe_future",
         "her_min_goal_advance": args.her_min_goal_advance,
         "original_her_ratio": [1.0 - args.her_ratio, args.her_ratio],
     }
@@ -244,6 +251,7 @@ def main():
             build_env(_baseline_args(args, context)),
             **reward_kwargs,
             safety_weight=args.goal_safety_weight,
+            action_smoothness_weight=args.goal_action_smoothness_weight,
             max_episode_steps=args.max_episode_steps,
         )
         model = GoalConditionedSAC(
@@ -299,6 +307,7 @@ def main():
                     build_env(valid_args),
                     **reward_kwargs,
                     safety_weight=args.goal_safety_weight,
+                    action_smoothness_weight=args.goal_action_smoothness_weight,
                     max_episode_steps=args.max_episode_steps,
                 )
 

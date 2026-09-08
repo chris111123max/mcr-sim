@@ -27,9 +27,9 @@ def relabel_observation(obs, goal):
 @dataclass(frozen=True)
 class GoalReward:
     gamma: float = 0.999
-    step_cost: float = 0.01
+    step_cost: float = 0.002
     potential_scale: float = 5.0
-    success_bonus: float = 10.0
+    success_bonus: float = 20.0
     failure_penalty: float = 20.0
 
     def __post_init__(self):
@@ -43,8 +43,11 @@ class GoalReward:
             raise ValueError("Reward magnitudes must be nonnegative")
 
     def potential(self, achieved, goal):
-        return -self.potential_scale * np.maximum(
-            np.asarray(goal) - np.asarray(achieved), 0.0
+        # Non-negative progress makes a stationary step slightly negative for
+        # gamma < 1. Negative remaining distance creates a positive living
+        # reward at rest, which can dominate a small step cost.
+        return self.potential_scale * np.minimum(
+            np.maximum(np.asarray(achieved), 0.0), np.asarray(goal)
         )
 
     def __call__(self, previous, achieved, goal, success, terminal, safety=0.0):
