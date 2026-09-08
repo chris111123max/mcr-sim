@@ -63,7 +63,7 @@ class GoalContractTests(unittest.TestCase):
             discounted = 0.
             for t, (prev, nxt) in enumerate(zip(path, path[1:])):
                 terminal = t == len(path) - 2
-                base = 20 if terminal and success else -20 if terminal else -.002
+                base = 100 if terminal and success else -120 if terminal else -.005
                 discounted += reward.gamma ** t * (float(reward(
                     prev, nxt, 1., success and terminal, terminal)) - base)
             self.assertAlmostEqual(discounted, 0., places=5)
@@ -136,7 +136,7 @@ class GoalContractTests(unittest.TestCase):
         batch = replay.sample(64)
         self.assertTrue(torch.all(batch.dones == 1.))
         self.assertTrue(torch.all(batch.observations[:, -1] == 1.))
-        np.testing.assert_allclose(batch.rewards.numpy(), -20.)
+        np.testing.assert_allclose(batch.rewards.numpy(), -120.)
 
     def test_reward_configuration_mismatch_fails_early(self):
         env = GoalConditionedVecEnv(DummyVecEnv([ToyRoute]))

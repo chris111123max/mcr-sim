@@ -293,23 +293,39 @@ class EpochExperimentCallback(BaseCallback):
                 if np.isfinite(route_ratio)
                 else 0.0
             )
-            reward_progress = float(info.get("episode_reward_route_progress", 0.0))
-            reward_terminal = sum(
-                float(info.get(key, 0.0))
-                for key in (
-                    "episode_reward_successful_task",
-                    "episode_reward_out_of_vessel_penalty",
-                    "episode_reward_non_finite_penalty",
-                    "episode_reward_timeout_penalty",
+            if self.algorithm_name == "goal_sac":
+                reward_progress = float(info.get("episode_goal_reward_progress", 0.0))
+                reward_terminal = float(info.get("episode_goal_reward_terminal", 0.0))
+                reward_safety = float(info.get("episode_goal_reward_safety", 0.0))
+                reward_step = float(info.get("episode_goal_reward_step", 0.0))
+                reward_component_total = float(
+                    info.get("episode_goal_reward_total_components", episode_info.get("r", 0.0))
                 )
-            )
-            reward_safety = sum(
-                float(info.get(key, 0.0))
-                for key in (
-                    "episode_reward_wall_proximity_penalty",
-                    "episode_reward_off_target_branch_penalty",
+            else:
+                reward_progress = float(info.get("episode_reward_route_progress", 0.0))
+                reward_terminal = sum(
+                    float(info.get(key, 0.0))
+                    for key in (
+                        "episode_reward_successful_task",
+                        "episode_reward_out_of_vessel_penalty",
+                        "episode_reward_non_finite_penalty",
+                        "episode_reward_timeout_penalty",
+                    )
                 )
-            )
+                reward_safety = sum(
+                    float(info.get(key, 0.0))
+                    for key in (
+                        "episode_reward_wall_proximity_penalty",
+                        "episode_reward_off_target_branch_penalty",
+                    )
+                )
+                reward_step = (
+                    float(info.get("episode_reward_step_penalty", 0.0))
+                    + float(info.get("episode_reward_stagnation_penalty", 0.0))
+                )
+                reward_component_total = float(
+                    info.get("episode_reward_total_components", episode_info.get("r", 0.0))
+                )
             sampling_model = str(
                 info.get(
                     "sampling_model",
@@ -330,15 +346,14 @@ class EpochExperimentCallback(BaseCallback):
                 reward_progress,
                 reward_terminal,
                 reward_safety,
-                float(info.get("episode_reward_step_penalty", 0.0))
-                + float(info.get("episode_reward_stagnation_penalty", 0.0)),
+                reward_step,
                 float(info.get("insert_action_mean_episode", 0.0)),
                 float(info.get("insert_positive_fraction_episode", 0.0)),
                 float(info.get("insert_negative_fraction_episode", 0.0)),
                 float(info.get("inserted_length_final", 0.0)),
                 1.0 if bool(info.get("done_by_target", False)) else route_completion,
                 float(bool(info.get("positive_failure_return", False))),
-                float(info.get("episode_reward_total_components", episode_info.get("r", 0.0))),
+                reward_component_total,
                 float(info.get("route_potential", 0.0)),
                 float(model_index),
                 float(info.get("route_projection_jump_rejections_episode", 0.0)),

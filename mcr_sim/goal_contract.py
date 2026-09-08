@@ -27,10 +27,10 @@ def relabel_observation(obs, goal):
 @dataclass(frozen=True)
 class GoalReward:
     gamma: float = 0.999
-    step_cost: float = 0.002
-    potential_scale: float = 5.0
-    success_bonus: float = 20.0
-    failure_penalty: float = 20.0
+    step_cost: float = 0.005
+    potential_scale: float = 10.0
+    success_bonus: float = 100.0
+    failure_penalty: float = 120.0
 
     def __post_init__(self):
         if not np.all(np.isfinite([
@@ -50,7 +50,10 @@ class GoalReward:
             np.maximum(np.asarray(achieved), 0.0), np.asarray(goal)
         )
 
-    def __call__(self, previous, achieved, goal, success, terminal, safety=0.0):
+    def terms(
+        self, previous, achieved, goal, success, terminal, safety=0.0,
+        terminal_reward=None,
+    ):
         terminal = np.asarray(terminal, dtype=bool)
         success = np.asarray(success, dtype=bool)
         # Finite-horizon tasks end at success, failure or time limit.  No
@@ -58,6 +61,23 @@ class GoalReward:
         before = self.potential(previous, goal)
         after = np.where(terminal, 0.0, self.potential(achieved, goal))
         shaping = self.gamma * after - before
-        base = np.where(success, self.success_bonus,
-                        np.where(terminal, -self.failure_penalty, -self.step_cost))
-        return np.asarray(base + shaping + safety, dtype=np.float32)
+        default_terminal = np.where(success, self.success_bonus, -self.failure_penalty)
+        selected_terminal = (
+            default_terminal if terminal_reward is None
+            else np.asarray(terminal_reward, dtype=np.float32)
+        )
+        base = np.where(terminal, selected_terminal, -self.step_cost)
+        return (
+            np.asarray(base, dtype=np.float32),
+            np.asarray(shaping, dtype=np.float32),
+            np.asarray(safety, dtype=np.float32),
+        )
+
+    def __call__(
+        self, previous, achieved, goal, success, terminal, safety=0.0,
+        terminal_reward=None,
+    ):
+        base, shaping, auxiliary = self.terms(
+            previous, achieved, goal, success, terminal, safety, terminal_reward
+        )
+        return np.asarray(base + shaping + auxiliary, dtype=np.float32)

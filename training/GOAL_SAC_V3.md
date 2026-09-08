@@ -1,4 +1,4 @@
-# Goal-SAC v3：一致性修复与可验证基线
+# Goal-SAC v3 / Reward V4：一致性修复与防停滞基线
 
 算法依据：[SAC 双 Q 更新](https://spinningup.openai.com/en/latest/algorithms/sac.html)、[势能奖励变换原论文](https://ai.stanford.edu/~ang/papers/shaping-icml99.pdf)。它们支持更新/奖励形式，不是本项目成功率保证。
 
@@ -26,9 +26,9 @@ HER 候选必须来自同环境、同 episode、当前或未来 transition 的�
 ## 奖励
 
 ```
-Phi(s,g) = 5 * min(max(achieved(s),0), g)
-r = base + .999*Phi(next,g) - Phi(s,g) - .001*(wall_risk+branch_risk) - .001*mean((action-prev_action)^2)
-base = +20 (success), -20 (failure), -.002 (otherwise)
+Phi(s,g) = 10 * min(max(achieved(s),0), g)
+r = base + .999*Phi(next,g) - Phi(s,g) - .002*(wall_risk+branch_risk) - .0001*mean((action-prev_action)^2)
+base = +100 (success), -120 (timeout), -150 (out), -200 (non-finite), -.005 (otherwise)
 Phi(terminal,g) = 0
 ```
 
@@ -36,13 +36,13 @@ wall/branch risk 各截断至 [0,1]。真实与 HER 共用函数与参数。hori
 
 势能项在折扣 episode 中望远镜相消为 `-Phi(initial)`，不是重复刷 waypoint 的奖励；也不保证有限样本的优化一定成功。势能采用非负已完成进度，因此静止的 shaping 不会产生正 living reward。安全和动作平滑项都有界，不再用未折扣剩余步数作补偿。若改 gamma 或代价，需要重新检查尺度。
 
-评判请看真实成功率，而不是“return 必须为正”。对于同一初始状态，折扣回报体现到达速度及失败；长时间失败不再强制显示相同的 -30.48。完整成功并不是每步给 +20，只在终止给一次。
+评判请看真实成功率，而不是“return 必须为正”。按 `gamma=.999`，第 2048 步的权重约为 .129，因此 timeout 使用 -120，避免延迟失败被折扣成几乎无影响；出界和非有限状态更重。完整成功并不是每步给 +100，只在终止给一次。
 
 ## 默认值与日志
 
-单张 910B3：32 env、batch 1024、2 Q、gamma .999、lr 3e-4、buffer 500000、learning_starts 50000、每 vector step 1→2 次更新、actor interval 1、300 epoch、每 epoch 100 episode。
+单张 910B3：32 env、batch 1024、2 Q、gamma .999、lr 3e-4、buffer 500000、learning_starts 50000、每 vector step 1→2 次更新、actor interval 1、300 epoch、每 epoch 100 episode。熵系数从 .001 自动调整，下限 .001；按当前约 2.0 的策略熵，对应每步约 .002 的 soft bonus，低于普通步代价 .005。
 
-这里 UTD=2 是每 32 条新 transition 更新 2 次，不是每条 transition 更新 2 次。保留 fused Adam、现有低频性能统计。温度下限 .02 不再被公共 curriculum callback 隐式覆盖。HER/replay 仍在 CPU，不能宣称全流程 NPU 化或保证特定 FPS。
+这里 UTD=2 是每 32 条新 transition 更新 2 次，不是每条 transition 更新 2 次。保留 fused Adam、现有低频性能统计。温度下限 .001 不再被公共 curriculum callback 隐式覆盖。HER/replay 仍在 CPU，不能宣称全流程 NPU 化或保证特定 FPS。Goal-SAC 的 CSV 奖励分量由 wrapper 单独累计，不再误读基础 V11 reward。
 
 ## 验证与启动
 

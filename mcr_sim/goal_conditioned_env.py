@@ -23,14 +23,17 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self,
         venv,
         final_goal: float = 1.0,
-        step_cost: float = 0.002,
-        safety_weight: float = 0.001,
-        action_smoothness_weight: float = 0.001,
-        failure_terminal_penalty: float = 20.0,
+        step_cost: float = 0.005,
+        safety_weight: float = 0.002,
+        action_smoothness_weight: float = 0.0001,
+        failure_terminal_penalty: float = 120.0,
+        timeout_penalty: float = 120.0,
+        out_of_vessel_penalty: float = 150.0,
+        non_finite_penalty: float = 200.0,
         max_episode_steps: int = 2048,
         gamma: float = 0.999,
-        potential_scale: float = 5.0,
-        success_bonus: float = 20.0,
+        potential_scale: float = 10.0,
+        success_bonus: float = 100.0,
     ):
         super().__init__(venv)
         if getattr(venv.observation_space, "shape", None) is None:
@@ -43,6 +46,9 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self.safety_weight = float(max(0.0, safety_weight))
         self.action_smoothness_weight = float(max(0.0, action_smoothness_weight))
         self.failure_terminal_penalty = float(max(0.0, failure_terminal_penalty))
+        self.timeout_penalty = float(max(0.0, timeout_penalty))
+        self.out_of_vessel_penalty = float(max(0.0, out_of_vessel_penalty))
+        self.non_finite_penalty = float(max(0.0, non_finite_penalty))
         self.max_episode_steps = max(1, int(max_episode_steps))
         self.reward_contract = GoalReward(gamma, step_cost, potential_scale, success_bonus,
                                          failure_terminal_penalty)
@@ -58,6 +64,10 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self.desired_goals = np.full((self.num_envs, 1), self.final_goal, dtype=np.float32)
         self._goal_episode_returns = np.zeros(self.num_envs, dtype=np.float64)
         self._goal_episode_lengths = np.zeros(self.num_envs, dtype=np.int64)
+        self._goal_progress_returns = np.zeros(self.num_envs, dtype=np.float64)
+        self._goal_terminal_returns = np.zeros(self.num_envs, dtype=np.float64)
+        self._goal_safety_returns = np.zeros(self.num_envs, dtype=np.float64)
+        self._goal_step_returns = np.zeros(self.num_envs, dtype=np.float64)
         action_shape = tuple(getattr(self.action_space, "shape", ()) or ())
         if not action_shape:
             raise ValueError("GoalConditionedVecEnv requires a continuous action space")
@@ -82,6 +92,10 @@ class GoalConditionedVecEnv(VecEnvWrapper):
         self.desired_goals.fill(self.final_goal)
         self._goal_episode_returns.fill(0.0)
         self._goal_episode_lengths.fill(0)
+        self._goal_progress_returns.fill(0.0)
+        self._goal_terminal_returns.fill(0.0)
+        self._goal_safety_returns.fill(0.0)
+        self._goal_step_returns.fill(0.0)
         self._previous_actions.fill(0.0)
         self._pending_actions.fill(0.0)
         observations = self.venv.reset()
@@ -131,8 +145,22 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             )
             auxiliary_penalty = safety_penalty + smoothness_penalty
             success = bool(info.get("done_by_target", False))
-            sparse_rewards[index] = self.reward_contract(
-                previous, achieved, self.final_goal, success, bool(dones[index]), auxiliary_penalty)
+            terminal = bool(dones[index])
+            if success:
+                terminal_reward = self.reward_contract.success_bonus
+            elif bool(info.get("done_by_non_finite", False)):
+                terminal_reward = -self.non_finite_penalty
+            elif bool(info.get("done_by_out_of_vessel", False) or info.get("out_of_vessel", False)):
+                terminal_reward = -self.out_of_vessel_penalty
+            else:
+                terminal_reward = -self.timeout_penalty
+            base_reward, progress_reward, auxiliary_reward = self.reward_contract.terms(
+                previous, achieved, self.final_goal, success, terminal,
+                auxiliary_penalty, terminal_reward,
+            )
+            sparse_rewards[index] = np.float32(
+                base_reward + progress_reward + auxiliary_reward
+            )
             self._achieved[index] = achieved
             self._previous_actions[index] = self._pending_actions[index]
             # This task has an observed finite horizon (state[10]). A timeout
@@ -140,11 +168,21 @@ class GoalConditionedVecEnv(VecEnvWrapper):
             info["TimeLimit.truncated"] = False
             self._goal_episode_returns[index] += float(sparse_rewards[index])
             self._goal_episode_lengths[index] += 1
+            self._goal_progress_returns[index] += float(progress_reward)
+            self._goal_safety_returns[index] += float(auxiliary_reward)
+            if terminal:
+                self._goal_terminal_returns[index] += float(base_reward)
+            else:
+                self._goal_step_returns[index] += float(base_reward)
             info["goal_sparse_reward"] = float(sparse_rewards[index])
             info["goal_reward"] = float(sparse_rewards[index])
             info["goal_safety_penalty"] = float(safety_penalty)
             info["goal_action_smoothness_penalty"] = float(smoothness_penalty)
             info["goal_auxiliary_penalty"] = float(auxiliary_penalty)
+            info["goal_reward_progress"] = float(progress_reward)
+            info["goal_reward_terminal"] = float(base_reward) if terminal else 0.0
+            info["goal_reward_step"] = 0.0 if terminal else float(base_reward)
+            info["goal_terminal_base_reward"] = float(terminal_reward) if terminal else 0.0
             if dones[index]:
                 # The next reset happens inside VecEnv.step_wait.  Keep the
                 # original final goal in this transition's info.
@@ -153,8 +191,22 @@ class GoalConditionedVecEnv(VecEnvWrapper):
                 episode["r"] = float(self._goal_episode_returns[index])
                 episode["l"] = int(self._goal_episode_lengths[index])
                 info["episode"] = episode
+                info["episode_goal_reward_progress"] = float(self._goal_progress_returns[index])
+                info["episode_goal_reward_terminal"] = float(self._goal_terminal_returns[index])
+                info["episode_goal_reward_safety"] = float(self._goal_safety_returns[index])
+                info["episode_goal_reward_step"] = float(self._goal_step_returns[index])
+                info["episode_goal_reward_total_components"] = float(
+                    self._goal_progress_returns[index]
+                    + self._goal_terminal_returns[index]
+                    + self._goal_safety_returns[index]
+                    + self._goal_step_returns[index]
+                )
                 self._goal_episode_returns[index] = 0.0
                 self._goal_episode_lengths[index] = 0
+                self._goal_progress_returns[index] = 0.0
+                self._goal_terminal_returns[index] = 0.0
+                self._goal_safety_returns[index] = 0.0
+                self._goal_step_returns[index] = 0.0
                 self._achieved[index] = self.venv.get_attr(
                     "current_route_progress_ratio", indices=index)[0]
                 self._previous_actions[index].fill(0.0)
@@ -180,11 +232,11 @@ class SafeHerReplayBuffer(ReplayBuffer):
         min_goal_advance: float = 0.0,
         future_short_fraction: float = 0.25,
         future_medium_fraction: float = 0.35,
-        step_cost: float = 0.002,
+        step_cost: float = 0.005,
         gamma: float = 0.999,
-        potential_scale: float = 5.0,
-        success_bonus: float = 20.0,
-        failure_terminal_penalty: float = 20.0,
+        potential_scale: float = 10.0,
+        success_bonus: float = 100.0,
+        failure_terminal_penalty: float = 120.0,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -214,6 +266,7 @@ class SafeHerReplayBuffer(ReplayBuffer):
         self._milestone_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
         self.auxiliary_penalties = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.success_flags = np.zeros((self.buffer_size, self.n_envs), dtype=np.bool_)
+        self.terminal_base_rewards = np.zeros((self.buffer_size, self.n_envs), dtype=np.float32)
         self.her_stats = {
             "samples": 0,
             "her_samples": 0,
@@ -273,6 +326,9 @@ class SafeHerReplayBuffer(ReplayBuffer):
                 self._info_float(info, "goal_auxiliary_penalty", 0.0)
             )
             self.success_flags[slot, env_index] = bool(info.get("done_by_target", False))
+            self.terminal_base_rewards[slot, env_index] = np.float32(
+                self._info_float(info, "goal_terminal_base_reward", 0.0)
+            )
             self.episode_ids[slot, env_index] = self._episode_id[env_index]
             self.episode_steps[slot, env_index] = self._episode_step[env_index]
             if self.safe_flags[slot, env_index]:
@@ -378,9 +434,15 @@ class SafeHerReplayBuffer(ReplayBuffer):
                 next_achieved + self.goal_tolerance >= desired_goals[row]
             ) and bool(self.safe_flags[current, env_index])
             dones[row] = float(bool(dones[row]) or her_success)
+            terminal_reward = (
+                self.reward_contract.success_bonus if her_success
+                else self.terminal_base_rewards[current, env_index]
+            )
             rewards[row] = self.reward_contract(
                 observations[row, -2], next_achieved, desired_goals[row],
-                her_success, bool(dones[row]), self.auxiliary_penalties[current, env_index])
+                her_success, bool(dones[row]), self.auxiliary_penalties[current, env_index],
+                terminal_reward,
+            )
             self.her_stats["her_successes"] += int(her_success)
         observations = relabel_observation(observations, desired_goals)
         next_observations = relabel_observation(next_observations, desired_goals)

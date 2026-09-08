@@ -97,6 +97,17 @@ def parse_args():
         type=float,
         default=GOAL_SAC_FAILURE_TERMINAL_PENALTY,
     )
+    parser.add_argument("--goal-timeout-penalty", type=float, default=GOAL_SAC_TIMEOUT_PENALTY)
+    parser.add_argument(
+        "--goal-out-of-vessel-penalty",
+        type=float,
+        default=GOAL_SAC_OUT_OF_VESSEL_PENALTY,
+    )
+    parser.add_argument(
+        "--goal-non-finite-penalty",
+        type=float,
+        default=GOAL_SAC_NON_FINITE_PENALTY,
+    )
     parser.add_argument("--critic-ensemble-size", type=int, default=GOAL_SAC_CRITIC_ENSEMBLE_SIZE)
     parser.add_argument("--target-critic-subset-size", type=int, default=GOAL_SAC_TARGET_CRITIC_SUBSET_SIZE)
     parser.add_argument("--utd-ratio", type=int, default=GOAL_SAC_UTD_RATIO)
@@ -200,7 +211,7 @@ def main():
     args.goal_conditioning = "route_context_achieved_desired_v3_obs47"
     args.curriculum_protocol = curriculum_protocol_profile()
     args.reward_profile = {
-        "version": "goal_potential_v3",
+        "version": "goal_potential_antistall_v4",
         "goal_reward": "base + gamma*Phi(next)-Phi(previous); terminal Phi=0",
         "potential": "scale*min(max(achieved,0),goal)",
         "dense_route_progress": True,
@@ -210,6 +221,9 @@ def main():
         "safety_weight": args.goal_safety_weight,
         "action_smoothness_weight": args.goal_action_smoothness_weight,
         "failure_terminal_penalty": args.goal_failure_terminal_penalty,
+        "timeout_penalty": args.goal_timeout_penalty,
+        "out_of_vessel_penalty": args.goal_out_of_vessel_penalty,
+        "non_finite_penalty": args.goal_non_finite_penalty,
         "failure_horizon_compensation": False,
         "timeout_bootstrap": False,
         "her": "disabled" if args.her_ratio == 0.0 else "safe_future",
@@ -252,6 +266,9 @@ def main():
             **reward_kwargs,
             safety_weight=args.goal_safety_weight,
             action_smoothness_weight=args.goal_action_smoothness_weight,
+            timeout_penalty=args.goal_timeout_penalty,
+            out_of_vessel_penalty=args.goal_out_of_vessel_penalty,
+            non_finite_penalty=args.goal_non_finite_penalty,
             max_episode_steps=args.max_episode_steps,
         )
         model = GoalConditionedSAC(
@@ -308,6 +325,9 @@ def main():
                     **reward_kwargs,
                     safety_weight=args.goal_safety_weight,
                     action_smoothness_weight=args.goal_action_smoothness_weight,
+                    timeout_penalty=args.goal_timeout_penalty,
+                    out_of_vessel_penalty=args.goal_out_of_vessel_penalty,
+                    non_finite_penalty=args.goal_non_finite_penalty,
                     max_episode_steps=args.max_episode_steps,
                 )
 
@@ -326,7 +346,7 @@ def main():
         callback = EpochExperimentCallback(
             context=context,
             algorithm_name="goal_sac",
-            variant="safeher",
+            variant="noher" if args.her_ratio == 0.0 else "safeher",
             epochs=args.epochs,
             episodes_per_epoch=args.episodes_per_epoch,
             model_dir=model_dir,
@@ -347,6 +367,17 @@ def main():
             f"her={args.her_ratio:.2f} her_min_advance={args.her_min_goal_advance:.3f} "
             f"min_ent_coef={args.min_ent_coef:.3f} "
             f"curriculum={'on' if args.training_curriculum else 'off'} output={run_dir}"
+        )
+        print(
+            "[GOAL SAC REWARD] version=goal_potential_antistall_v4 "
+            f"step=-{args.goal_step_cost:g} success=+{args.goal_success_bonus:g} "
+            f"timeout=-{args.goal_timeout_penalty:g} "
+            f"out=-{args.goal_out_of_vessel_penalty:g} "
+            f"non_finite=-{args.goal_non_finite_penalty:g} "
+            f"potential={args.goal_potential_scale:g} "
+            f"safety={args.goal_safety_weight:g} "
+            f"smooth={args.goal_action_smoothness_weight:g} ent_coef={args.ent_coef}",
+            flush=True,
         )
         model.learn(total_timesteps=local_timesteps, callback=callback, reset_num_timesteps=True)
         context.barrier()
