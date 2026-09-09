@@ -35,12 +35,12 @@
 
 2048 是最大步数，不要求每个回合都运行满：到达目标或确认出血管会提前结束；
 非有限状态作为仿真异常紧急结束。偏离目标分支只产生连续风险代价，允许策略恢复；
-长期无进展仅作诊断，不额外终止。
+长期无进展会产生有上限的逐步代价，但不额外终止。
 
 ## 奖励
 
-Reward profile v12.1 使用选定路线的归一化完成度增量：
-`30×(completion_next-completion_previous)`。终止时不再清零已经获得的真实净进度；
+Reward profile v12.2 使用选定路线的归一化完成度增量：
+`60×(completion_next-completion_previous)`。终止时不再清零已经获得的真实净进度；
 回撤仍产生等量负增量，因此往返振荡不能制造进度收益。
 首次定位允许搜索完整目标路线；之后只在上一进度前后
 20/40 mm 内投影，并拒绝超过 2 mm 单步物理进度的候选。空间相邻的 180° 回头弯或
@@ -48,20 +48,23 @@ Reward profile v12.1 使用选定路线的归一化完成度增量：
 
 | 奖励项 | 权重 | 含义 |
 |---|---:|---|
-| 连续路线进度 | 完整路线最多 +30 | `30×completion_delta`；回撤为负 |
-| tip/整段导管接近越界 | -0.02×risk | tip 持续贴壁和 whole-body SDF 警告取最大值，risk 限制在 0..1 |
+| 连续路线进度 | 完整路线最多 +60 | `60×completion_delta`；回撤为负 |
+| tip/整段导管接近越界 | -0.005×risk | tip 持续贴壁和 whole-body SDF 警告取最大值，risk 限制在 0..1 |
 | 偏离目标分支 | -0.005×risk | 选定路线相对完整中心线图的距离差，risk 限制在 0..1 |
 | 最终成功 | +100 | 进入 3 mm 目标、路线剩余小于 5 mm，且导管在血管内 |
 | 出血管 | -80 | 整段导管中心超出 SDF 管壁 0.5 mm，连续 3 步时终止 |
 | 非有限状态 | -100 | observation/reward 出现非有限值时紧急终止 |
-| 超时 | -50 | 2048 步仍未完成 |
+| 超时 | -80 | 2048 步仍未完成 |
 | 每步代价 | -0.002 | 小型时间成本 |
-| 持续停滞 | 0 | 只记录诊断，绝不扣分或终止 |
+| 持续停滞 | -0.02×risk | 64 步宽限后按最近 32 步净进度计算；只扣分、不终止 |
+
+插入通道采用可逆的非对称线性映射：策略原始动作 `[-1,1]` 映射到物理动作
+`[-0.25,1]`。因此零均值初始策略具有温和的前进先验，同时仍保留低速回撤用于过弯修正。
 
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
-`max_grad_norm=0.5` 和 `ent_coef=0.003`。PPO/LSTM-PPO 的动作标准差初始值为
-`0.60`、下限 `0.12`、上限 `0.70`；SAC 自动熵系数下限为 `0.02`。
-`run_config.json` 会完整保存 Reward v12.1、实际 observation shape/dtype，`train_summary.csv`
+`max_grad_norm=0.5` 和 `ent_coef=0.0005`。PPO/LSTM-PPO 的动作标准差初始值为
+`0.50`、下限 `0.10`、上限 `0.60`；SAC 自动熵系数下限为 `0.02`。
+`run_config.json` 会完整保存 Reward v12.2、实际 observation shape/dtype，`train_summary.csv`
 同时记录四类奖励分项（progress/terminal/safety/step）、无进展/错误分支诊断事件、正回报失败率、终止路线势、
 中心线跳变拒绝次数、课程阶段、当前阶段每根血管的回合数与成功率、无进展次数、
 正负插入比例和最终插入长度。每个新 run 还会生成 `train_episodes.csv`，逐回合记录
@@ -195,9 +198,9 @@ LSTM-PPO 使用官方 SB3-Contrib 2.4 的 `RecurrentPPO`、`MlpLstmPolicy`、
 | global batch | 1024 | 1024 |
 | PPO n_epochs | 10 | 10 |
 | gamma / GAE lambda | 0.9995 / 0.98 | 0.9995 / 0.98 |
-| clip / entropy / value coef | 0.2 / 0.003 / 0.5 | 0.2 / 0.003 / 0.5 |
+| clip / entropy / value coef | 0.2 / 0.0005 / 0.5 | 0.2 / 0.0005 / 0.5 |
 | max grad norm | 0.5 | 0.5 |
-| action std initial/bounds | 0.60 / 0.12–0.70 | 0.60 / 0.12–0.70 |
+| action std initial/bounds | 0.50 / 0.10–0.60 | 0.50 / 0.10–0.60 |
 | LSTM hidden/layers | N/A | 128 / 1 |
 | bidirectional | N/A | false |
 

@@ -16,6 +16,10 @@ TRAIN_VESSEL_MAX_RADIUS_M = 0.0052
 TRAIN_ROUTE_MAX_LENGTH_M = 0.495
 CONTROLLER_MAX_INSERTION_M = 0.510
 MAX_INSERTION_PER_ACTION_M = 0.0004
+# Retraction remains available for bend recovery, but it is deliberately slower
+# than insertion.  A symmetric [-1, 1] insertion channel let early PPO policies
+# retract to the mechanical minimum and turn timeout into a low-risk strategy.
+INSERT_ACTION_NEGATIVE_LIMIT = -0.25
 
 # Environment/task defaults.
 SOFA_TIME_STEP_S = 0.01
@@ -89,12 +93,12 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v12. PPO receives direct normalized route-completion change.
+# Reward profile v12.2. PPO receives direct normalized route-completion change.
 # Earned partial progress is no longer removed in one large terminal transition;
 # retraction still cancels forward credit, so oscillation cannot create return.
-REWARD_PROFILE_VERSION = "12.1"
+REWARD_PROFILE_VERSION = "12.2"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
-REWARD_PROGRESS_SCALE = 30.0
+REWARD_PROGRESS_SCALE = 60.0
 # Compatibility alias for older reporting code. In V12 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
@@ -102,16 +106,17 @@ REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
 REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
 # Common learner discount; V12 progress itself is an undiscounted difference.
 REWARD_DISCOUNT_GAMMA = 0.9995
-REWARD_WALL_PROXIMITY = -0.020
+REWARD_WALL_PROXIMITY = -0.005
 REWARD_OFF_TARGET_BRANCH = -0.005
 REWARD_SUCCESS = 100.0
 REWARD_OUT_OF_VESSEL = -80.0
 REWARD_NON_FINITE = -100.0
-REWARD_TIMEOUT = -50.0
+REWARD_TIMEOUT = -80.0
 REWARD_STEP = -0.002
-# Stagnation remains an info diagnostic.  It is intentionally not a second
-# time penalty because the fixed step cost and timeout already price waiting.
-REWARD_STAGNATION = 0.0
+# Stagnation never terminates an episode.  This bounded per-step cost provides
+# local credit assignment after a grace period; the terminal timeout alone is
+# too delayed to discourage retract-and-wait under gamma=0.9995.
+REWARD_STAGNATION = -0.020
 
 # A short, rollout-visible window distinguishes deliberate steering pauses from
 # a policy that has collapsed to zero insertion/retraction.  It never terminates
@@ -148,7 +153,7 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "timeout": REWARD_TIMEOUT,
         "step": REWARD_STEP,
         "stagnation": REWARD_STAGNATION,
-        "stagnation_formula": "diagnostic_only_window32_net_route_progress_below_1mm",
+        "stagnation_formula": "bounded_window32_net_route_progress_below_1mm_after_grace",
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
@@ -238,7 +243,7 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.12,) * 5
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.10,) * 5
 SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 5
 
 
@@ -512,12 +517,12 @@ PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.98
 PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.003
+PPO_ENT_COEF = 0.0005
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
-PPO_INITIAL_ACTION_STD = 0.60
-PPO_MIN_ACTION_STD = 0.12
-PPO_MAX_ACTION_STD = 0.70
+PPO_INITIAL_ACTION_STD = 0.50
+PPO_MIN_ACTION_STD = 0.10
+PPO_MAX_ACTION_STD = 0.60
 
 
 def validate_training_defaults() -> None:
@@ -572,8 +577,8 @@ def validate_training_defaults() -> None:
         and REWARD_SUCCESS > maximum_navigation_credit
     ):
         raise ValueError("Reward V12 terminal outcomes must dominate shaping.")
-    if REWARD_STAGNATION != 0.0:
-        raise ValueError("Reward V12 stagnation must remain diagnostic-only.")
+    if REWARD_STAGNATION >= 0.0:
+        raise ValueError("Reward V12.2 stagnation must be a non-terminal penalty.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS

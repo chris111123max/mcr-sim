@@ -23,6 +23,7 @@ from .training_config import (
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
+    INSERT_ACTION_NEGATIVE_LIMIT,
     LOCAL_FIELD_ACTION_ANGLE_RAD,
     MAX_ACTION_DELTA,
     MAX_EPISODE_STEPS,
@@ -343,8 +344,16 @@ class MCREnv(SofaEnv):
         # to [-1, 1]. Near-wall insertion reduction, insertion blocking, and
         # forced retraction after out-of-vessel detection are all removed.
 
-        # Retraction remains available across the full action range.
-        self.insert_negative_limit = float(create_scene_kwargs.get("insert_negative_limit", -1.0))
+        # Retraction remains available for bend recovery, at a lower speed
+        # than insertion so retract-and-wait is not an easy policy attractor.
+        self.insert_negative_limit = float(
+            create_scene_kwargs.get(
+                "insert_negative_limit",
+                INSERT_ACTION_NEGATIVE_LIMIT,
+            )
+        )
+        if not (-1.0 <= self.insert_negative_limit < 0.0):
+            raise ValueError("insert_negative_limit must be in [-1, 0).")
 
         # Continuous selected-route navigation. Guidance points move with the
         # tracked arc length; projection locality and the physical step gate
@@ -1534,9 +1543,9 @@ class MCREnv(SofaEnv):
             self.no_progress_counter = 0
         if self.no_progress_feature > 0.0:
             self.no_progress_this_episode = True
-        # Reward V12 keeps stagnation as a diagnostic only. The immediate
-        # time cost and longer algorithmic discount horizon make waiting
-        # costly without another stateful reward term.
+        # Stagnation is recoverable and never terminates the episode.  Its
+        # bounded feature supplies prompt credit against retract-and-wait;
+        # progress immediately clears the cost.
         self.no_progress_failure = False
 
         try:
@@ -2835,13 +2844,11 @@ class MCREnv(SofaEnv):
         """
         raw_insert = float(np.clip(raw_insert, -1.0, 1.0))
         self.current_raw_insert = raw_insert
-        effective_insert = float(
-            np.clip(
-                raw_insert,
-                float(self.insert_negative_limit),
-                1.0,
-            )
-        )
+        # Affine, monotonic and fully invertible action map.  The zero-mean
+        # initial policy now has a modest forward prior, while raw=-1 still
+        # requests controlled retraction and raw=+1 retains full insertion.
+        lower = float(self.insert_negative_limit)
+        effective_insert = float(lower + 0.5 * (raw_insert + 1.0) * (1.0 - lower))
 
         self.current_effective_insert = effective_insert
         return self.current_effective_insert

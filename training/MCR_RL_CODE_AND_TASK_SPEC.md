@@ -54,7 +54,7 @@ tools/                        人工血管生成与检查
 
 设计目的是依赖局部几何并泛化到新血管。潜在不足是：MLP 没有长期历史；20 mm 前视对急弯可能不足；路线投影跳变会污染状态；近壁信号可能触发偏晚。
 
-## 4. 当前奖励：Reward V12.1
+## 4. 当前奖励：Reward V12.2
 
 ```text
 reward = route progress
@@ -66,26 +66,26 @@ reward = route progress
 
 | 奖励项 | 当前值 |
 |---|---:|
-| route progress scale | `30.0` |
-| near-wall | `-0.020 × risk/step` |
+| route progress scale | `60.0` |
+| near-wall | `-0.005 × risk/step` |
 | wrong branch | `-0.005/step` |
 | step cost | `-0.002/step` |
 | success | `+100` |
 | out of vessel | `-80` |
 | non-finite | `-100` |
-| timeout | `-50` |
-| no progress | `0`，只记录 |
+| timeout | `-80` |
+| no progress | `-0.020 × risk/step`，不终止 |
 
 progress 公式：
 
 ```text
 completion_t = route_progress_t / target_route_length
-r_progress = 30 × (completion_t - completion_(t-1))
+r_progress = 60 × (completion_t - completion_(t-1))
 ```
 
 它不是“每前进一步奖励 30”。前进和后退按净路线完成度严格抵消，但失败或超时时不再一次性抹掉此前的真实净进度，从而给 PPO 保留连续学习信号。
 
-Reward V12 不使用 waypoint 一次性奖励，也不使用 no-progress 惩罚或提前终止。若走满 2048 步，step cost 累计为 `-4.096`，之后再加 timeout `-50`。
+Reward V12.2 不使用 waypoint 一次性奖励，也不使用 no-progress 提前终止。停滞在 64 步宽限后按 32 步净路线进度产生最高 `-0.020/step` 的可恢复代价。若走满 2048 步，step cost 累计为 `-4.096`，之后再加 timeout `-80`。
 
 当前风险是：progress 高度依赖路线投影；近壁惩罚较小且可能出现偏晚；参数尚未通过高成功率实验验证。
 

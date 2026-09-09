@@ -10,6 +10,7 @@ from mcr_sim.training_config import (
     ACTOR_OBSERVATION_DIM,
     ACTOR_SHAFT_LOOKBACK_DISTANCES_M,
     ACTOR_STATIC_ROUTE_FEATURE_DIM,
+    INSERT_ACTION_NEGATIVE_LIMIT,
     MAX_INSERTION_PER_ACTION_M,
     LOCAL_FIELD_ACTION_ANGLE_RAD,
     MAX_EPISODE_STEPS,
@@ -209,10 +210,10 @@ class RewardProfileTest(unittest.TestCase):
 
     def test_exploration_defaults_are_nonzero(self) -> None:
         self.assertGreater(SAC_MIN_ENT_COEF, 0.0)
-        self.assertEqual(PPO_ENT_COEF, 0.003)
-        self.assertEqual(PPO_INITIAL_ACTION_STD, 0.60)
-        self.assertEqual(PPO_MIN_ACTION_STD, 0.12)
-        self.assertEqual(PPO_MAX_ACTION_STD, 0.70)
+        self.assertEqual(PPO_ENT_COEF, 0.0005)
+        self.assertEqual(PPO_INITIAL_ACTION_STD, 0.50)
+        self.assertEqual(PPO_MIN_ACTION_STD, 0.10)
+        self.assertEqual(PPO_MAX_ACTION_STD, 0.60)
         self.assertLess(PPO_MIN_ACTION_STD, PPO_MAX_ACTION_STD)
         self.assertLess(PPO_MAX_ACTION_STD, 1.0)
         self.assertLessEqual(PPO_MIN_ACTION_STD, PPO_INITIAL_ACTION_STD)
@@ -269,7 +270,7 @@ class RewardProfileTest(unittest.TestCase):
     def test_exploration_floors_use_stable_values(self) -> None:
         stage0 = curriculum_exploration_profile(0)
         stage3 = curriculum_exploration_profile(4)
-        self.assertEqual(stage0["ppo_min_action_std"], 0.12)
+        self.assertEqual(stage0["ppo_min_action_std"], 0.10)
         self.assertEqual(stage0, stage3)
 
     def test_terminal_outcomes_dominate_normalized_shaping(self) -> None:
@@ -279,17 +280,23 @@ class RewardProfileTest(unittest.TestCase):
         self.assertGreater(REWARD_SUCCESS, maximum_credit)
 
     def test_stationary_episode_reaches_timeout_with_negative_return(self) -> None:
-        stationary_return = REWARD_STEP * MAX_EPISODE_STEPS + REWARD_TIMEOUT
+        penalized_steps = MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS
+        stationary_return = (
+            REWARD_STEP * MAX_EPISODE_STEPS
+            + REWARD_STAGNATION * penalized_steps
+            + REWARD_TIMEOUT
+        )
         self.assertLess(stationary_return, 0.0)
 
     def test_reward_profile_is_minimal_v12(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, "12.1")
-        self.assertEqual(REWARD_PROGRESS_PER_M, 30.0)
+        self.assertEqual(REWARD_PROFILE_VERSION, "12.2")
+        self.assertEqual(REWARD_PROGRESS_PER_M, 60.0)
         self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
         self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)
-        self.assertEqual(REWARD_TIMEOUT, -50.0)
+        self.assertEqual(REWARD_TIMEOUT, -80.0)
         self.assertEqual(REWARD_STEP, -0.002)
-        self.assertEqual(REWARD_STAGNATION, 0.0)
+        self.assertEqual(REWARD_STAGNATION, -0.020)
+        self.assertEqual(INSERT_ACTION_NEGATIVE_LIMIT, -0.25)
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
     def test_observation_v11_is_local_compact_and_contains_one_response_step(self) -> None:
@@ -312,11 +319,15 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLess(discounted_return, 0.0)
 
     def test_waiting_and_immediate_unsafe_exit_are_both_negative(self) -> None:
-        waiting_return = REWARD_TIMEOUT + REWARD_STEP * MAX_EPISODE_STEPS
+        waiting_return = (
+            REWARD_TIMEOUT
+            + REWARD_STEP * MAX_EPISODE_STEPS
+            + REWARD_STAGNATION * (MAX_EPISODE_STEPS - NO_PROGRESS_GRACE_STEPS)
+        )
         immediate_exit_return = REWARD_OUT_OF_VESSEL
         self.assertLess(waiting_return, 0.0)
         self.assertLess(immediate_exit_return, 0.0)
-        self.assertLess(immediate_exit_return, waiting_return)
+        self.assertLess(waiting_return, immediate_exit_return)
 
     def test_success_has_a_large_margin_over_best_failure(self) -> None:
         maximum_credit = REWARD_PROGRESS_BUDGET
