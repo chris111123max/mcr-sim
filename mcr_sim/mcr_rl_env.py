@@ -619,6 +619,7 @@ class MCREnv(SofaEnv):
         self.insert_negative_steps_episode = 0
         self.insert_near_zero_steps_episode = 0
         self.max_inserted_length_episode = 0.0
+        self._terminal_diagnostic_trace = deque(maxlen=64)
 
         # Continuous route stagnation diagnostics/termination.
         self.no_progress_counter = 0
@@ -1176,6 +1177,7 @@ class MCREnv(SofaEnv):
         self.insert_negative_steps_episode = 0
         self.insert_near_zero_steps_episode = 0
         self.max_inserted_length_episode = 0.0
+        self._terminal_diagnostic_trace = deque(maxlen=64)
         self.no_progress_counter = 0
         self.no_progress_failure = False
         self.no_progress_this_episode = False
@@ -1302,6 +1304,35 @@ class MCREnv(SofaEnv):
                 self.reward_info["reward_timeout_penalty"] = timeout_penalty
                 self.reward_info["reward"] = float(reward)
                 self.episode_reward_totals["timeout_penalty"] += timeout_penalty
+
+        # Keep only a short in-memory tail. It is exposed in terminal info and
+        # sampled by the experiment callback; it never enters the observation,
+        # reward, replay data, or policy update.
+        def finite_or_nan(value):
+            value = float(value)
+            return value if np.isfinite(value) else None
+
+        self._terminal_diagnostic_trace.append({
+            "step": int(self._elapsed_steps),
+            "route_completion": finite_or_nan(self.current_route_progress_ratio),
+            "route_progress_m": finite_or_nan(self.current_route_progress),
+            "route_progress_delta_m": finite_or_nan(self.current_route_progress_delta),
+            "rot_n": float(action_np[0]) if action_np.size > 0 else 0.0,
+            "rot_b": float(action_np[1]) if action_np.size > 1 else 0.0,
+            "raw_insert": float(self.current_raw_insert),
+            "effective_insert": float(self.current_effective_insert),
+            "inserted_length_m": finite_or_nan(self.current_sdf_inserted_length),
+            "tip_clearance_m": finite_or_nan(self.current_sdf_surface_clearance),
+            "body_clearance_m": finite_or_nan(self.current_sdf_body_min_surface_clearance),
+            "body_warning": finite_or_nan(self.current_sdf_body_warning_feature),
+            "off_target_branch": finite_or_nan(self.current_off_target_branch_feature),
+            "no_progress": finite_or_nan(self.no_progress_feature),
+            "reward_progress": float(self.reward_info.get("reward_route_progress", 0.0)),
+            "reward_wall": float(self.reward_info.get("reward_wall_proximity_penalty", 0.0)),
+            "reward_stagnation": float(self.reward_info.get("reward_stagnation_penalty", 0.0)),
+            "reward_step": float(self.reward_info.get("reward_step_penalty", 0.0)),
+            "reward_total": float(reward),
+        })
 
         info = self._get_info(terminated=terminated, truncated=truncated)
         if truncated:
@@ -1944,6 +1975,10 @@ class MCREnv(SofaEnv):
         info["positive_failure_return"] = bool(
             failed_episode and episode_reward_total_components > 1e-6
         )
+        if terminated or truncated:
+            info["terminal_diagnostic_trace"] = list(
+                self._terminal_diagnostic_trace
+            )
         return {
             **info,
             **self.reward_info,

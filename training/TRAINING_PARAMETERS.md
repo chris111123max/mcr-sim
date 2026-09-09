@@ -72,6 +72,14 @@ SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
 该文件只用于诊断，不参与 observation、reward 或梯度更新。
 正式训练中 `positive_failure_rate` 必须保持为 0。
 
+`train_episodes.csv` 还会逐回合保存 progress、wall、branch、stagnation、step
+和 terminal 奖励分量，以及由路线起终弧长和完成度重建的累计路线位置。环境仅在内存中
+保留最近 64 步诊断，训练回调按血管和终止原因每 20 回合抽样一次，写入
+`logs/terminal_traces_rank_<rank>.jsonl`。这些数据不进入 observation 或 PPO 更新。
+
+可使用 `training/py/evaluate_train_policy.py` 对训练 checkpoint 进行固定 B01/B02 的
+deterministic/stochastic 对照评估。结果写入 run 的 `diagnostics/`，独立于 valid 解锁条件。
+
 B01..B05 和 C01..C05 全部使用 `vessel_sdf.vti` 直接判断管壁关系。
 每步从导管尖端向入口遍历已插入的导管段，并按不大于半个 VTI
 网格的间距加密采样。body 可以接触和依靠管壁滑动；whole-body 警告从最差导管中心

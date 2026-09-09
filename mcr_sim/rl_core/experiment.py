@@ -87,6 +87,7 @@ class EpochExperimentCallback(BaseCallback):
         training_curriculum_enabled: bool = True,
         episode_sync_interval_steps: int = 256,
         performance_log_interval_steps: int = 64,
+        terminal_trace_sample_interval: int = 20,
     ):
         super().__init__(verbose=0)
         self.context = context
@@ -123,6 +124,10 @@ class EpochExperimentCallback(BaseCallback):
             1, int(performance_log_interval_steps)
         )
         self._performance_step_count = 0
+        self.terminal_trace_sample_interval = max(
+            1, int(terminal_trace_sample_interval)
+        )
+        self._terminal_trace_counts = {}
         self.global_completed_episodes = 0
         self.next_epoch = 1
         self._epoch_success_count = 0
@@ -179,6 +184,12 @@ class EpochExperimentCallback(BaseCallback):
             "route_potential", "final_dist_to_goal_m", "min_dist_to_goal_m",
             "inserted_length_m", "max_sdf_penetration_m", "route_progress_m",
             "route_projection_jump_rejections", "curriculum_stage",
+            "route_start_progress_m", "route_target_progress_m",
+            "route_progress_from_completion_m", "reward_progress",
+            "reward_wall", "reward_branch", "reward_stagnation", "reward_step",
+            "reward_success", "reward_out_of_vessel", "reward_non_finite",
+            "reward_timeout", "sdf_tip_clearance_min_m",
+            "sdf_body_clearance_min_m", "inserted_length_max_m",
         ]
         self.best_valid_success_rate = -1.0
         self.best_valid_route_completion = -1.0
@@ -311,17 +322,15 @@ class EpochExperimentCallback(BaseCallback):
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        # Compact V12 event schema. Removed legacy behavior/retraction/stagnation
-        # reward slots are intentionally not retained: old runs are not
-        # resume-compatible with the new observation/reward contract.
-        # Extra numeric columns remain inside the existing synchronized event
-        # block, so diagnostics add no new distributed collective.
-        events = np.zeros((len(dones), 29), dtype=np.float32)
+        # Compact V12 event schema. Extra numeric diagnostics stay inside the
+        # existing synchronized block, so they add no distributed collective.
+        events = np.zeros((len(dones), 44), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
             info = infos[index]
             episode_info = info.get("episode", {})
+            self._append_sampled_terminal_trace(info, episode_info)
             route_ratio = float(info.get("route_progress_ratio", np.nan))
             route_completion = (
                 float(np.clip(route_ratio, 0.0, 1.0))
@@ -402,8 +411,58 @@ class EpochExperimentCallback(BaseCallback):
                         str(info.get("terminal_reason", "other")), 5
                     )
                 ),
+                float(info.get("route_start_progress", np.nan)),
+                float(info.get("route_target_progress", np.nan)),
+                float(
+                    info.get("route_start_progress", 0.0)
+                    + route_completion
+                    * (
+                        info.get("route_target_progress", 0.0)
+                        - info.get("route_start_progress", 0.0)
+                    )
+                ),
+                reward_progress,
+                float(info.get("episode_reward_wall_proximity_penalty", 0.0)),
+                float(info.get("episode_reward_off_target_branch_penalty", 0.0)),
+                float(info.get("episode_reward_stagnation_penalty", 0.0)),
+                float(info.get("episode_reward_step_penalty", 0.0)),
+                float(info.get("episode_reward_successful_task", 0.0)),
+                float(info.get("episode_reward_out_of_vessel_penalty", 0.0)),
+                float(info.get("episode_reward_non_finite_penalty", 0.0)),
+                float(info.get("episode_reward_timeout_penalty", 0.0)),
+                float(info.get("sdf_surface_clearance_min_episode", np.nan)),
+                float(info.get("sdf_body_surface_clearance_min_episode", np.nan)),
+                float(info.get("inserted_length_max_episode", np.nan)),
             ]
         return events
+
+    def _append_sampled_terminal_trace(self, info, episode_info) -> None:
+        """Persist a bounded sample of terminal histories without affecting RL."""
+
+        trace = info.get("terminal_diagnostic_trace")
+        if not trace:
+            return
+        reason = str(info.get("terminal_reason", "other"))
+        key = (str(info.get("sampling_model", info.get("chosen_model", "unknown"))), reason)
+        count = int(self._terminal_trace_counts.get(key, 0)) + 1
+        self._terminal_trace_counts[key] = count
+        if (count - 1) % self.terminal_trace_sample_interval:
+            return
+        record = {
+            "rank": int(self.context.rank),
+            "local_terminal_index": count,
+            "model_num_timesteps": int(getattr(self.model, "num_timesteps", 0)),
+            "vessel_id": key[0],
+            "terminal_reason": reason,
+            "success": bool(info.get("done_by_target", False)),
+            "episode_steps": int(episode_info.get("l", 0)),
+            "episode_reward": float(episode_info.get("r", 0.0)),
+            "trace": trace,
+        }
+        path = self.run_dir / f"terminal_traces_rank_{self.context.rank}.jsonl"
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
+            stream.write("\n")
 
     def _append_train_episode_rows(self, accepted, global_episode_start: int) -> None:
         """Write diagnostics only; this data never feeds observations or updates."""
@@ -438,6 +497,21 @@ class EpochExperimentCallback(BaseCallback):
                 "route_progress_m": float(event[27]),
                 "route_projection_jump_rejections": int(round(float(event[22]))),
                 "curriculum_stage": int(round(float(event[23]))),
+                "route_start_progress_m": float(event[29]),
+                "route_target_progress_m": float(event[30]),
+                "route_progress_from_completion_m": float(event[31]),
+                "reward_progress": float(event[32]),
+                "reward_wall": float(event[33]),
+                "reward_branch": float(event[34]),
+                "reward_stagnation": float(event[35]),
+                "reward_step": float(event[36]),
+                "reward_success": float(event[37]),
+                "reward_out_of_vessel": float(event[38]),
+                "reward_non_finite": float(event[39]),
+                "reward_timeout": float(event[40]),
+                "sdf_tip_clearance_min_m": float(event[41]),
+                "sdf_body_clearance_min_m": float(event[42]),
+                "inserted_length_max_m": float(event[43]),
             })
         _append_csv_rows(
             self.run_dir / "train_episodes.csv",

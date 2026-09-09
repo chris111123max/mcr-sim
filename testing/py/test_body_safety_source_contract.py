@@ -115,7 +115,21 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn('self.run_dir / "train_episodes.csv"', source)
         self.assertIn('"max_sdf_penetration_m"', source)
         self.assertIn('"terminal_reason"', source)
-        self.assertIn("events = np.zeros((len(dones), 29)", source)
+        self.assertIn("events = np.zeros((len(dones), 44)", source)
+        self.assertIn('"reward_wall"', source)
+        self.assertIn('"route_progress_from_completion_m"', source)
+        self.assertIn("terminal_traces_rank_", source)
+
+    def test_terminal_trace_is_diagnostic_only(self):
+        source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("self._terminal_diagnostic_trace.append", source)
+        self.assertIn('info["terminal_diagnostic_trace"]', source)
+        observation_block = source.split(
+            "def _get_observation", 1
+        )[1].split("def _get_reward_features", 1)[0]
+        self.assertNotIn("terminal_diagnostic_trace", observation_block)
 
 
 if __name__ == "__main__":
