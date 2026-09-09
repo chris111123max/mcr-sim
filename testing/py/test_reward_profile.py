@@ -209,7 +209,10 @@ class RewardProfileTest(unittest.TestCase):
 
     def test_exploration_defaults_are_nonzero(self) -> None:
         self.assertGreater(SAC_MIN_ENT_COEF, 0.0)
-        self.assertEqual(PPO_ENT_COEF, 0.0)
+        self.assertEqual(PPO_ENT_COEF, 0.003)
+        self.assertEqual(PPO_INITIAL_ACTION_STD, 0.60)
+        self.assertEqual(PPO_MIN_ACTION_STD, 0.12)
+        self.assertEqual(PPO_MAX_ACTION_STD, 0.70)
         self.assertLess(PPO_MIN_ACTION_STD, PPO_MAX_ACTION_STD)
         self.assertLess(PPO_MAX_ACTION_STD, 1.0)
         self.assertLessEqual(PPO_MIN_ACTION_STD, PPO_INITIAL_ACTION_STD)
@@ -266,7 +269,7 @@ class RewardProfileTest(unittest.TestCase):
     def test_exploration_floors_use_stable_values(self) -> None:
         stage0 = curriculum_exploration_profile(0)
         stage3 = curriculum_exploration_profile(4)
-        self.assertEqual(stage0["ppo_min_action_std"], 0.08)
+        self.assertEqual(stage0["ppo_min_action_std"], 0.12)
         self.assertEqual(stage0, stage3)
 
     def test_terminal_outcomes_dominate_normalized_shaping(self) -> None:
@@ -280,7 +283,7 @@ class RewardProfileTest(unittest.TestCase):
         self.assertLess(stationary_return, 0.0)
 
     def test_reward_profile_is_minimal_v12(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, "12.0")
+        self.assertEqual(REWARD_PROFILE_VERSION, "12.1")
         self.assertEqual(REWARD_PROGRESS_PER_M, 30.0)
         self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
         self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)

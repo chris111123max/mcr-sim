@@ -43,7 +43,7 @@ tools/                        人工血管生成与检查
 
 - 当前磁场方向；
 - 路线前方 10 mm、20 mm 的目标方向；
-- 路线前方 5/10/20 mm 的切线方向；
+- 路线前方 5/15/30 mm 的切线方向；
 - 剩余路线距离和剩余时间；
 - 当前插入长度和局部血管半径；
 - 尖端及整根导管最危险位置的壁面 clearance；
@@ -54,7 +54,7 @@ tools/                        人工血管生成与检查
 
 设计目的是依赖局部几何并泛化到新血管。潜在不足是：MLP 没有长期历史；20 mm 前视对急弯可能不足；路线投影跳变会污染状态；近壁信号可能触发偏晚。
 
-## 4. 当前奖励：Reward V12
+## 4. 当前奖励：Reward V12.1
 
 ```text
 reward = route progress
@@ -67,7 +67,7 @@ reward = route progress
 | 奖励项 | 当前值 |
 |---|---:|
 | route progress scale | `30.0` |
-| near-wall | `-0.002/step` |
+| near-wall | `-0.020 × risk/step` |
 | wrong branch | `-0.005/step` |
 | step cost | `-0.002/step` |
 | success | `+100` |

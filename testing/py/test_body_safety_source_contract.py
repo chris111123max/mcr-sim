@@ -108,6 +108,15 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertNotIn("_terminalize_route_progress_shaping", timeout_block)
         self.assertIn("_get_curve_control_features", source)
 
+    def test_training_episode_diagnostics_are_persisted(self):
+        source = (PROJECT_ROOT / "mcr_sim" / "rl_core" / "experiment.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('self.run_dir / "train_episodes.csv"', source)
+        self.assertIn('"max_sdf_penetration_m"', source)
+        self.assertIn('"terminal_reason"', source)
+        self.assertIn("events = np.zeros((len(dones), 29)", source)
+
 
 if __name__ == "__main__":
     unittest.main()

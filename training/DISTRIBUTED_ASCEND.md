@@ -180,7 +180,7 @@ LSTM-PPO: 45 current local features plus one 7-dimensional action-response tuple
 The current state contains magnetic field, far route guidance, centreline correction,
 remaining route/time/insertion budgets, tip and whole-body SDF risk, the worst shaft
 sample, shaft landmarks 10/30/60 mm behind the tip, and selected-route tangents
-5/10/20 mm ahead.
+5/15/30 mm ahead.
 Redundant bend scalars, contact flags, forward probes, duplicate near guidance and
 four-frame mixed-coordinate history were removed. Every spatial vector is expressed
 in the current catheter-tip frame; absolute XYZ and route-completion percentage remain

@@ -42,6 +42,32 @@ def _append_csv(path: Path, fieldnames, row) -> None:
         writer.writerow(row)
 
 
+def _append_csv_rows(path: Path, fieldnames, rows) -> None:
+    """Append one synchronized batch without reopening the file per episode."""
+
+    if not rows:
+        return
+    path = Path(path)
+    write_header = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fieldnames)
+        if write_header:
+            writer.writeheader()
+        writer.writerows(rows)
+
+
+_TERMINAL_REASON_TO_CODE = {
+    "target": 1,
+    "timeout": 2,
+    "out_of_vessel": 3,
+    "non_finite": 4,
+    "other": 5,
+}
+_TERMINAL_CODE_TO_REASON = {
+    code: reason for reason, code in _TERMINAL_REASON_TO_CODE.items()
+}
+
+
 class EpochExperimentCallback(BaseCallback):
     """Count global episodes and run parallel validation at epoch boundaries."""
 
@@ -147,6 +173,13 @@ class EpochExperimentCallback(BaseCallback):
             for model_id in self._curriculum_model_ids
         }
         self._pending_episode_events = []
+        self._train_episode_fieldnames = [
+            "global_episode", "epoch", "vessel_id", "terminal_reason",
+            "success", "steps", "reward", "route_completion",
+            "route_potential", "final_dist_to_goal_m", "min_dist_to_goal_m",
+            "inserted_length_m", "max_sdf_penetration_m", "route_progress_m",
+            "route_projection_jump_rejections", "curriculum_stage",
+        ]
         self.best_valid_success_rate = -1.0
         self.best_valid_route_completion = -1.0
         self.best_valid_route_potential = -1.0
@@ -281,7 +314,9 @@ class EpochExperimentCallback(BaseCallback):
         # Compact V12 event schema. Removed legacy behavior/retraction/stagnation
         # reward slots are intentionally not retained: old runs are not
         # resume-compatible with the new observation/reward contract.
-        events = np.zeros((len(dones), 24), dtype=np.float32)
+        # Extra numeric columns remain inside the existing synchronized event
+        # block, so diagnostics add no new distributed collective.
+        events = np.zeros((len(dones), 29), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -358,8 +393,57 @@ class EpochExperimentCallback(BaseCallback):
                 float(model_index),
                 float(info.get("route_projection_jump_rejections_episode", 0.0)),
                 float(info.get("curriculum_stage", self.curriculum_stage)),
+                float(info.get("final_dist_to_goal", np.nan)),
+                float(info.get("min_dist_to_goal", np.nan)),
+                float(info.get("sdf_penetration_depth_max_episode", 0.0)),
+                float(info.get("route_progress", np.nan)),
+                float(
+                    _TERMINAL_REASON_TO_CODE.get(
+                        str(info.get("terminal_reason", "other")), 5
+                    )
+                ),
             ]
         return events
+
+    def _append_train_episode_rows(self, accepted, global_episode_start: int) -> None:
+        """Write diagnostics only; this data never feeds observations or updates."""
+
+        if not self.context.is_main:
+            return
+        rows = []
+        for offset, event in enumerate(accepted):
+            global_episode = int(global_episode_start + offset + 1)
+            model_index = int(round(float(event[21])))
+            vessel_id = (
+                self._curriculum_model_ids[model_index]
+                if 0 <= model_index < len(self._curriculum_model_ids)
+                else "unknown"
+            )
+            rows.append({
+                "global_episode": global_episode,
+                "epoch": int((global_episode - 1) // self.episodes_per_epoch + 1),
+                "vessel_id": vessel_id,
+                "terminal_reason": _TERMINAL_CODE_TO_REASON.get(
+                    int(round(float(event[28]))), "other"
+                ),
+                "success": int(event[1] > 0.5),
+                "steps": int(round(float(event[3]))),
+                "reward": float(event[2]),
+                "route_completion": float(event[17]),
+                "route_potential": float(event[20]),
+                "final_dist_to_goal_m": float(event[24]),
+                "min_dist_to_goal_m": float(event[25]),
+                "inserted_length_m": float(event[16]),
+                "max_sdf_penetration_m": float(event[26]),
+                "route_progress_m": float(event[27]),
+                "route_projection_jump_rejections": int(round(float(event[22]))),
+                "curriculum_stage": int(round(float(event[23]))),
+            })
+        _append_csv_rows(
+            self.run_dir / "train_episodes.csv",
+            self._train_episode_fieldnames,
+            rows,
+        )
 
     def _global_pending_episode_events(self):
         """Synchronize one fixed-size block of episode statistics."""
@@ -1054,7 +1138,9 @@ class EpochExperimentCallback(BaseCallback):
             )
             take = min(remaining, len(completed_events) - cursor)
             accepted = completed_events[cursor : cursor + take]
+            global_episode_start = self.global_completed_episodes
             self.global_completed_episodes += len(accepted)
+            self._append_train_episode_rows(accepted, global_episode_start)
             self._epoch_success_count += int(accepted[:, 1].sum())
             self._epoch_reward_sum += float(accepted[:, 2].sum())
             self._epoch_episode_steps_sum += float(accepted[:, 3].sum())

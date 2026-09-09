@@ -38,7 +38,7 @@ ACTOR_OBSERVATION_DIM = (
 # complete route; recurrent tracking is local and physically gated so nearby
 # arms of a U-turn cannot create artificial progress. Two moving guidance
 # points replace discrete waypoint spheres.
-ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.020)
+ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.030)
 ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.020
 # Translation/rotation-invariant horizon feature used by the actor instead of
 # absolute route completion.  The longest generated training route is the
@@ -68,7 +68,7 @@ SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
 SDF_BODY_WARNING_MARGIN_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
 SDF_SAMPLE_STEP_FRACTION = 0.5
-CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.005, 0.010, 0.020)
+CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.005, 0.015, 0.030)
 TIP_NEAR_WALL_GRACE_STEPS = 5
 TIP_NEAR_WALL_RAMP_STEPS = 20
 
@@ -92,7 +92,7 @@ ENTRY_TANGENT_POINTS = 5
 # Reward profile v12. PPO receives direct normalized route-completion change.
 # Earned partial progress is no longer removed in one large terminal transition;
 # retraction still cancels forward credit, so oscillation cannot create return.
-REWARD_PROFILE_VERSION = "12.0"
+REWARD_PROFILE_VERSION = "12.1"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
 REWARD_PROGRESS_SCALE = 30.0
 # Compatibility alias for older reporting code. In V12 this is per unit route
@@ -102,7 +102,7 @@ REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
 REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
 # Common learner discount; V12 progress itself is an undiscounted difference.
 REWARD_DISCOUNT_GAMMA = 0.9995
-REWARD_WALL_PROXIMITY = -0.002
+REWARD_WALL_PROXIMITY = -0.020
 REWARD_OFF_TARGET_BRANCH = -0.005
 REWARD_SUCCESS = 100.0
 REWARD_OUT_OF_VESSEL = -80.0
@@ -238,7 +238,7 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.08,) * 5
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.12,) * 5
 SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 5
 
 
@@ -512,12 +512,12 @@ PPO_N_EPOCHS = 10
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.98
 PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.0
+PPO_ENT_COEF = 0.003
 PPO_VF_COEF = 0.5
 PPO_MAX_GRAD_NORM = 0.5
-PPO_INITIAL_ACTION_STD = 0.50
-PPO_MIN_ACTION_STD = 0.08
-PPO_MAX_ACTION_STD = 0.60
+PPO_INITIAL_ACTION_STD = 0.60
+PPO_MIN_ACTION_STD = 0.12
+PPO_MAX_ACTION_STD = 0.70
 
 
 def validate_training_defaults() -> None:
