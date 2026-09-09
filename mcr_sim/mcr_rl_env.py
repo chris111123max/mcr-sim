@@ -1317,6 +1317,25 @@ class MCREnv(SofaEnv):
             "route_completion": finite_or_nan(self.current_route_progress_ratio),
             "route_progress_m": finite_or_nan(self.current_route_progress),
             "route_progress_delta_m": finite_or_nan(self.current_route_progress_delta),
+            "route_projection_segment": int(self.current_route_projection_segment),
+            "route_projection_distance_m": finite_or_nan(
+                self.current_route_projection_distance
+            ),
+            "centerline_local_radius_m": finite_or_nan(
+                self.current_centerline_local_radius
+            ),
+            "centerline_safety_ratio": finite_or_nan(
+                self.current_centerline_safety_ratio
+            ),
+            "centerline_safety_margin_m": finite_or_nan(
+                self.current_centerline_safety_margin
+            ),
+            "curve_bend_5mm": finite_or_nan(self.current_curve_bend_features[0]),
+            "curve_bend_10mm": finite_or_nan(self.current_curve_bend_features[1]),
+            "curve_bend_20mm": finite_or_nan(self.current_curve_bend_features[2]),
+            "curve_alignment_error_20mm": finite_or_nan(
+                self.current_curve_alignment_features[2]
+            ),
             "rot_n": float(action_np[0]) if action_np.size > 0 else 0.0,
             "rot_b": float(action_np[1]) if action_np.size > 1 else 0.0,
             "raw_insert": float(self.current_raw_insert),

@@ -76,6 +76,17 @@ class _OneStepVectorEnv:
                 "min_dist_to_goal": 0.0015,
                 "route_progress_ratio": 1.0,
                 "route_potential": 1.0,
+                "route_projection_segment": 7,
+                "centerline_safety_ratio_max_episode": 0.8,
+                "centerline_safety_margin_min_episode": 0.001,
+                "sdf_body_surface_clearance_min_episode": 0.0005,
+                "terminal_diagnostic_trace": [
+                    {
+                        "step": 1,
+                        "route_completion": 1.0,
+                        "rot_n": 0.25,
+                    }
+                ],
             }
             for _ in range(self.n_envs)
         ]
@@ -138,6 +149,16 @@ class RecurrentValidationTest(unittest.TestCase):
         self.assertEqual(result.valid_episodes, 5)
         self.assertEqual(result.valid_success_count, 5)
         self.assertEqual([item.seed for item in result.episodes], [123, 124, 125, 126, 127])
+        first = result.episodes[0]
+        self.assertEqual(first.diagnostics["route_projection_segment"], 7)
+        self.assertAlmostEqual(
+            first.diagnostics["centerline_safety_margin_min_episode_mm"], 1.0
+        )
+        self.assertAlmostEqual(
+            first.diagnostics["sdf_body_clearance_min_episode_mm"], 0.5
+        )
+        self.assertEqual(first.diagnostics["terminal_trace"][0]["step"], 1)
+        self.assertAlmostEqual(first.diagnostics["model_action_rot_n_abs_mean"], 0.0)
 
     def test_best_selection_uses_progress_only_to_break_success_ties(self):
         weak_failure = summarize_validation(

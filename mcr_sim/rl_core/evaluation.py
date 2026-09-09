@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from contextlib import contextmanager
 import json
 import math
 from pathlib import Path
-from typing import Callable, List, Sequence
+from typing import Callable, Dict, List, Sequence
 
 import numpy as np
 import random
@@ -60,6 +60,7 @@ class ValidationEpisodeResult:
     final_distance_mm: float = math.inf
     min_distance_mm: float = math.inf
     error: str = ""
+    diagnostics: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,89 @@ class ValidationResult:
 def _finite_mean(values, default: float) -> float:
     finite = [float(value) for value in values if math.isfinite(float(value))]
     return float(np.mean(finite)) if finite else float(default)
+
+
+def _diagnostic_float(info, key: str, scale: float = 1.0) -> float:
+    """Read an optional terminal diagnostic without changing evaluation."""
+
+    try:
+        value = float(info.get(key, math.nan)) * float(scale)
+    except (TypeError, ValueError):
+        return math.nan
+    return value if math.isfinite(value) else math.nan
+
+
+def _terminal_diagnostics(info) -> Dict[str, object]:
+    """Extract safety/control evidence from an environment's terminal info."""
+
+    trace = info.get("terminal_diagnostic_trace", ())
+    if not isinstance(trace, (list, tuple)):
+        trace = ()
+    return {
+        "route_progress_m": _diagnostic_float(info, "route_progress"),
+        "route_projection_segment": int(info.get("route_projection_segment", -1)),
+        "route_projection_distance_mm": _diagnostic_float(
+            info, "route_projection_distance", 1000.0
+        ),
+        "route_projection_jump_rejections": int(
+            info.get("route_projection_jump_rejections_episode", 0)
+        ),
+        "centerline_local_radius_mm": _diagnostic_float(
+            info, "centerline_local_radius", 1000.0
+        ),
+        "centerline_safety_ratio": _diagnostic_float(
+            info, "centerline_safety_ratio"
+        ),
+        "centerline_safety_ratio_max_episode": _diagnostic_float(
+            info, "centerline_safety_ratio_max_episode"
+        ),
+        "centerline_safety_margin_mm": _diagnostic_float(
+            info, "centerline_safety_margin", 1000.0
+        ),
+        "centerline_safety_margin_min_episode_mm": _diagnostic_float(
+            info, "centerline_safety_margin_min_episode", 1000.0
+        ),
+        "curve_bend_5mm": _diagnostic_float(info, "curve_bend_5mm"),
+        "curve_bend_10mm": _diagnostic_float(info, "curve_bend_10mm"),
+        "curve_bend_20mm": _diagnostic_float(info, "curve_bend_20mm"),
+        "curve_alignment_error_20mm": _diagnostic_float(
+            info, "curve_alignment_error_20mm"
+        ),
+        "sdf_tip_clearance_min_episode_mm": _diagnostic_float(
+            info, "sdf_surface_clearance_min_episode", 1000.0
+        ),
+        "sdf_body_clearance_min_episode_mm": _diagnostic_float(
+            info, "sdf_body_surface_clearance_min_episode", 1000.0
+        ),
+        "sdf_penetration_depth_max_episode_mm": _diagnostic_float(
+            info, "sdf_penetration_depth_max_episode", 1000.0
+        ),
+        "sdf_near_wall_steps_episode": int(
+            info.get("sdf_tip_near_wall_steps_episode", 0)
+        ),
+        "sdf_wall_contact_steps_episode": int(
+            info.get("sdf_wall_contact_steps_episode", 0)
+        ),
+        "insert_action_mean_episode": _diagnostic_float(
+            info, "insert_action_mean_episode"
+        ),
+        "insert_positive_fraction_episode": _diagnostic_float(
+            info, "insert_positive_fraction_episode"
+        ),
+        "insert_negative_fraction_episode": _diagnostic_float(
+            info, "insert_negative_fraction_episode"
+        ),
+        "insert_near_zero_fraction_episode": _diagnostic_float(
+            info, "insert_near_zero_fraction_episode"
+        ),
+        "inserted_length_final_mm": _diagnostic_float(
+            info, "inserted_length_final", 1000.0
+        ),
+        "inserted_length_max_episode_mm": _diagnostic_float(
+            info, "inserted_length_max_episode", 1000.0
+        ),
+        "terminal_trace": tuple(dict(item) for item in trace if isinstance(item, dict)),
+    }
 
 
 def summarize_validation(
@@ -429,6 +513,13 @@ def evaluate_vector_policy(
             completed_for_vessel = 0
             while completed_for_vessel < requested:
                 batch_size = min(parallel, requested - completed_for_vessel)
+                print(
+                    f"[VECTOR EVAL][Vessel {vessel_id}] "
+                    f"episodes={completed_for_vessel + 1}-"
+                    f"{completed_for_vessel + batch_size}/{requested} "
+                    f"parallel_envs={batch_size} status=start",
+                    flush=True,
+                )
                 env = env_factory(str(vessel_id), batch_size)
                 batch_seed = (
                     int(base_seed)
@@ -445,9 +536,24 @@ def evaluate_vector_policy(
                     rewards = np.zeros(batch_size, dtype=np.float64)
                     steps = np.zeros(batch_size, dtype=np.int64)
                     active = np.ones(batch_size, dtype=np.bool_)
+                    action_sums = None
+                    action_abs_sums = None
+                    action_abs_max = None
                     hard_limit = max(1, int(max_episode_steps)) + 1
                     for _ in range(hard_limit):
                         action = policy_action(observation)
+                        action_values = np.asarray(
+                            action, dtype=np.float64
+                        ).reshape(batch_size, -1)
+                        if action_sums is None:
+                            action_sums = np.zeros_like(action_values)
+                            action_abs_sums = np.zeros_like(action_values)
+                            action_abs_max = np.zeros_like(action_values)
+                        action_sums[active] += action_values[active]
+                        action_abs_sums[active] += np.abs(action_values[active])
+                        action_abs_max[active] = np.maximum(
+                            action_abs_max[active], np.abs(action_values[active])
+                        )
                         step_result = env.step(action)
                         if len(step_result) == 5:
                             observation, reward, terminated, truncated, infos = step_result
@@ -481,6 +587,20 @@ def evaluate_vector_policy(
                             )
                             min_distance = float(info.get("min_dist_to_goal", math.inf))
                             episode_index = completed_for_vessel + int(slot)
+                            diagnostics = _terminal_diagnostics(info)
+                            action_names = ("rot_n", "rot_b", "insert")
+                            action_count = max(1, int(steps[slot]))
+                            for action_index, action_name in enumerate(action_names):
+                                if action_sums is not None and action_index < action_sums.shape[1]:
+                                    diagnostics[f"model_action_{action_name}_mean"] = float(
+                                        action_sums[slot, action_index] / action_count
+                                    )
+                                    diagnostics[f"model_action_{action_name}_abs_mean"] = float(
+                                        action_abs_sums[slot, action_index] / action_count
+                                    )
+                                    diagnostics[f"model_action_{action_name}_abs_max"] = float(
+                                        action_abs_max[slot, action_index]
+                                    )
                             results.append(
                                 ValidationEpisodeResult(
                                     vessel_id=str(vessel_id),
@@ -504,6 +624,7 @@ def evaluate_vector_policy(
                                         if math.isfinite(min_distance)
                                         else math.inf
                                     ),
+                                    diagnostics=diagnostics,
                                 )
                             )
                             active[slot] = False
@@ -525,6 +646,11 @@ def evaluate_vector_policy(
                 finally:
                     env.close()
                 completed_for_vessel += batch_size
+                print(
+                    f"[VECTOR EVAL][Vessel {vessel_id}] "
+                    f"completed={completed_for_vessel}/{requested} status=finished",
+                    flush=True,
+                )
     results.sort(key=lambda item: (item.vessel_id, item.episode_index))
     return summarize_validation(results)
 
