@@ -18,7 +18,7 @@ if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
 from mcr_sim.distributed import DistributedPPO, configure_npu_execution, initialize_distributed
-from mcr_sim.rl_core.evaluation import evaluate_policy
+from mcr_sim.rl_core.evaluation import evaluate_vector_policy
 
 from train_ppo import build_env, parse_args
 
@@ -26,7 +26,8 @@ from train_ppo import build_env, parse_args
 def _configure_parser(parser) -> None:
     parser.add_argument("--checkpoints", nargs="+", required=True)
     parser.add_argument("--eval-vessels", nargs="+", default=["B01", "B02"])
-    parser.add_argument("--eval-episodes-per-vessel", type=int, default=10)
+    parser.add_argument("--eval-episodes-per-vessel", type=int, default=32)
+    parser.add_argument("--eval-n-envs", type=int, default=32)
     parser.add_argument("--eval-output-dir", default="")
 
 
@@ -44,6 +45,8 @@ def main() -> None:
     args = parse_args(_configure_parser)
     if args.eval_episodes_per_vessel <= 0:
         raise ValueError("--eval-episodes-per-vessel must be positive")
+    if args.eval_n_envs <= 0:
+        raise ValueError("--eval-n-envs must be positive")
 
     checkpoints = [Path(value).expanduser().resolve() for value in args.checkpoints]
     missing = [str(path) for path in checkpoints if not path.is_file()]
@@ -107,18 +110,21 @@ def main() -> None:
             mode = "deterministic" if deterministic else "stochastic"
             model.set_random_seed(int(args.seed) + mode_index * 1_000_000)
 
-            def env_factory(vessel_id):
+            def env_factory(vessel_id, n_envs):
                 eval_args = copy.copy(args)
                 eval_args.force_model = str(vessel_id).upper()
+                eval_args.n_envs = int(n_envs)
+                eval_args.local_n_envs = int(n_envs)
                 return build_env(eval_args)
 
-            result = evaluate_policy(
+            result = evaluate_vector_policy(
                 tuple(str(value).upper() for value in args.eval_vessels),
                 env_factory,
                 lambda observation, flag=deterministic: model.predict(
                     observation, deterministic=flag
                 )[0],
                 episodes_per_vessel=int(args.eval_episodes_per_vessel),
+                max_parallel_envs=int(args.eval_n_envs),
                 max_episode_steps=int(args.max_episode_steps),
                 base_seed=int(args.seed) + 200_000,
             )

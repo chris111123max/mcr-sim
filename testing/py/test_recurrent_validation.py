@@ -9,6 +9,7 @@ import numpy as np
 from mcr_sim.rl_core.evaluation import (
     ValidationEpisodeResult,
     evaluate_policy,
+    evaluate_vector_policy,
     summarize_validation,
     validation_selection_key,
 )
@@ -55,6 +56,40 @@ class _StatefulPredictor:
         return np.zeros((1, 2), dtype=np.float32)
 
 
+class _OneStepVectorEnv:
+    def __init__(self, n_envs):
+        self.n_envs = int(n_envs)
+        self.base_seed = 0
+
+    def seed(self, seed):
+        self.base_seed = int(seed)
+
+    def reset(self):
+        return np.zeros((self.n_envs, 3), dtype=np.float32)
+
+    def step(self, action):
+        infos = [
+            {
+                "done_by_target": True,
+                "terminal_reason": "target",
+                "final_dist_to_goal": 0.002,
+                "min_dist_to_goal": 0.0015,
+                "route_progress_ratio": 1.0,
+                "route_potential": 1.0,
+            }
+            for _ in range(self.n_envs)
+        ]
+        return (
+            np.zeros((self.n_envs, 3), dtype=np.float32),
+            np.ones(self.n_envs, dtype=np.float32),
+            np.ones(self.n_envs, dtype=np.bool_),
+            infos,
+        )
+
+    def close(self):
+        return None
+
+
 class RecurrentValidationTest(unittest.TestCase):
     def test_action_state_resets_once_per_validation_episode(self):
         predictor = _StatefulPredictor()
@@ -82,6 +117,27 @@ class RecurrentValidationTest(unittest.TestCase):
             max_episode_steps=1,
         )
         self.assertEqual(result.valid_success_count, 2)
+
+    def test_vector_evaluation_batches_without_losing_episodes(self):
+        batch_sizes = []
+
+        def factory(vessel_id, n_envs):
+            batch_sizes.append(int(n_envs))
+            return _OneStepVectorEnv(n_envs)
+
+        result = evaluate_vector_policy(
+            ["B01"],
+            factory,
+            lambda observation: np.zeros((len(observation), 3), dtype=np.float32),
+            episodes_per_vessel=5,
+            max_parallel_envs=2,
+            max_episode_steps=1,
+            base_seed=123,
+        )
+        self.assertEqual(batch_sizes, [2, 2, 1])
+        self.assertEqual(result.valid_episodes, 5)
+        self.assertEqual(result.valid_success_count, 5)
+        self.assertEqual([item.seed for item in result.episodes], [123, 124, 125, 126, 127])
 
     def test_best_selection_uses_progress_only_to_break_success_ties(self):
         weak_failure = summarize_validation(

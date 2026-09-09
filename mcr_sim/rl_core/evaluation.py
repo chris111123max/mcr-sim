@@ -402,6 +402,133 @@ def evaluate_policy(
     return summarize_validation(results)
 
 
+def evaluate_vector_policy(
+    vessel_ids: Sequence[str],
+    env_factory: Callable[[str, int], object],
+    policy_action: Callable[[np.ndarray], np.ndarray],
+    episodes_per_vessel: int = 32,
+    max_parallel_envs: int = 32,
+    max_episode_steps: int = 4096,
+    base_seed: int = 100_000,
+) -> ValidationResult:
+    """Evaluate one fixed-seed episode per vector slot in parallel.
+
+    Each vessel is evaluated separately so its statistics remain exact.  Up to
+    ``max_parallel_envs`` slots run concurrently; larger requested sample counts
+    are processed in independent batches.  The function is diagnostic-only and
+    never mutates policy parameters.
+    """
+
+    requested = int(episodes_per_vessel)
+    parallel = max(1, int(max_parallel_envs))
+    if requested <= 0:
+        raise ValueError("episodes_per_vessel must be positive")
+    results = []
+    with _preserve_rng_state():
+        for vessel_offset, vessel_id in enumerate(vessel_ids):
+            completed_for_vessel = 0
+            while completed_for_vessel < requested:
+                batch_size = min(parallel, requested - completed_for_vessel)
+                env = env_factory(str(vessel_id), batch_size)
+                batch_seed = (
+                    int(base_seed)
+                    + vessel_offset * requested
+                    + completed_for_vessel
+                )
+                try:
+                    seed_method = getattr(env, "seed", None)
+                    if callable(seed_method):
+                        seed_method(batch_seed)
+                    observation = env.reset()
+                    if isinstance(observation, tuple):
+                        observation = observation[0]
+                    rewards = np.zeros(batch_size, dtype=np.float64)
+                    steps = np.zeros(batch_size, dtype=np.int64)
+                    active = np.ones(batch_size, dtype=np.bool_)
+                    hard_limit = max(1, int(max_episode_steps)) + 1
+                    for _ in range(hard_limit):
+                        action = policy_action(observation)
+                        step_result = env.step(action)
+                        if len(step_result) == 5:
+                            observation, reward, terminated, truncated, infos = step_result
+                            dones = np.logical_or(terminated, truncated)
+                        else:
+                            observation, reward, dones, infos = step_result
+                        reward = np.asarray(reward, dtype=np.float64).reshape(-1)
+                        dones = np.asarray(dones, dtype=np.bool_).reshape(-1)
+                        rewards[active] += reward[active]
+                        steps[active] += 1
+                        infos = list(infos)
+                        for slot in np.flatnonzero(active & dones):
+                            info = infos[int(slot)]
+                            success = bool(info.get("done_by_target", False))
+                            route_ratio = float(info.get("route_progress_ratio", math.nan))
+                            route_completion = (
+                                1.0
+                                if success
+                                else float(np.clip(route_ratio, 0.0, 1.0))
+                                if math.isfinite(route_ratio)
+                                else 0.0
+                            )
+                            route_potential = float(
+                                np.clip(info.get("route_potential", 0.0), 0.0, 1.0)
+                            )
+                            final_distance = float(
+                                info.get(
+                                    "final_dist_to_goal",
+                                    info.get("current_dist_to_goal", math.inf),
+                                )
+                            )
+                            min_distance = float(info.get("min_dist_to_goal", math.inf))
+                            episode_index = completed_for_vessel + int(slot)
+                            results.append(
+                                ValidationEpisodeResult(
+                                    vessel_id=str(vessel_id),
+                                    episode_index=episode_index,
+                                    seed=batch_seed + int(slot),
+                                    success=success,
+                                    terminal_reason=str(
+                                        info.get("terminal_reason", "other")
+                                    ),
+                                    steps=int(steps[slot]),
+                                    reward=float(rewards[slot]),
+                                    route_completion=route_completion,
+                                    route_potential=route_potential,
+                                    final_distance_mm=(
+                                        final_distance * 1000.0
+                                        if math.isfinite(final_distance)
+                                        else math.inf
+                                    ),
+                                    min_distance_mm=(
+                                        min_distance * 1000.0
+                                        if math.isfinite(min_distance)
+                                        else math.inf
+                                    ),
+                                )
+                            )
+                            active[slot] = False
+                        if not np.any(active):
+                            break
+                    for slot in np.flatnonzero(active):
+                        results.append(
+                            ValidationEpisodeResult(
+                                vessel_id=str(vessel_id),
+                                episode_index=completed_for_vessel + int(slot),
+                                seed=batch_seed + int(slot),
+                                success=False,
+                                terminal_reason="evaluation_limit",
+                                steps=int(steps[slot]),
+                                reward=float(rewards[slot]),
+                                error="environment did not terminate within evaluation limit",
+                            )
+                        )
+                finally:
+                    env.close()
+                completed_for_vessel += batch_size
+    results.sort(key=lambda item: (item.vessel_id, item.episode_index))
+    return summarize_validation(results)
+
+
 def validation_result_to_json(result: ValidationResult) -> str:
     return json.dumps(
         [
