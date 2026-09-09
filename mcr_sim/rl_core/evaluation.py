@@ -115,11 +115,11 @@ def _terminal_diagnostics(info) -> Dict[str, object]:
         "centerline_safety_ratio_max_episode": _diagnostic_float(
             info, "centerline_safety_ratio_max_episode"
         ),
-        "centerline_safety_margin_mm": _diagnostic_float(
-            info, "centerline_safety_margin", 1000.0
+        "centerline_safety_margin": _diagnostic_float(
+            info, "centerline_safety_margin"
         ),
-        "centerline_safety_margin_min_episode_mm": _diagnostic_float(
-            info, "centerline_safety_margin_min_episode", 1000.0
+        "centerline_safety_margin_min_episode": _diagnostic_float(
+            info, "centerline_safety_margin_min_episode"
         ),
         "curve_bend_5mm": _diagnostic_float(info, "curve_bend_5mm"),
         "curve_bend_10mm": _diagnostic_float(info, "curve_bend_10mm"),

@@ -152,7 +152,7 @@ class RecurrentValidationTest(unittest.TestCase):
         first = result.episodes[0]
         self.assertEqual(first.diagnostics["route_projection_segment"], 7)
         self.assertAlmostEqual(
-            first.diagnostics["centerline_safety_margin_min_episode_mm"], 1.0
+            first.diagnostics["centerline_safety_margin_min_episode"], 0.001
         )
         self.assertAlmostEqual(
             first.diagnostics["sdf_body_clearance_min_episode_mm"], 0.5

@@ -39,7 +39,7 @@
 
 ## 奖励
 
-Reward profile v12.2 使用选定路线的归一化完成度增量：
+Reward profile v13.0 使用选定路线的归一化完成度增量：
 `60×(completion_next-completion_previous)`。终止时不再清零已经获得的真实净进度；
 回撤仍产生等量负增量，因此往返振荡不能制造进度收益。
 首次定位允许搜索完整目标路线；之后只在上一进度前后
@@ -58,13 +58,13 @@ Reward profile v12.2 使用选定路线的归一化完成度增量：
 | 每步代价 | -0.002 | 小型时间成本 |
 | 持续停滞 | -0.02×risk | 64 步宽限后按最近 32 步净进度计算；只扣分、不终止 |
 
-插入通道采用可逆的非对称线性映射：策略原始动作 `[-1,1]` 映射到物理动作
-`[-0.25,1]`。因此零均值初始策略具有温和的前进先验，同时仍保留低速回撤用于过弯修正。
+插入通道采用保持零点的非对称分段映射：策略原始动作 `-1/0/+1` 分别映射到物理动作
+`-0.25/0/+1`。正向保持完整插入力，负向为低速回撤；零动作不会暗中推动导管前进。
 
 SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
 `max_grad_norm=0.5` 和 `ent_coef=0.0005`。PPO/LSTM-PPO 的动作标准差初始值为
 `0.50`、下限 `0.10`、上限 `0.60`；SAC 自动熵系数下限为 `0.02`。
-`run_config.json` 会完整保存 Reward v12.2、实际 observation shape/dtype，`train_summary.csv`
+`run_config.json` 会完整保存 Reward v13.0、实际 observation shape/dtype，`train_summary.csv`
 同时记录四类奖励分项（progress/terminal/safety/step）、无进展/错误分支诊断事件、正回报失败率、终止路线势、
 中心线跳变拒绝次数、课程阶段、当前阶段每根血管的回合数与成功率、无进展次数、
 正负插入比例和最终插入长度。每个新 run 还会生成 `train_episodes.csv`，逐回合记录
@@ -75,14 +75,16 @@ SAC 在跨 rank 梯度平均之后统一使用 `max_grad_norm=10`；PPO 使用
 `train_episodes.csv` 还会逐回合保存 progress、wall、branch、stagnation、step
 和 terminal 奖励分量，以及由路线起终弧长和完成度重建的累计路线位置。环境仅在内存中
 保留最近 64 步诊断，训练回调按血管和终止原因每 20 回合抽样一次，写入
-`logs/terminal_traces_rank_<rank>.jsonl`。这些数据不进入 observation 或 PPO 更新。
+`diagnostics/terminal_traces/rank_<rank>_part_<part>.jsonl`，每 100 条轨迹自动换文件。
+`diagnostics/safety_summary.csv` 保存逐 epoch 安全趋势，`vessel_summary.csv` 保存逐血管趋势，
+`failure_episodes.csv` 只保存失败回合。这些数据不进入 observation 或 PPO 更新。
 
 可使用 `training/py/evaluate_train_policy.py` 对训练 checkpoint 进行固定 B01/B02 的
 deterministic/stochastic 对照评估。结果写入 run 的 `diagnostics/`，独立于 valid 解锁条件。
 
 B01..B05 和 C01..C05 全部使用 `vessel_sdf.vti` 直接判断管壁关系。
 每步从导管尖端向入口遍历已插入的导管段，并按不大于半个 VTI
-网格的间距加密采样。body 可以接触和依靠管壁滑动；whole-body 警告从最差导管中心
+网格的间距加密采样。body 可以接触和依靠管壁滑动；whole-body 警告从导管表面
 距管壁 0.5 mm 时开始线性启用，并与连续 3 步越界终止使用同一 SDF 状态。
 确认越界由终止惩罚处理，不再叠加第二个穿透 shaping 项。tip 净空仍用于贴壁风险和成功质量统计；
 旧中心线安全比只作为缺少 VTI 的旧血管兼容后备，不参与这十条训练血管的判定。

@@ -77,6 +77,7 @@ from .training_config import (
     VESSEL_SCALE_MIN,
     VESSEL_SECTION_FEATURE_DIM,
     body_sdf_risk_features,
+    map_insert_action,
 )
 from .route_tracking import normalized_route_progress, project_to_route
 
@@ -615,10 +616,17 @@ class MCREnv(SofaEnv):
         self.current_raw_insert = 0.0
         self.current_effective_insert = 0.0
         self.insert_action_sum_episode = 0.0
+        self.raw_insert_action_sum_episode = 0.0
         self.insert_positive_steps_episode = 0
         self.insert_negative_steps_episode = 0
         self.insert_near_zero_steps_episode = 0
         self.max_inserted_length_episode = 0.0
+        self.sdf_body_warning_steps_episode = 0
+        self.sdf_body_contact_steps_episode = 0
+        self.sdf_body_warning_sum_episode = 0.0
+        self.sdf_body_warning_positive_insert_steps_episode = 0
+        self.max_curve_bend_features_episode = np.zeros(3, dtype=np.float32)
+        self.max_curve_alignment_error_20mm_episode = 0.0
         self._terminal_diagnostic_trace = deque(maxlen=64)
 
         # Continuous route stagnation diagnostics/termination.
@@ -1173,10 +1181,17 @@ class MCREnv(SofaEnv):
         self.current_raw_insert = 0.0
         self.current_effective_insert = 0.0
         self.insert_action_sum_episode = 0.0
+        self.raw_insert_action_sum_episode = 0.0
         self.insert_positive_steps_episode = 0
         self.insert_negative_steps_episode = 0
         self.insert_near_zero_steps_episode = 0
         self.max_inserted_length_episode = 0.0
+        self.sdf_body_warning_steps_episode = 0
+        self.sdf_body_contact_steps_episode = 0
+        self.sdf_body_warning_sum_episode = 0.0
+        self.sdf_body_warning_positive_insert_steps_episode = 0
+        self.max_curve_bend_features_episode = np.zeros(3, dtype=np.float32)
+        self.max_curve_alignment_error_20mm_episode = 0.0
         self._terminal_diagnostic_trace = deque(maxlen=64)
         self.no_progress_counter = 0
         self.no_progress_failure = False
@@ -1327,7 +1342,7 @@ class MCREnv(SofaEnv):
             "centerline_safety_ratio": finite_or_nan(
                 self.current_centerline_safety_ratio
             ),
-            "centerline_safety_margin_m": finite_or_nan(
+            "centerline_safety_margin": finite_or_nan(
                 self.current_centerline_safety_margin
             ),
             "curve_bend_5mm": finite_or_nan(self.current_curve_bend_features[0]),
@@ -1608,7 +1623,7 @@ class MCREnv(SofaEnv):
                 max(0.0, inserted_length),
             )
 
-        # Normalized completion is both a diagnostic and the V12 progress state.
+        # Normalized completion is both a diagnostic and the V13 progress state.
         if valid_inside_vessel:
             self.current_route_potential = self._continuous_route_potential()
             self.current_route_potential_delta = float(
@@ -1654,6 +1669,21 @@ class MCREnv(SofaEnv):
             # Legacy vessels without VTI keep navigation rewards but do not
             # invent a dense SDF wall term from the selected route centreline.
             near_wall_feature = 0.0
+
+        # Episode diagnostics are updated exactly once from the reward path.
+        # Observation construction may query the SDF more than once, so these
+        # counters deliberately do not live in _update_sdf_safety_state().
+        body_warning = float(self.current_sdf_body_warning_feature)
+        if body_warning > 0.0:
+            self.sdf_body_warning_steps_episode += 1
+            if float(self.current_effective_insert) > 0.05:
+                self.sdf_body_warning_positive_insert_steps_episode += 1
+        if (
+            np.isfinite(self.current_sdf_body_min_surface_clearance)
+            and float(self.current_sdf_body_min_surface_clearance) <= 0.0
+        ):
+            self.sdf_body_contact_steps_episode += 1
+        self.sdf_body_warning_sum_episode += body_warning
 
         if self.current_out_of_vessel:
             self.out_of_vessel_this_episode = True
@@ -1959,6 +1989,9 @@ class MCREnv(SofaEnv):
             "insert_action_mean_episode": float(
                 self.insert_action_sum_episode / max(1, self._elapsed_steps)
             ),
+            "raw_insert_action_mean_episode": float(
+                self.raw_insert_action_sum_episode / max(1, self._elapsed_steps)
+            ),
             "insert_positive_fraction_episode": float(
                 self.insert_positive_steps_episode / max(1, self._elapsed_steps)
             ),
@@ -1972,6 +2005,30 @@ class MCREnv(SofaEnv):
                 max(0.0, self.mcr_controller_sofa._getXTipValue())
             ),
             "inserted_length_max_episode": float(self.max_inserted_length_episode),
+            "sdf_body_warning_steps_episode": int(
+                self.sdf_body_warning_steps_episode
+            ),
+            "sdf_body_contact_steps_episode": int(
+                self.sdf_body_contact_steps_episode
+            ),
+            "sdf_body_warning_mean_episode": float(
+                self.sdf_body_warning_sum_episode / max(1, self._elapsed_steps)
+            ),
+            "sdf_body_warning_positive_insert_steps_episode": int(
+                self.sdf_body_warning_positive_insert_steps_episode
+            ),
+            "curve_bend_5mm_max_episode": float(
+                self.max_curve_bend_features_episode[0]
+            ),
+            "curve_bend_10mm_max_episode": float(
+                self.max_curve_bend_features_episode[1]
+            ),
+            "curve_bend_20mm_max_episode": float(
+                self.max_curve_bend_features_episode[2]
+            ),
+            "curve_alignment_error_20mm_max_episode": float(
+                self.max_curve_alignment_error_20mm_episode
+            ),
             "no_progress_counter": int(self.no_progress_counter),
             "no_progress_failure": bool(self.no_progress_failure),
             "no_progress_this_episode": bool(self.no_progress_this_episode),
@@ -2348,6 +2405,7 @@ class MCREnv(SofaEnv):
             self.current_sdf_body_warning_feature,
             self.current_sdf_body_outside_depth_feature,
         ) = body_sdf_risk_features(
+            body_surface_clearance,
             max_signed,
             outside_tolerance=self.sdf_outside_center_tolerance,
             warning_margin=self.sdf_body_warning_margin,
@@ -2640,6 +2698,14 @@ class MCREnv(SofaEnv):
         )
         self.current_curve_bend_features = bend_features
         self.current_curve_alignment_features = alignment_features
+        self.max_curve_bend_features_episode = np.maximum(
+            self.max_curve_bend_features_episode,
+            np.asarray(bend_features, dtype=np.float32),
+        )
+        self.max_curve_alignment_error_20mm_episode = max(
+            float(self.max_curve_alignment_error_20mm_episode),
+            float(alignment_features[2]),
+        )
         # V12 keeps only non-redundant, actionable local safety/shape signals:
         # radius, tip/body clearance, direction and shaft location of the worst
         # SDF point, branch risk, shaft shape, and three future route tangents.
@@ -2898,11 +2964,13 @@ class MCREnv(SofaEnv):
         """
         raw_insert = float(np.clip(raw_insert, -1.0, 1.0))
         self.current_raw_insert = raw_insert
-        # Affine, monotonic and fully invertible action map.  The zero-mean
-        # initial policy now has a modest forward prior, while raw=-1 still
-        # requests controlled retraction and raw=+1 retains full insertion.
-        lower = float(self.insert_negative_limit)
-        effective_insert = float(lower + 0.5 * (raw_insert + 1.0) * (1.0 - lower))
+        # Zero-preserving piecewise map. Positive insertion keeps full authority;
+        # negative action requests slower recovery. Critically, raw=0 maps to 0
+        # rather than the old hidden +0.375 insertion command.
+        effective_insert = map_insert_action(
+            raw_insert,
+            negative_limit=self.insert_negative_limit,
+        )
 
         self.current_effective_insert = effective_insert
         return self.current_effective_insert
@@ -2943,6 +3011,7 @@ class MCREnv(SofaEnv):
         raw_insert = float(action[2]) if action.shape[0] > 2 else 0.0
 
         effective_insert = self._apply_insert_safety_shield(raw_insert)
+        self.raw_insert_action_sum_episode += float(raw_insert)
         self.insert_action_sum_episode += float(effective_insert)
         if effective_insert > 0.05:
             self.insert_positive_steps_episode += 1

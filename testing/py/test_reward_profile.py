@@ -23,6 +23,7 @@ from mcr_sim.training_config import (
     PPO_ENT_COEF,
     PPO_BATCH_SIZE,
     PPO_GAE_LAMBDA,
+    PPO_N_ENVS,
     PPO_N_STEPS,
     REWARD_PROGRESS_BUDGET,
     REWARD_PROGRESS_PER_M,
@@ -51,6 +52,7 @@ from mcr_sim.training_config import (
     TRAINING_CURRICULUM_STAGE_NAMES,
     TRAINING_CURRICULUM_TARGET_FRACTIONS,
     body_sdf_risk_features,
+    map_insert_action,
     curriculum_domain_randomization_profile,
     curriculum_exploration_profile,
     curriculum_sampling_weights,
@@ -201,12 +203,18 @@ class RewardProfileTest(unittest.TestCase):
         self.assertEqual((stage, streak), (1, 0))
 
     def test_body_sdf_risk_warns_before_confirmed_outside(self) -> None:
-        safe = body_sdf_risk_features(-0.0005)
-        wall = body_sdf_risk_features(0.0)
-        terminal = body_sdf_risk_features(0.0005)
+        safe = body_sdf_risk_features(0.0005, -0.001)
+        wall = body_sdf_risk_features(0.0, -0.0005)
+        terminal = body_sdf_risk_features(-0.001, 0.0005)
         self.assertEqual(safe, (0.0, 0.0))
-        self.assertEqual(wall, (0.5, 0.0))
+        self.assertEqual(wall, (1.0, 0.0))
         self.assertEqual(terminal, (1.0, 1.0))
+
+    def test_insert_action_mapping_preserves_zero_and_full_forward_authority(self) -> None:
+        self.assertEqual(map_insert_action(-1.0), INSERT_ACTION_NEGATIVE_LIMIT)
+        self.assertEqual(map_insert_action(0.0), 0.0)
+        self.assertEqual(map_insert_action(1.0), 1.0)
+        self.assertAlmostEqual(map_insert_action(-0.5), -0.125)
 
     def test_exploration_defaults_are_nonzero(self) -> None:
         self.assertGreater(SAC_MIN_ENT_COEF, 0.0)
@@ -288,15 +296,16 @@ class RewardProfileTest(unittest.TestCase):
         )
         self.assertLess(stationary_return, 0.0)
 
-    def test_reward_profile_is_minimal_v12(self) -> None:
-        self.assertEqual(REWARD_PROFILE_VERSION, "12.2")
+    def test_reward_profile_is_minimal_v13(self) -> None:
+        self.assertEqual(REWARD_PROFILE_VERSION, "13.0")
         self.assertEqual(REWARD_PROGRESS_PER_M, 60.0)
-        self.assertLess(REWARD_WALL_PROXIMITY, 0.0)
+        self.assertEqual(REWARD_WALL_PROXIMITY, -0.020)
         self.assertLess(REWARD_OFF_TARGET_BRANCH, 0.0)
         self.assertEqual(REWARD_TIMEOUT, -80.0)
         self.assertEqual(REWARD_STEP, -0.002)
         self.assertEqual(REWARD_STAGNATION, -0.020)
         self.assertEqual(INSERT_ACTION_NEGATIVE_LIMIT, -0.25)
+        self.assertEqual(PPO_N_ENVS, 32)
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
     def test_observation_v11_is_local_compact_and_contains_one_response_step(self) -> None:

@@ -34,6 +34,7 @@ from ..training_config import (
 
 def _append_csv(path: Path, fieldnames, row) -> None:
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -48,6 +49,7 @@ def _append_csv_rows(path: Path, fieldnames, rows) -> None:
     if not rows:
         return
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     write_header = not path.exists()
     with path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.DictWriter(stream, fieldnames=fieldnames)
@@ -128,6 +130,8 @@ class EpochExperimentCallback(BaseCallback):
             1, int(terminal_trace_sample_interval)
         )
         self._terminal_trace_counts = {}
+        self._terminal_trace_records_written = 0
+        self._terminal_trace_records_per_file = 100
         self.global_completed_episodes = 0
         self.next_epoch = 1
         self._epoch_success_count = 0
@@ -151,6 +155,15 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_reward_component_total_sum = 0.0
         self._epoch_route_potential_sum = 0.0
         self._epoch_route_jump_rejections_sum = 0.0
+        self._epoch_safety_ratio_max_sum = 0.0
+        self._epoch_safety_margin_min_sum = 0.0
+        self._epoch_tip_clearance_min_sum = 0.0
+        self._epoch_body_clearance_min_sum = 0.0
+        self._epoch_body_warning_steps_sum = 0.0
+        self._epoch_body_contact_steps_sum = 0.0
+        self._epoch_body_warning_mean_sum = 0.0
+        self._epoch_body_warning_positive_insert_steps_sum = 0.0
+        self._epoch_raw_insert_action_mean_sum = 0.0
         self._curriculum_model_ids = tuple(
             dict.fromkeys(
                 model_id
@@ -169,6 +182,27 @@ class EpochExperimentCallback(BaseCallback):
             len(self._curriculum_model_ids), dtype=np.int64
         )
         self._epoch_model_jump_rejection_counts = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_out_of_vessel_counts = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.int64
+        )
+        self._epoch_model_route_completion_sums = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_body_clearance_min_sums = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_safety_ratio_max_sums = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_body_warning_steps_sums = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_body_contact_steps_sums = np.zeros(
+            len(self._curriculum_model_ids), dtype=np.float64
+        )
+        self._epoch_model_effective_insert_sums = np.zeros(
             len(self._curriculum_model_ids), dtype=np.float64
         )
         self._curriculum_outcome_windows = {
@@ -190,6 +224,30 @@ class EpochExperimentCallback(BaseCallback):
             "reward_success", "reward_out_of_vessel", "reward_non_finite",
             "reward_timeout", "sdf_tip_clearance_min_m",
             "sdf_body_clearance_min_m", "inserted_length_max_m",
+        ]
+        self._failure_episode_fieldnames = [
+            "global_episode", "epoch", "vessel_id", "terminal_reason",
+            "steps", "reward", "route_completion", "route_progress_m",
+            "route_projection_segment", "route_projection_distance_m",
+            "final_dist_to_goal_m", "min_dist_to_goal_m",
+            "sdf_tip_clearance_min_m", "sdf_body_clearance_min_m",
+            "max_sdf_penetration_m", "centerline_safety_ratio_terminal",
+            "centerline_safety_ratio_max_episode",
+            "centerline_safety_margin_terminal",
+            "centerline_safety_margin_min_episode",
+            "sdf_tip_near_wall_steps_episode",
+            "sdf_body_warning_steps_episode",
+            "sdf_body_contact_steps_episode",
+            "sdf_body_warning_mean_episode",
+            "sdf_body_warning_positive_insert_steps_episode",
+            "raw_insert_action_mean", "effective_insert_action_mean",
+            "insert_positive_fraction", "insert_negative_fraction",
+            "curve_bend_5mm_max_episode", "curve_bend_10mm_max_episode",
+            "curve_bend_20mm_max_episode",
+            "curve_alignment_error_20mm_max_episode",
+            "reward_progress", "reward_wall", "reward_branch",
+            "reward_stagnation", "reward_step", "reward_out_of_vessel",
+            "reward_timeout",
         ]
         self.best_valid_success_rate = -1.0
         self.best_valid_route_completion = -1.0
@@ -322,9 +380,9 @@ class EpochExperimentCallback(BaseCallback):
     def _local_episode_events(self):
         dones = np.asarray(self.locals.get("dones", []), dtype=np.bool_).reshape(-1)
         infos = list(self.locals.get("infos", []))
-        # Compact V12 event schema. Extra numeric diagnostics stay inside the
+        # Compact V13 event schema. Extra numeric diagnostics stay inside the
         # existing synchronized block, so they add no distributed collective.
-        events = np.zeros((len(dones), 44), dtype=np.float32)
+        events = np.zeros((len(dones), 60), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -433,6 +491,22 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("sdf_surface_clearance_min_episode", np.nan)),
                 float(info.get("sdf_body_surface_clearance_min_episode", np.nan)),
                 float(info.get("inserted_length_max_episode", np.nan)),
+                float(info.get("raw_insert_action_mean_episode", 0.0)),
+                float(info.get("route_projection_segment", -1.0)),
+                float(info.get("route_projection_distance", np.nan)),
+                float(info.get("centerline_safety_ratio", np.nan)),
+                float(info.get("centerline_safety_ratio_max_episode", np.nan)),
+                float(info.get("centerline_safety_margin", np.nan)),
+                float(info.get("centerline_safety_margin_min_episode", np.nan)),
+                float(info.get("sdf_tip_near_wall_steps_episode", 0.0)),
+                float(info.get("sdf_body_warning_steps_episode", 0.0)),
+                float(info.get("sdf_body_contact_steps_episode", 0.0)),
+                float(info.get("sdf_body_warning_mean_episode", 0.0)),
+                float(info.get("sdf_body_warning_positive_insert_steps_episode", 0.0)),
+                float(info.get("curve_bend_5mm_max_episode", 0.0)),
+                float(info.get("curve_bend_10mm_max_episode", 0.0)),
+                float(info.get("curve_bend_20mm_max_episode", 0.0)),
+                float(info.get("curve_alignment_error_20mm_max_episode", 0.0)),
             ]
         return events
 
@@ -459,10 +533,14 @@ class EpochExperimentCallback(BaseCallback):
             "episode_reward": float(episode_info.get("r", 0.0)),
             "trace": trace,
         }
-        path = self.run_dir / f"terminal_traces_rank_{self.context.rank}.jsonl"
+        trace_dir = self.run_dir / "diagnostics" / "terminal_traces"
+        trace_dir.mkdir(parents=True, exist_ok=True)
+        part = self._terminal_trace_records_written // self._terminal_trace_records_per_file
+        path = trace_dir / f"rank_{self.context.rank}_part_{part:04d}.jsonl"
         with path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
             stream.write("\n")
+        self._terminal_trace_records_written += 1
 
     def _append_train_episode_rows(self, accepted, global_episode_start: int) -> None:
         """Write diagnostics only; this data never feeds observations or updates."""
@@ -470,6 +548,7 @@ class EpochExperimentCallback(BaseCallback):
         if not self.context.is_main:
             return
         rows = []
+        failure_rows = []
         for offset, event in enumerate(accepted):
             global_episode = int(global_episode_start + offset + 1)
             model_index = int(round(float(event[21])))
@@ -478,7 +557,7 @@ class EpochExperimentCallback(BaseCallback):
                 if 0 <= model_index < len(self._curriculum_model_ids)
                 else "unknown"
             )
-            rows.append({
+            row = {
                 "global_episode": global_episode,
                 "epoch": int((global_episode - 1) // self.episodes_per_epoch + 1),
                 "vessel_id": vessel_id,
@@ -512,11 +591,59 @@ class EpochExperimentCallback(BaseCallback):
                 "sdf_tip_clearance_min_m": float(event[41]),
                 "sdf_body_clearance_min_m": float(event[42]),
                 "inserted_length_max_m": float(event[43]),
-            })
+            }
+            rows.append(row)
+            if event[1] <= 0.5:
+                failure_rows.append({
+                    "global_episode": global_episode,
+                    "epoch": row["epoch"],
+                    "vessel_id": vessel_id,
+                    "terminal_reason": row["terminal_reason"],
+                    "steps": row["steps"],
+                    "reward": row["reward"],
+                    "route_completion": row["route_completion"],
+                    "route_progress_m": row["route_progress_m"],
+                    "route_projection_segment": int(round(float(event[45]))),
+                    "route_projection_distance_m": float(event[46]),
+                    "final_dist_to_goal_m": row["final_dist_to_goal_m"],
+                    "min_dist_to_goal_m": row["min_dist_to_goal_m"],
+                    "sdf_tip_clearance_min_m": row["sdf_tip_clearance_min_m"],
+                    "sdf_body_clearance_min_m": row["sdf_body_clearance_min_m"],
+                    "max_sdf_penetration_m": row["max_sdf_penetration_m"],
+                    "centerline_safety_ratio_terminal": float(event[47]),
+                    "centerline_safety_ratio_max_episode": float(event[48]),
+                    "centerline_safety_margin_terminal": float(event[49]),
+                    "centerline_safety_margin_min_episode": float(event[50]),
+                    "sdf_tip_near_wall_steps_episode": int(round(float(event[51]))),
+                    "sdf_body_warning_steps_episode": int(round(float(event[52]))),
+                    "sdf_body_contact_steps_episode": int(round(float(event[53]))),
+                    "sdf_body_warning_mean_episode": float(event[54]),
+                    "sdf_body_warning_positive_insert_steps_episode": int(round(float(event[55]))),
+                    "raw_insert_action_mean": float(event[44]),
+                    "effective_insert_action_mean": float(event[13]),
+                    "insert_positive_fraction": float(event[14]),
+                    "insert_negative_fraction": float(event[15]),
+                    "curve_bend_5mm_max_episode": float(event[56]),
+                    "curve_bend_10mm_max_episode": float(event[57]),
+                    "curve_bend_20mm_max_episode": float(event[58]),
+                    "curve_alignment_error_20mm_max_episode": float(event[59]),
+                    "reward_progress": float(event[32]),
+                    "reward_wall": float(event[33]),
+                    "reward_branch": float(event[34]),
+                    "reward_stagnation": float(event[35]),
+                    "reward_step": float(event[36]),
+                    "reward_out_of_vessel": float(event[38]),
+                    "reward_timeout": float(event[40]),
+                })
         _append_csv_rows(
             self.run_dir / "train_episodes.csv",
             self._train_episode_fieldnames,
             rows,
+        )
+        _append_csv_rows(
+            self.run_dir / "diagnostics" / "failure_episodes.csv",
+            self._failure_episode_fieldnames,
+            failure_rows,
         )
 
     def _global_pending_episode_events(self):
@@ -868,6 +995,39 @@ class EpochExperimentCallback(BaseCallback):
         route_jump_rejections_mean = (
             self._epoch_route_jump_rejections_sum / epoch_divisor
         )
+        raw_insert_action_mean = self._epoch_raw_insert_action_mean_sum / epoch_divisor
+        safety_ratio_max_mean = self._epoch_safety_ratio_max_sum / epoch_divisor
+        safety_margin_min_mean = self._epoch_safety_margin_min_sum / epoch_divisor
+        tip_clearance_min_mm_mean = (
+            self._epoch_tip_clearance_min_sum / epoch_divisor * 1000.0
+        )
+        body_clearance_min_mm_mean = (
+            self._epoch_body_clearance_min_sum / epoch_divisor * 1000.0
+        )
+        body_warning_steps_mean = self._epoch_body_warning_steps_sum / epoch_divisor
+        body_contact_steps_mean = self._epoch_body_contact_steps_sum / epoch_divisor
+        body_warning_mean = self._epoch_body_warning_mean_sum / epoch_divisor
+        warning_positive_insert_steps_mean = (
+            self._epoch_body_warning_positive_insert_steps_sum / epoch_divisor
+        )
+        warning_positive_insert_fraction = float(
+            self._epoch_body_warning_positive_insert_steps_sum
+            / max(self._epoch_body_warning_steps_sum, 1.0)
+        )
+        progress_to_safety_abs_ratio = float(
+            abs(self._epoch_reward_progress_sum)
+            / max(abs(self._epoch_reward_safety_sum), 1e-9)
+        )
+        out_of_vessel_rate = self._epoch_out_of_vessel_count / epoch_divisor
+        timeout_rate = self._epoch_timeout_count / epoch_divisor
+        if out_of_vessel_rate >= 0.50 and warning_positive_insert_fraction >= 0.50:
+            diagnostic_assessment = "body_escape_and_forward_insertion_after_warning"
+        elif out_of_vessel_rate >= 0.50:
+            diagnostic_assessment = "body_escape_dominant"
+        elif timeout_rate >= 0.50:
+            diagnostic_assessment = "timeout_dominant"
+        else:
+            diagnostic_assessment = "mixed_or_improving"
         curriculum_stage_used = self.curriculum_stage
         curriculum_stage_name_used = (
             str(TRAINING_CURRICULUM_STAGE_NAMES[curriculum_stage_used])
@@ -1128,12 +1288,95 @@ class EpochExperimentCallback(BaseCallback):
                     "checkpoint": str(checkpoint_path) + ".zip",
                 },
             )
+            _append_csv(
+                self.run_dir / "diagnostics" / "safety_summary.csv",
+                [
+                    "epoch", "episodes", "success_rate", "out_of_vessel_rate",
+                    "timeout_rate", "diagnostic_assessment",
+                    "route_completion_mean", "centerline_safety_ratio_max_mean",
+                    "centerline_safety_margin_min_mean",
+                    "sdf_tip_clearance_min_mm_mean",
+                    "sdf_body_clearance_min_mm_mean",
+                    "sdf_body_warning_steps_mean", "sdf_body_contact_steps_mean",
+                    "sdf_body_warning_mean",
+                    "sdf_body_warning_positive_insert_steps_mean",
+                    "sdf_body_warning_positive_insert_fraction",
+                    "raw_insert_action_mean", "effective_insert_action_mean",
+                    "insert_positive_fraction", "insert_negative_fraction",
+                    "reward_progress_mean", "reward_safety_mean",
+                    "progress_to_safety_abs_ratio",
+                ],
+                {
+                    "epoch": epoch,
+                    "episodes": self.episodes_per_epoch,
+                    "success_rate": train_success_rate,
+                    "out_of_vessel_rate": out_of_vessel_rate,
+                    "timeout_rate": timeout_rate,
+                    "diagnostic_assessment": diagnostic_assessment,
+                    "route_completion_mean": route_completion_mean,
+                    "centerline_safety_ratio_max_mean": safety_ratio_max_mean,
+                    "centerline_safety_margin_min_mean": safety_margin_min_mean,
+                    "sdf_tip_clearance_min_mm_mean": tip_clearance_min_mm_mean,
+                    "sdf_body_clearance_min_mm_mean": body_clearance_min_mm_mean,
+                    "sdf_body_warning_steps_mean": body_warning_steps_mean,
+                    "sdf_body_contact_steps_mean": body_contact_steps_mean,
+                    "sdf_body_warning_mean": body_warning_mean,
+                    "sdf_body_warning_positive_insert_steps_mean": warning_positive_insert_steps_mean,
+                    "sdf_body_warning_positive_insert_fraction": warning_positive_insert_fraction,
+                    "raw_insert_action_mean": raw_insert_action_mean,
+                    "effective_insert_action_mean": insert_action_mean,
+                    "insert_positive_fraction": insert_positive_fraction,
+                    "insert_negative_fraction": insert_negative_fraction,
+                    "reward_progress_mean": reward_progress_mean,
+                    "reward_safety_mean": reward_safety_mean,
+                    "progress_to_safety_abs_ratio": progress_to_safety_abs_ratio,
+                },
+            )
+            vessel_rows = []
+            for model_id in active_models:
+                model_index = self._curriculum_model_to_index[model_id]
+                episode_count = int(self._epoch_model_episode_counts[model_index])
+                if episode_count <= 0:
+                    continue
+                divisor = float(episode_count)
+                vessel_rows.append({
+                    "epoch": epoch,
+                    "vessel_id": model_id,
+                    "episodes": episode_count,
+                    "success_count": int(self._epoch_model_success_counts[model_index]),
+                    "success_rate": float(self._epoch_model_success_counts[model_index] / divisor),
+                    "out_of_vessel_count": int(self._epoch_model_out_of_vessel_counts[model_index]),
+                    "out_of_vessel_rate": float(self._epoch_model_out_of_vessel_counts[model_index] / divisor),
+                    "route_completion_mean": float(self._epoch_model_route_completion_sums[model_index] / divisor),
+                    "sdf_body_clearance_min_mm_mean": float(self._epoch_model_body_clearance_min_sums[model_index] / divisor * 1000.0),
+                    "centerline_safety_ratio_max_mean": float(self._epoch_model_safety_ratio_max_sums[model_index] / divisor),
+                    "sdf_body_warning_steps_mean": float(self._epoch_model_body_warning_steps_sums[model_index] / divisor),
+                    "sdf_body_contact_steps_mean": float(self._epoch_model_body_contact_steps_sums[model_index] / divisor),
+                    "effective_insert_action_mean": float(self._epoch_model_effective_insert_sums[model_index] / divisor),
+                })
+            _append_csv_rows(
+                self.run_dir / "diagnostics" / "vessel_summary.csv",
+                [
+                    "epoch", "vessel_id", "episodes", "success_count",
+                    "success_rate", "out_of_vessel_count", "out_of_vessel_rate",
+                    "route_completion_mean", "sdf_body_clearance_min_mm_mean",
+                    "centerline_safety_ratio_max_mean",
+                    "sdf_body_warning_steps_mean", "sdf_body_contact_steps_mean",
+                    "effective_insert_action_mean",
+                ],
+                vessel_rows,
+            )
             print(
                 f"[TRAIN][Epoch {epoch:03d}] train_episodes={self.episodes_per_epoch} "
                 f"train_success_count={self._epoch_success_count} "
                 f"train_success_rate={train_success_rate:.6f} "
                 f"train_reward_mean={train_reward_mean:.3f} "
                 f"train_episode_steps_mean={train_episode_steps_mean:.1f} "
+                f"out_of_vessel_rate={out_of_vessel_rate:.6f} "
+                f"body_clearance_min_mm_mean={body_clearance_min_mm_mean:.3f} "
+                f"body_warning_steps_mean={body_warning_steps_mean:.1f} "
+                f"warning_forward_fraction={warning_positive_insert_fraction:.3f} "
+                f"diagnostic={diagnostic_assessment} "
                 f"positive_failure_rate={positive_failure_rate:.6f} "
                 f"curriculum_stage_used={curriculum_stage_used} "
                 f"curriculum_stage_name_used={curriculum_stage_name_used} "
@@ -1179,9 +1422,25 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_reward_component_total_sum = 0.0
         self._epoch_route_potential_sum = 0.0
         self._epoch_route_jump_rejections_sum = 0.0
+        self._epoch_safety_ratio_max_sum = 0.0
+        self._epoch_safety_margin_min_sum = 0.0
+        self._epoch_tip_clearance_min_sum = 0.0
+        self._epoch_body_clearance_min_sum = 0.0
+        self._epoch_body_warning_steps_sum = 0.0
+        self._epoch_body_contact_steps_sum = 0.0
+        self._epoch_body_warning_mean_sum = 0.0
+        self._epoch_body_warning_positive_insert_steps_sum = 0.0
+        self._epoch_raw_insert_action_mean_sum = 0.0
         self._epoch_model_episode_counts.fill(0)
         self._epoch_model_success_counts.fill(0)
         self._epoch_model_jump_rejection_counts.fill(0.0)
+        self._epoch_model_out_of_vessel_counts.fill(0)
+        self._epoch_model_route_completion_sums.fill(0.0)
+        self._epoch_model_body_clearance_min_sums.fill(0.0)
+        self._epoch_model_safety_ratio_max_sums.fill(0.0)
+        self._epoch_model_body_warning_steps_sums.fill(0.0)
+        self._epoch_model_body_contact_steps_sums.fill(0.0)
+        self._epoch_model_effective_insert_sums.fill(0.0)
 
     def _on_step(self) -> bool:
         self._pending_episode_events.append(self._local_episode_events())
@@ -1236,6 +1495,23 @@ class EpochExperimentCallback(BaseCallback):
             self._epoch_reward_component_total_sum += float(accepted[:, 19].sum())
             self._epoch_route_potential_sum += float(accepted[:, 20].sum())
             self._epoch_route_jump_rejections_sum += float(accepted[:, 22].sum())
+            finite_diagnostics = np.nan_to_num(
+                accepted,
+                nan=0.0,
+                posinf=0.0,
+                neginf=0.0,
+            )
+            self._epoch_raw_insert_action_mean_sum += float(finite_diagnostics[:, 44].sum())
+            self._epoch_safety_ratio_max_sum += float(finite_diagnostics[:, 48].sum())
+            self._epoch_safety_margin_min_sum += float(finite_diagnostics[:, 50].sum())
+            self._epoch_tip_clearance_min_sum += float(finite_diagnostics[:, 41].sum())
+            self._epoch_body_clearance_min_sum += float(finite_diagnostics[:, 42].sum())
+            self._epoch_body_warning_steps_sum += float(finite_diagnostics[:, 52].sum())
+            self._epoch_body_contact_steps_sum += float(finite_diagnostics[:, 53].sum())
+            self._epoch_body_warning_mean_sum += float(finite_diagnostics[:, 54].sum())
+            self._epoch_body_warning_positive_insert_steps_sum += float(
+                finite_diagnostics[:, 55].sum()
+            )
             for event in accepted:
                 model_index = int(round(float(event[21])))
                 episode_curriculum_stage = int(round(float(event[23])))
@@ -1248,6 +1524,33 @@ class EpochExperimentCallback(BaseCallback):
                     self._epoch_model_success_counts[model_index] += success
                     self._epoch_model_jump_rejection_counts[model_index] += float(
                         event[22]
+                    )
+                    finite_event = np.nan_to_num(
+                        event,
+                        nan=0.0,
+                        posinf=0.0,
+                        neginf=0.0,
+                    )
+                    self._epoch_model_out_of_vessel_counts[model_index] += int(
+                        event[4] > 0.5
+                    )
+                    self._epoch_model_route_completion_sums[model_index] += float(
+                        finite_event[17]
+                    )
+                    self._epoch_model_body_clearance_min_sums[model_index] += float(
+                        finite_event[42]
+                    )
+                    self._epoch_model_safety_ratio_max_sums[model_index] += float(
+                        finite_event[48]
+                    )
+                    self._epoch_model_body_warning_steps_sums[model_index] += float(
+                        finite_event[52]
+                    )
+                    self._epoch_model_body_contact_steps_sums[model_index] += float(
+                        finite_event[53]
+                    )
+                    self._epoch_model_effective_insert_sums[model_index] += float(
+                        finite_event[13]
                     )
                     model_id = self._curriculum_model_ids[model_index]
                     self._curriculum_outcome_windows[model_id].append(success)

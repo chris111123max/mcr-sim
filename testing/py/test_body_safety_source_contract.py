@@ -1,4 +1,4 @@
-"""CPU-only wiring checks for the shared Reward V12 / Observation V12 state."""
+"""CPU-only wiring checks for the shared Reward V13 / Observation V12 state."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn("self.curriculum_success_streak += 1", experiment_source)
         self.assertIn("self.curriculum_success_streak = 0", experiment_source)
 
-    def test_reward_v12_uses_only_ordinary_terminal_failures(self):
+    def test_reward_v13_uses_only_ordinary_terminal_failures(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(
             encoding="utf-8"
         )
@@ -115,10 +115,13 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn('self.run_dir / "train_episodes.csv"', source)
         self.assertIn('"max_sdf_penetration_m"', source)
         self.assertIn('"terminal_reason"', source)
-        self.assertIn("events = np.zeros((len(dones), 44)", source)
+        self.assertIn("events = np.zeros((len(dones), 60)", source)
         self.assertIn('"reward_wall"', source)
         self.assertIn('"route_progress_from_completion_m"', source)
-        self.assertIn("terminal_traces_rank_", source)
+        self.assertIn('self.run_dir / "diagnostics" / "terminal_traces"', source)
+        self.assertIn('self.run_dir / "diagnostics" / "failure_episodes.csv"', source)
+        self.assertIn('self.run_dir / "diagnostics" / "safety_summary.csv"', source)
+        self.assertIn('self.run_dir / "diagnostics" / "vessel_summary.csv"', source)
 
     def test_terminal_trace_is_diagnostic_only(self):
         source = (PROJECT_ROOT / "mcr_sim" / "mcr_rl_env.py").read_text(

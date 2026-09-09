@@ -17,8 +17,9 @@ TRAIN_ROUTE_MAX_LENGTH_M = 0.495
 CONTROLLER_MAX_INSERTION_M = 0.510
 MAX_INSERTION_PER_ACTION_M = 0.0004
 # Retraction remains available for bend recovery, but it is deliberately slower
-# than insertion.  A symmetric [-1, 1] insertion channel let early PPO policies
-# retract to the mechanical minimum and turn timeout into a low-risk strategy.
+# than insertion. The environment uses a zero-preserving piecewise map:
+# raw -1/0/+1 -> effective -0.25/0/+1. A zero policy action must never create a
+# hidden forward command.
 INSERT_ACTION_NEGATIVE_LIMIT = -0.25
 
 # Environment/task defaults.
@@ -63,9 +64,10 @@ OUT_OF_VESSEL_FALLBACK_DISTANCE_M = 0.012
 
 # Multi-model vessel safety.  The VTI stores centre-to-wall signed distance.
 # A genuine outside termination requires any sampled catheter centre to remain
-# at least 0.5 mm outside for three consecutive environment steps. Reward V12
+# at least 0.5 mm outside for three consecutive environment steps. Reward V13
 # exposes the already-computed whole-body margin and starts a bounded warning
-# ramp 0.5 mm before the centre reaches the wall; shaft contact remains legal.
+# ramp 0.5 mm before the catheter surface reaches the wall; shaft contact
+# remains legal but is explicitly visible to the policy and reward.
 SDF_CLEARANCE_OBSERVATION_SCALE_M = 0.002
 SDF_NEAR_WALL_MARGIN_M = 0.001
 SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
@@ -93,20 +95,24 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v12.2. PPO receives direct normalized route-completion change.
+# Reward profile v13.0. PPO receives direct normalized route-completion change.
 # Earned partial progress is no longer removed in one large terminal transition;
 # retraction still cancels forward credit, so oscillation cannot create return.
-REWARD_PROFILE_VERSION = "12.2"
+REWARD_PROFILE_VERSION = "13.0"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
 REWARD_PROGRESS_SCALE = 60.0
-# Compatibility alias for older reporting code. In V12 this is per unit route
+# Compatibility alias for older reporting code. In V13 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
 REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
-# Common learner discount; V12 progress itself is an undiscounted difference.
+# Common learner discount; V13 progress itself is an undiscounted difference.
 REWARD_DISCOUNT_GAMMA = 0.9995
-REWARD_WALL_PROXIMITY = -0.005
+# The diagnostic audit showed body escape while the tip was still inside. The
+# earlier coefficient was typically 8-15x smaller than immediate progress near
+# the failure bend. This remains a single bounded safety term, but now provides
+# useful pre-contact credit assignment.
+REWARD_WALL_PROXIMITY = -0.020
 REWARD_OFF_TARGET_BRANCH = -0.005
 REWARD_SUCCESS = 100.0
 REWARD_OUT_OF_VESSEL = -80.0
@@ -155,6 +161,8 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "stagnation": REWARD_STAGNATION,
         "stagnation_formula": "bounded_window32_net_route_progress_below_1mm_after_grace",
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
+        "body_sdf_warning_formula": "linear_surface_clearance_0.5mm_to_contact",
+        "insert_action_mapping": "piecewise_zero_preserving_-0.25_0_1.0",
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
         "no_progress_confirm_steps": NO_PROGRESS_CONFIRM_STEPS,
@@ -163,30 +171,45 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
 
 
 def body_sdf_risk_features(
+    body_surface_clearance: float,
     max_signed_distance: float,
     outside_tolerance: float = SDF_OUTSIDE_CENTER_TOLERANCE_M,
     warning_margin: float = SDF_BODY_WARNING_MARGIN_M,
 ):
     """Return bounded whole-body warning and outside-depth features.
 
-    ``max_signed_distance`` is the worst catheter-centre SDF sample: negative
-    values are inside the lumen and positive values are outside.  Contact is
-    not itself a failure.  The warning ramps from ``-warning_margin`` to the
-    configured outside threshold, while penetration starts only after the
-    sampled centre has crossed the wall.
+    ``body_surface_clearance`` is wall-to-catheter-surface clearance: positive
+    is safe, zero is contact, and negative is body penetration. The warning
+    ramps over the final ``warning_margin`` before surface contact.
+
+    ``max_signed_distance`` remains the worst catheter-centre SDF sample:
+    negative values are inside the lumen and positive values are outside. It is
+    used only for the terminal outside-depth feature. Keeping these two
+    geometries separate avoids starting the warning after the catheter body has
+    already penetrated the wall by roughly one catheter radius.
     """
 
+    clearance = float(body_surface_clearance)
     signed = float(max_signed_distance)
     tolerance = max(float(outside_tolerance), 1e-12)
     margin = max(float(warning_margin), 0.0)
-    if not math.isfinite(signed):
+    if not math.isfinite(clearance) or not math.isfinite(signed):
         return 0.0, 0.0
-    warning = min(
-        max((signed + margin) / max(tolerance + margin, 1e-12), 0.0),
-        1.0,
-    )
+    warning = min(max((margin - clearance) / max(margin, 1e-12), 0.0), 1.0)
     outside_depth = min(max(signed / tolerance, 0.0), 1.0)
     return warning, outside_depth
+
+
+def map_insert_action(
+    raw_insert: float,
+    negative_limit: float = INSERT_ACTION_NEGATIVE_LIMIT,
+) -> float:
+    """Map policy insertion to actuator command without moving the zero point."""
+
+    raw = min(max(float(raw_insert), -1.0), 1.0)
+    if raw >= 0.0:
+        return raw
+    return abs(min(float(negative_limit), 0.0)) * raw
 
 
 # Training-only five-stage vessel/robustness curriculum.  Every stage uses the
@@ -509,7 +532,9 @@ SAC_GAMMA = REWARD_DISCOUNT_GAMMA
 # and is divided evenly between synchronized ranks, just like SAC.
 PPO_EPOCHS = NUM_EPOCHS
 PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
-PPO_N_ENVS = SAC_N_ENVS
+# One 910B3 + the allocated CPU quota is balanced at 32 independent SOFA envs.
+# Keep this explicit instead of inheriting the SAC throughput-oriented default.
+PPO_N_ENVS = 32
 PPO_LEARNING_RATE = 3e-4
 PPO_N_STEPS = 256
 PPO_BATCH_SIZE = 1024
@@ -569,16 +594,16 @@ def validate_training_defaults() -> None:
         and REWARD_TIMEOUT < 0.0
         and REWARD_STEP < 0.0
     ):
-        raise ValueError("Reward V12 signs are invalid.")
+        raise ValueError("Reward V13 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
     if not (
         REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
         and REWARD_NON_FINITE < -maximum_navigation_credit
         and REWARD_SUCCESS > maximum_navigation_credit
     ):
-        raise ValueError("Reward V12 terminal outcomes must dominate shaping.")
+        raise ValueError("Reward V13 terminal outcomes must dominate shaping.")
     if REWARD_STAGNATION >= 0.0:
-        raise ValueError("Reward V12.2 stagnation must be a non-terminal penalty.")
+        raise ValueError("Reward V13 stagnation must be a non-terminal penalty.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0
         and NO_PROGRESS_GRACE_STEPS >= NO_PROGRESS_WINDOW_STEPS

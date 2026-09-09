@@ -48,8 +48,8 @@ DIAGNOSTIC_FIELDS = [
     "route_progress_m", "route_projection_segment",
     "route_projection_distance_mm", "route_projection_jump_rejections",
     "centerline_local_radius_mm", "centerline_safety_ratio",
-    "centerline_safety_ratio_max_episode", "centerline_safety_margin_mm",
-    "centerline_safety_margin_min_episode_mm", "curve_bend_5mm",
+    "centerline_safety_ratio_max_episode", "centerline_safety_margin",
+    "centerline_safety_margin_min_episode", "curve_bend_5mm",
     "curve_bend_10mm", "curve_bend_20mm", "curve_alignment_error_20mm",
     "sdf_tip_clearance_min_episode_mm", "sdf_body_clearance_min_episode_mm",
     "sdf_penetration_depth_max_episode_mm", "sdf_near_wall_steps_episode",
@@ -67,7 +67,7 @@ TRACE_FIELDS = [
     "step", "route_completion", "route_progress_m", "route_progress_delta_m",
     "route_projection_segment", "route_projection_distance_m",
     "centerline_local_radius_m", "centerline_safety_ratio",
-    "centerline_safety_margin_m", "curve_bend_5mm", "curve_bend_10mm",
+    "centerline_safety_margin", "curve_bend_5mm", "curve_bend_10mm",
     "curve_bend_20mm", "curve_alignment_error_20mm", "rot_n", "rot_b",
     "raw_insert", "effective_insert", "inserted_length_m", "tip_clearance_m",
     "body_clearance_m", "body_warning", "off_target_branch", "no_progress",
@@ -133,9 +133,9 @@ def _aggregate(episodes):
             item.diagnostics.get("centerline_safety_ratio_max_episode", math.nan)
             for item in episodes
         ),
-        "centerline_safety_margin_min_episode_mm_mean": _finite_mean(
+        "centerline_safety_margin_min_episode_mean": _finite_mean(
             item.diagnostics.get(
-                "centerline_safety_margin_min_episode_mm", math.nan
+                "centerline_safety_margin_min_episode", math.nan
             )
             for item in episodes
         ),
@@ -205,7 +205,7 @@ def main() -> None:
         "steps_mean", "route_completion_mean", "route_potential_mean",
         "final_distance_mm_mean", "min_distance_mm_mean",
         "centerline_safety_ratio_max_episode_mean",
-        "centerline_safety_margin_min_episode_mm_mean",
+        "centerline_safety_margin_min_episode_mean",
         "sdf_body_clearance_min_episode_mm_mean",
         "sdf_near_wall_steps_episode_mean", "policy_std_rot_n",
         "policy_std_rot_b", "policy_std_insert", "policy_std_mean",
