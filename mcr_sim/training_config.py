@@ -15,7 +15,10 @@ TRAIN_VESSEL_MIN_RADIUS_M = 0.0028
 TRAIN_VESSEL_MAX_RADIUS_M = 0.0052
 TRAIN_ROUTE_MAX_LENGTH_M = 0.495
 CONTROLLER_MAX_INSERTION_M = 0.510
-MAX_INSERTION_PER_ACTION_M = 0.0004
+# One policy step may advance the catheter by up to 0.8 mm.  The episode
+# horizon remains 2048; this doubles the reachable distance per episode without
+# changing termination semantics or the learned observation/reward definition.
+MAX_INSERTION_PER_ACTION_M = 0.0008
 # Retraction remains available for bend recovery, but it is deliberately slower
 # than insertion. The environment uses a zero-preserving piecewise map:
 # raw -1/0/+1 -> effective -0.25/0/+1. A zero policy action must never create a
@@ -170,6 +173,7 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "body_sdf_warning_formula": "linear_surface_clearance_0.5mm_to_contact",
         "insert_action_mapping": "piecewise_zero_preserving_-0.25_0_1.0",
+        "max_insertion_per_action_m": MAX_INSERTION_PER_ACTION_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
         "no_progress_confirm_steps": NO_PROGRESS_CONFIRM_STEPS,
@@ -387,6 +391,7 @@ def curriculum_protocol_profile() -> dict:
         "actor_time_feature": "fraction_of_episode_remaining",
         "actor_inserted_length_feature": "controller_insertion_fraction",
         "actor_history_steps": ACTOR_HISTORY_STEPS,
+        "max_insertion_per_action_m": MAX_INSERTION_PER_ACTION_M,
         "local_field_action_angle_deg": math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD),
         "navigation": "continuous_selected_route",
         "route_guidance_lookahead_distances_m": list(

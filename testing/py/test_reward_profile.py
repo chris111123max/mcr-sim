@@ -238,11 +238,11 @@ class RewardProfileTest(unittest.TestCase):
         self.assertEqual(SAC_GRADIENT_STEPS, 1)
 
     def test_insertion_step_and_episode_limit_preserve_motion_budget(self) -> None:
-        self.assertEqual(MAX_INSERTION_PER_ACTION_M, 0.0004)
+        self.assertEqual(MAX_INSERTION_PER_ACTION_M, 0.0008)
         self.assertEqual(MAX_EPISODE_STEPS, 2048)
         self.assertAlmostEqual(
             MAX_INSERTION_PER_ACTION_M * MAX_EPISODE_STEPS,
-            0.8192,
+            1.6384,
         )
 
     def test_domain_randomization_resets_when_hard_vessels_are_added(self) -> None:
