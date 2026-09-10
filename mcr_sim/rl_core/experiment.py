@@ -229,6 +229,7 @@ class EpochExperimentCallback(BaseCallback):
             "global_episode", "epoch", "vessel_id", "target_route_id",
             "terminal_reason",
             "success", "steps", "reward", "route_completion",
+            "route_completion_consistency_error",
             "route_potential", "final_dist_to_goal_m", "min_dist_to_goal_m",
             "inserted_length_m", "max_sdf_penetration_m", "route_progress_m",
             "route_projection_jump_rejections", "curriculum_stage",
@@ -242,7 +243,8 @@ class EpochExperimentCallback(BaseCallback):
         self._failure_episode_fieldnames = [
             "global_episode", "epoch", "vessel_id", "target_route_id",
             "terminal_reason",
-            "steps", "reward", "route_completion", "route_progress_m",
+            "steps", "reward", "route_completion",
+            "route_completion_consistency_error", "route_progress_m",
             "route_projection_segment", "route_projection_distance_m",
             "final_dist_to_goal_m", "min_dist_to_goal_m",
             "sdf_tip_clearance_min_m", "sdf_body_clearance_min_m",
@@ -411,18 +413,35 @@ class EpochExperimentCallback(BaseCallback):
         infos = list(self.locals.get("infos", []))
         # Compact V13 event schema. Extra numeric diagnostics stay inside the
         # existing synchronized block, so they add no distributed collective.
-        events = np.zeros((len(dones), 61), dtype=np.float32)
+        events = np.zeros((len(dones), 62), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
             info = infos[index]
             episode_info = info.get("episode", {})
             self._append_sampled_terminal_trace(info, episode_info)
-            route_ratio = float(info.get("route_progress_ratio", np.nan))
-            route_completion = (
-                float(np.clip(route_ratio, 0.0, 1.0))
-                if np.isfinite(route_ratio)
-                else 0.0
+            route_progress = float(info.get("route_progress", np.nan))
+            route_start = float(info.get("route_start_progress", np.nan))
+            route_target = float(info.get("route_target_progress", np.nan))
+            route_span = route_target - route_start
+            if (
+                np.isfinite(route_progress)
+                and np.isfinite(route_start)
+                and np.isfinite(route_target)
+                and route_span > 1e-9
+            ):
+                route_completion = float(
+                    np.clip((route_progress - route_start) / route_span, 0.0, 1.0)
+                )
+            else:
+                route_ratio = float(info.get("route_progress_ratio", np.nan))
+                route_completion = (
+                    float(np.clip(route_ratio, 0.0, 1.0))
+                    if np.isfinite(route_ratio)
+                    else 0.0
+                )
+            route_consistency_error = float(
+                info.get("route_completion_consistency_error", 0.0)
             )
             if self.algorithm_name == "goal_sac":
                 reward_progress = float(info.get("episode_goal_reward_progress", 0.0))
@@ -492,7 +511,7 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("final_dist_to_goal", np.nan)),
                 float(info.get("min_dist_to_goal", np.nan)),
                 float(info.get("sdf_penetration_depth_max_episode", 0.0)),
-                float(info.get("route_progress", np.nan)),
+                route_progress,
                 float(
                     _TERMINAL_REASON_TO_CODE.get(
                         str(info.get("terminal_reason", "other")), 5
@@ -500,14 +519,9 @@ class EpochExperimentCallback(BaseCallback):
                 ),
                 float(info.get("route_start_progress", np.nan)),
                 float(info.get("route_target_progress", np.nan)),
-                float(
-                    info.get("route_start_progress", 0.0)
-                    + route_completion
-                    * (
-                        info.get("route_target_progress", 0.0)
-                        - info.get("route_start_progress", 0.0)
-                    )
-                ),
+                float(route_start + route_completion * route_span)
+                if np.isfinite(route_start) and np.isfinite(route_span)
+                else np.nan,
                 reward_progress,
                 float(info.get("episode_reward_wall_proximity_penalty", 0.0)),
                 float(info.get("episode_reward_off_target_branch_penalty", 0.0)),
@@ -537,6 +551,7 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("curve_bend_20mm_max_episode", 0.0)),
                 float(info.get("curve_alignment_error_20mm_max_episode", 0.0)),
                 float(info.get("target_route_index", 0.0)),
+                route_consistency_error,
             ]
         return events
 
@@ -610,6 +625,7 @@ class EpochExperimentCallback(BaseCallback):
                 "steps": int(round(float(event[3]))),
                 "reward": float(event[2]),
                 "route_completion": float(event[17]),
+                "route_completion_consistency_error": float(event[61]),
                 "route_potential": float(event[20]),
                 "final_dist_to_goal_m": float(event[24]),
                 "min_dist_to_goal_m": float(event[25]),
@@ -645,6 +661,9 @@ class EpochExperimentCallback(BaseCallback):
                     "steps": row["steps"],
                     "reward": row["reward"],
                     "route_completion": row["route_completion"],
+                    "route_completion_consistency_error": row[
+                        "route_completion_consistency_error"
+                    ],
                     "route_progress_m": row["route_progress_m"],
                     "route_projection_segment": int(round(float(event[45]))),
                     "route_projection_distance_m": float(event[46]),

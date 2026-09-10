@@ -1840,6 +1840,51 @@ class MCREnv(SofaEnv):
 
     def _get_info(self, terminated: bool = False, truncated: bool = False) -> dict:
         current_dist = float(self._get_distance_tip_to_dest())
+        # The terminal info must describe the same projection used by the
+        # reward.  VecEnv can call reset immediately after a done transition;
+        # refresh the route projection before serialising the terminal fields
+        # so route_progress, route_completion and route_potential cannot come
+        # from different simulation steps.
+        reported_route_completion_before_refresh = float(
+            getattr(self, "current_route_progress_ratio", np.nan)
+        )
+        if terminated or truncated:
+            try:
+                tip_pos = np.asarray(
+                    self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3],
+                    dtype=np.float32,
+                )
+                self._update_vessel_safety_state(
+                    tip_pos,
+                    advance_failure_counters=False,
+                )
+            except Exception:
+                pass
+        route_progress = float(getattr(self, "current_route_progress", np.nan))
+        route_start_progress = float(
+            getattr(self, "current_route_start_progress", np.nan)
+        )
+        route_target_progress = float(
+            getattr(self, "current_route_target_progress", np.nan)
+        )
+        route_completion_from_progress = float(
+            normalized_route_progress(
+                route_progress,
+                route_start_progress,
+                route_target_progress,
+            )
+        )
+        route_completion_consistency_error = (
+            float(
+                reported_route_completion_before_refresh
+                - route_completion_from_progress
+            )
+            if np.isfinite(reported_route_completion_before_refresh)
+            else 0.0
+        )
+        # Canonicalise terminal diagnostics and downstream curriculum metrics.
+        self.current_route_progress_ratio = route_completion_from_progress
+        self.current_route_potential = route_completion_from_progress
         terminal_reason = (
             "target"
             if self.episode_success
@@ -1891,11 +1936,13 @@ class MCREnv(SofaEnv):
             "final_dist_to_goal": current_dist if (terminated or truncated) else np.nan,
             "target_distance_threshold": float(self.target_distance_threshold),
             "vessel_scale_factor": float(getattr(self, "vessel_scale_factor", 1.0)),
-            "route_progress": float(self.current_route_progress),
-            "route_start_progress": float(self.current_route_start_progress),
-            "route_target_progress": float(self.current_route_target_progress),
+            "route_progress": route_progress,
+            "route_start_progress": route_start_progress,
+            "route_target_progress": route_target_progress,
             "route_progress_delta": float(self.current_route_progress_delta),
             "route_progress_ratio": float(self.current_route_progress_ratio),
+            "route_completion_from_progress": route_completion_from_progress,
+            "route_completion_consistency_error": route_completion_consistency_error,
             "route_projection_segment": int(self.current_route_projection_segment),
             "route_projection_distance": float(self.current_route_projection_distance),
             "route_projection_jump_rejected": bool(
