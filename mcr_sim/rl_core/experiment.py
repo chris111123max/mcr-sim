@@ -205,15 +205,29 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_model_effective_insert_sums = np.zeros(
             len(self._curriculum_model_ids), dtype=np.float64
         )
+        route_shape = (len(self._curriculum_model_ids), 6)
+        self._epoch_route_episode_counts = np.zeros(route_shape, dtype=np.int64)
+        self._epoch_route_success_counts = np.zeros(route_shape, dtype=np.int64)
+        self._epoch_route_out_of_vessel_counts = np.zeros(route_shape, dtype=np.int64)
+        self._epoch_route_completion_sums = np.zeros(route_shape, dtype=np.float64)
         self._curriculum_outcome_windows = {
             model_id: deque(
                 maxlen=TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
             )
             for model_id in self._curriculum_model_ids
         }
+        self._curriculum_route_outcome_windows = {
+            f"{model_id}/target_{route_index:02d}": deque(
+                maxlen=TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+            )
+            for model_id in self._curriculum_model_ids
+            if str(model_id).startswith("B")
+            for route_index in range(1, 7)
+        }
         self._pending_episode_events = []
         self._train_episode_fieldnames = [
-            "global_episode", "epoch", "vessel_id", "terminal_reason",
+            "global_episode", "epoch", "vessel_id", "target_route_id",
+            "terminal_reason",
             "success", "steps", "reward", "route_completion",
             "route_potential", "final_dist_to_goal_m", "min_dist_to_goal_m",
             "inserted_length_m", "max_sdf_penetration_m", "route_progress_m",
@@ -226,7 +240,8 @@ class EpochExperimentCallback(BaseCallback):
             "sdf_body_clearance_min_m", "inserted_length_max_m",
         ]
         self._failure_episode_fieldnames = [
-            "global_episode", "epoch", "vessel_id", "terminal_reason",
+            "global_episode", "epoch", "vessel_id", "target_route_id",
+            "terminal_reason",
             "steps", "reward", "route_completion", "route_progress_m",
             "route_projection_segment", "route_projection_distance_m",
             "final_dist_to_goal_m", "min_dist_to_goal_m",
@@ -316,6 +331,20 @@ class EpochExperimentCallback(BaseCallback):
                         window.extend(int(bool(value)) for value in outcomes)
                     except TypeError:
                         continue
+            saved_route_windows = getattr(
+                self.model,
+                "curriculum_route_rolling_outcomes",
+                {},
+            )
+            if isinstance(saved_route_windows, dict):
+                for route_key, outcomes in saved_route_windows.items():
+                    window = self._curriculum_route_outcome_windows.get(str(route_key))
+                    if window is None:
+                        continue
+                    try:
+                        window.extend(int(bool(value)) for value in outcomes)
+                    except TypeError:
+                        continue
         self._apply_curriculum_stage(self.curriculum_stage)
         active_models = (
             TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
@@ -382,7 +411,7 @@ class EpochExperimentCallback(BaseCallback):
         infos = list(self.locals.get("infos", []))
         # Compact V13 event schema. Extra numeric diagnostics stay inside the
         # existing synchronized block, so they add no distributed collective.
-        events = np.zeros((len(dones), 60), dtype=np.float32)
+        events = np.zeros((len(dones), 61), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -507,6 +536,7 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("curve_bend_10mm_max_episode", 0.0)),
                 float(info.get("curve_bend_20mm_max_episode", 0.0)),
                 float(info.get("curve_alignment_error_20mm_max_episode", 0.0)),
+                float(info.get("target_route_index", 0.0)),
             ]
         return events
 
@@ -517,7 +547,11 @@ class EpochExperimentCallback(BaseCallback):
         if not trace:
             return
         reason = str(info.get("terminal_reason", "other"))
-        key = (str(info.get("sampling_model", info.get("chosen_model", "unknown"))), reason)
+        key = (
+            str(info.get("sampling_model", info.get("chosen_model", "unknown"))),
+            str(info.get("target_route_id", "default")),
+            reason,
+        )
         count = int(self._terminal_trace_counts.get(key, 0)) + 1
         self._terminal_trace_counts[key] = count
         if (count - 1) % self.terminal_trace_sample_interval:
@@ -527,7 +561,8 @@ class EpochExperimentCallback(BaseCallback):
             "local_terminal_index": count,
             "model_num_timesteps": int(getattr(self.model, "num_timesteps", 0)),
             "vessel_id": key[0],
-            "terminal_reason": reason,
+            "target_route_id": key[1],
+            "terminal_reason": key[2],
             "success": bool(info.get("done_by_target", False)),
             "episode_steps": int(episode_info.get("l", 0)),
             "episode_reward": float(episode_info.get("r", 0.0)),
@@ -557,10 +592,17 @@ class EpochExperimentCallback(BaseCallback):
                 if 0 <= model_index < len(self._curriculum_model_ids)
                 else "unknown"
             )
+            route_index = int(round(float(event[60])))
+            target_route_id = (
+                f"target_{route_index:02d}"
+                if 1 <= route_index <= 6
+                else "default"
+            )
             row = {
                 "global_episode": global_episode,
                 "epoch": int((global_episode - 1) // self.episodes_per_epoch + 1),
                 "vessel_id": vessel_id,
+                "target_route_id": target_route_id,
                 "terminal_reason": _TERMINAL_CODE_TO_REASON.get(
                     int(round(float(event[28]))), "other"
                 ),
@@ -598,6 +640,7 @@ class EpochExperimentCallback(BaseCallback):
                     "global_episode": global_episode,
                     "epoch": row["epoch"],
                     "vessel_id": vessel_id,
+                    "target_route_id": target_route_id,
                     "terminal_reason": row["terminal_reason"],
                     "steps": row["steps"],
                     "reward": row["reward"],
@@ -740,6 +783,10 @@ class EpochExperimentCallback(BaseCallback):
         self.model.curriculum_rolling_outcomes = {
             model_id: list(window)
             for model_id, window in self._curriculum_outcome_windows.items()
+        }
+        self.model.curriculum_route_rolling_outcomes = {
+            route_key: list(window)
+            for route_key, window in self._curriculum_route_outcome_windows.items()
         }
         self.model.curriculum_rolling_window_size = int(
             TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
@@ -1083,20 +1130,74 @@ class EpochExperimentCallback(BaseCallback):
                 else None
             ),
         )
+        # A branching vessel is six distinct control tasks.  Its aggregate
+        # success can hide route-mode collapse, so curriculum promotion uses
+        # the weakest sufficiently sampled branch route while vessel sampling
+        # remains balanced at the outer level.
+        promotion_rates = dict(curriculum_rolling_success_rates)
+        promotion_counts = dict(curriculum_rolling_episode_counts)
+        for model_id in active_models:
+            if not str(model_id).startswith("B"):
+                continue
+            route_windows = [
+                self._curriculum_route_outcome_windows[
+                    f"{model_id}/target_{route_index:02d}"
+                ]
+                for route_index in range(1, 7)
+            ]
+            route_counts = [len(window) for window in route_windows]
+            if any(count == 0 for count in route_counts):
+                promotion_rates[model_id] = None
+                promotion_counts[model_id] = 0
+            else:
+                promotion_rates[model_id] = min(
+                    float(sum(window)) / float(len(window))
+                    for window in route_windows
+                )
+                promotion_counts[model_id] = min(route_counts)
+        promotion_ready = bool(
+            active_models
+            and all(
+                promotion_rates.get(model_id) is not None
+                and promotion_counts.get(model_id, 0)
+                >= TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL
+                for model_id in active_models
+            )
+        )
+        if promotion_ready:
+            curriculum_mastery_success_rate = min(
+                float(promotion_rates[model_id]) for model_id in active_models
+            )
+        else:
+            curriculum_mastery_success_rate = 0.0
+        curriculum_mastery_ready = promotion_ready
         curriculum_mastery_ready = bool(curriculum_mastery_ready)
         if self.training_curriculum_enabled:
+            # The curriculum helper historically aggregates vessel scores.
+            # Give every active vessel the same global worst-route score so an
+            # easy route can never hide an unlearned target branch.
+            strict_promotion_rates = {
+                model_id: (
+                    float(curriculum_mastery_success_rate)
+                    if promotion_ready
+                    else None
+                )
+                for model_id in promotion_rates
+            }
             next_curriculum_stage, self.curriculum_success_streak = (
                 update_curriculum_progress(
                     self.curriculum_stage,
                     self.curriculum_success_streak,
                     train_success_rate,
-                    curriculum_rolling_success_rates,
-                    curriculum_rolling_episode_counts,
+                    strict_promotion_rates,
+                    promotion_counts,
                 )
             )
             if next_curriculum_stage != self.curriculum_stage:
                 self.curriculum_stage = next_curriculum_stage
                 for window in self._curriculum_outcome_windows.values():
+                    window.clear()
+                for window in self._curriculum_route_outcome_windows.values():
                     window.clear()
                 self._apply_curriculum_stage(self.curriculum_stage)
             sampling_models = TRAINING_CURRICULUM_MODELS[self.curriculum_stage]
@@ -1366,6 +1467,51 @@ class EpochExperimentCallback(BaseCallback):
                 ],
                 vessel_rows,
             )
+            route_rows = []
+            for model_id in active_models:
+                if not str(model_id).startswith("B"):
+                    continue
+                model_index = self._curriculum_model_to_index[model_id]
+                for route_offset in range(6):
+                    episode_count = int(
+                        self._epoch_route_episode_counts[model_index, route_offset]
+                    )
+                    if episode_count <= 0:
+                        continue
+                    divisor = float(episode_count)
+                    route_rows.append({
+                        "epoch": epoch,
+                        "vessel_id": model_id,
+                        "target_route_id": f"target_{route_offset + 1:02d}",
+                        "episodes": episode_count,
+                        "success_count": int(
+                            self._epoch_route_success_counts[model_index, route_offset]
+                        ),
+                        "success_rate": float(
+                            self._epoch_route_success_counts[model_index, route_offset]
+                            / divisor
+                        ),
+                        "out_of_vessel_count": int(
+                            self._epoch_route_out_of_vessel_counts[model_index, route_offset]
+                        ),
+                        "out_of_vessel_rate": float(
+                            self._epoch_route_out_of_vessel_counts[model_index, route_offset]
+                            / divisor
+                        ),
+                        "route_completion_mean": float(
+                            self._epoch_route_completion_sums[model_index, route_offset]
+                            / divisor
+                        ),
+                    })
+            _append_csv_rows(
+                self.run_dir / "diagnostics" / "route_summary.csv",
+                [
+                    "epoch", "vessel_id", "target_route_id", "episodes",
+                    "success_count", "success_rate", "out_of_vessel_count",
+                    "out_of_vessel_rate", "route_completion_mean",
+                ],
+                route_rows,
+            )
             print(
                 f"[TRAIN][Epoch {epoch:03d}] train_episodes={self.episodes_per_epoch} "
                 f"train_success_count={self._epoch_success_count} "
@@ -1441,6 +1587,10 @@ class EpochExperimentCallback(BaseCallback):
         self._epoch_model_body_warning_steps_sums.fill(0.0)
         self._epoch_model_body_contact_steps_sums.fill(0.0)
         self._epoch_model_effective_insert_sums.fill(0.0)
+        self._epoch_route_episode_counts.fill(0)
+        self._epoch_route_success_counts.fill(0)
+        self._epoch_route_out_of_vessel_counts.fill(0)
+        self._epoch_route_completion_sums.fill(0.0)
 
     def _on_step(self) -> bool:
         self._pending_episode_events.append(self._local_episode_events())
@@ -1554,6 +1704,19 @@ class EpochExperimentCallback(BaseCallback):
                     )
                     model_id = self._curriculum_model_ids[model_index]
                     self._curriculum_outcome_windows[model_id].append(success)
+                    route_index = int(round(float(event[60])))
+                    if 1 <= route_index <= 6 and str(model_id).startswith("B"):
+                        route_offset = route_index - 1
+                        self._epoch_route_episode_counts[model_index, route_offset] += 1
+                        self._epoch_route_success_counts[model_index, route_offset] += success
+                        self._epoch_route_out_of_vessel_counts[model_index, route_offset] += int(
+                            event[4] > 0.5
+                        )
+                        self._epoch_route_completion_sums[model_index, route_offset] += float(
+                            finite_event[17]
+                        )
+                        route_key = f"{model_id}/target_{route_index:02d}"
+                        self._curriculum_route_outcome_windows[route_key].append(success)
                     if success:
                         self.curriculum_success_streak += 1
                     else:

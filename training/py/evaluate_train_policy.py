@@ -69,6 +69,7 @@ TRACE_FIELDS = [
     "centerline_local_radius_m", "centerline_safety_ratio",
     "centerline_safety_margin", "curve_bend_5mm", "curve_bend_10mm",
     "curve_bend_20mm", "curve_alignment_error_20mm", "rot_n", "rot_b",
+    "rotation_command_rad", "tip_heading_change_rad",
     "raw_insert", "effective_insert", "inserted_length_m", "tip_clearance_m",
     "body_clearance_m", "body_warning", "off_target_branch", "no_progress",
     "reward_progress", "reward_wall", "reward_stagnation", "reward_step",
@@ -196,6 +197,7 @@ def main() -> None:
     )
     summary_path = output_dir / "checkpoint_safety_summary.csv"
     vessel_path = output_dir / "checkpoint_safety_vessels.csv"
+    route_path = output_dir / "checkpoint_safety_routes.csv"
     episode_path = output_dir / "checkpoint_safety_episodes.csv"
     trace_path = output_dir / "checkpoint_safety_terminal_trace.csv"
     summary_fields = [
@@ -211,14 +213,17 @@ def main() -> None:
         "policy_std_rot_b", "policy_std_insert", "policy_std_mean",
     ]
     vessel_fields = ["checkpoint", "mode", "vessel_id"] + summary_fields[3:]
+    route_fields = [
+        "checkpoint", "mode", "vessel_id", "target_route_id",
+    ] + summary_fields[3:]
     episode_fields = [
-        "checkpoint", "mode", "vessel_id", "episode_index", "seed",
+        "checkpoint", "mode", "vessel_id", "target_route_id", "episode_index", "seed",
         "success", "terminal_reason", "steps", "reward",
         "route_completion", "route_potential", "final_distance_mm",
         "min_distance_mm", "error",
     ] + DIAGNOSTIC_FIELDS
     trace_fields = [
-        "checkpoint", "mode", "vessel_id", "episode_index", "seed",
+        "checkpoint", "mode", "vessel_id", "target_route_id", "episode_index", "seed",
         "success", "terminal_reason", "trace_offset_from_end",
     ] + TRACE_FIELDS
 
@@ -276,6 +281,26 @@ def main() -> None:
                     **policy_std,
                 })
             _append_rows(vessel_path, vessel_fields, vessel_rows)
+            route_rows = []
+            route_keys = sorted({
+                (item.vessel_id, item.target_route_id)
+                for item in result.episodes
+            })
+            for vessel_id, target_route_id in route_keys:
+                route_episodes = tuple(
+                    item for item in result.episodes
+                    if item.vessel_id == vessel_id
+                    and item.target_route_id == target_route_id
+                )
+                route_rows.append({
+                    "checkpoint": str(checkpoint),
+                    "mode": mode,
+                    "vessel_id": vessel_id,
+                    "target_route_id": target_route_id,
+                    **_aggregate(route_episodes),
+                    **policy_std,
+                })
+            _append_rows(route_path, route_fields, route_rows)
             _append_rows(
                 episode_path,
                 episode_fields,
@@ -283,6 +308,7 @@ def main() -> None:
                     "checkpoint": str(checkpoint),
                     "mode": mode,
                     "vessel_id": item.vessel_id,
+                    "target_route_id": item.target_route_id,
                     "episode_index": item.episode_index,
                     "seed": item.seed,
                     "success": item.success,
@@ -308,6 +334,7 @@ def main() -> None:
                         "checkpoint": str(checkpoint),
                         "mode": mode,
                         "vessel_id": item.vessel_id,
+                        "target_route_id": item.target_route_id,
                         "episode_index": item.episode_index,
                         "seed": item.seed,
                         "success": item.success,
@@ -329,6 +356,7 @@ def main() -> None:
 
     print(f"[TRAIN EVAL] summary={summary_path}", flush=True)
     print(f"[TRAIN EVAL] vessels={vessel_path}", flush=True)
+    print(f"[TRAIN EVAL] routes={route_path}", flush=True)
     print(f"[TRAIN EVAL] episodes={episode_path}", flush=True)
     print(f"[TRAIN EVAL] terminal_trace={trace_path}", flush=True)
 

@@ -214,6 +214,8 @@ def main():
     args = parse_args()
     args.reward_profile = reward_profile(args.gamma)
     args.curriculum_protocol = curriculum_protocol_profile()
+    args.policy_net_arch = {"pi": [512, 512, 256], "vf": [512, 512, 256]}
+    args.policy_activation = "SiLU"
     os.environ["MCR_SOFA_DT"] = str(float(args.time_step))
     context = initialize_distributed(
         enabled=args.distributed,
@@ -405,6 +407,12 @@ def main():
         else:
             policy_kwargs = {
                 "log_std_init": math.log(float(args.initial_action_std)),
+                # The old SB3 64x64 default was undersized for the long-history
+                # multi-branch controller.  Separate high-capacity actor/value
+                # trunks avoid forcing incompatible route modes through a tiny
+                # shared bottleneck.
+                "net_arch": dict(pi=[512, 512, 256], vf=[512, 512, 256]),
+                "activation_fn": th.nn.SiLU,
             }
             kwargs = dict(
                 policy="MlpPolicy",

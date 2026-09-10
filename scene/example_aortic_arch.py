@@ -357,8 +357,9 @@ def resolve_training_task(kwargs):
             else:
                 print(f"[WARN] Ignoring non-VTK centerline file: {forced_file}")
 
-        # Branching vessels expose six root-to-outlet tasks. Shuffle once per
-        # scene creation so each reset can select a different anatomical goal.
+        # Branching vessels expose six root-to-outlet tasks.  The environment
+        # normally supplies an explicit centerline_file from its balanced route
+        # sampler.  Keep this fallback for GUI/legacy callers only.
         if str(model_name).startswith("B"):
             target_names = [f"target_{i:02d}_centerline.vtk" for i in range(1, 7)]
             random.shuffle(target_names)
@@ -518,6 +519,10 @@ def resolve_training_task(kwargs):
         )
 
     centerline_str = str(centerline_vtk)
+    centerline_name = Path(centerline_vtk).stem.lower()
+    target_route_id = "default"
+    if centerline_name.startswith("target_") and centerline_name.endswith("_centerline"):
+        target_route_id = centerline_name[: -len("_centerline")]
     if "0207_left" in centerline_str:
         task_id = "0207_left"
     elif "0207_right" in centerline_str:
@@ -561,6 +566,7 @@ def resolve_training_task(kwargs):
             str(metadata_json_path) if metadata_json_path.is_file() else None
         ),
         "task_id": task_id,
+        "target_route_id": target_route_id,
     }
 
 
@@ -968,6 +974,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     sdf_vti = task_cfg.get("sdf_vti")
     metadata_json = task_cfg.get("metadata_json")
     task_id = task_cfg["task_id"]
+    target_route_id = task_cfg.get("target_route_id", "default")
 
     print("[example_aortic_arch_nonros] chosen_model    =", chosen_model)
     print("[example_aortic_arch_nonros] task_id         =", task_id)
@@ -1442,6 +1449,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         root_node.centerline_data["environment_stl"] = environment_stl
         root_node.centerline_data["centerline_vtk"] = centerline_vtk
         root_node.centerline_data["task_id"] = task_id
+        root_node.centerline_data["target_route_id"] = target_route_id
         root_node.centerline_data["curriculum_stage"] = "gui_nonros_centerline_aligned_pose"
         root_node.centerline_data["soft_randomize_single_vessel"] = bool(soft_randomize_single_vessel)
 
@@ -1575,6 +1583,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         "sdf_vti": sdf_vti,
         "metadata_json": metadata_json,
         "task_id": task_id,
+        "target_route_id": target_route_id,
         "curriculum_stage": "gui_nonros_centerline_aligned_pose",
         "vessel_scale_factor": float(vessel_scale_factor),
         "asset_source_to_sim_scale": float(centerline_scale),

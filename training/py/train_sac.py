@@ -214,6 +214,7 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "task_id": str(info.get("task_id", "unknown")),
             "chosen_model": str(info.get("chosen_model", info.get("task_id", "unknown"))),
             "sampling_model": str(info.get("sampling_model", info.get("chosen_model", "unknown"))),
+            "target_route_id": str(info.get("target_route_id", "default")),
             "success_target": bool(info.get("done_by_target", False)),
             "success_2mm": bool(info.get("success_2mm", False)),
             "safe_success": bool(info.get("safe_success", False)),
@@ -310,6 +311,8 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 ep = self._episode_from_info(info)
                 self.recent_episodes.append(ep)
                 self.task_windows[ep["task_id"]].append(ep)
+                route_key = f"{ep['chosen_model']}/{ep['target_route_id']}"
+                self.task_windows[route_key].append(ep)
 
                 # Avoid double-counting fixed-vessel runs where chosen_model == sampling_model.
                 for model_key in {ep["chosen_model"], ep["sampling_model"]}:
@@ -469,6 +472,34 @@ class ExtraRolloutMetricsCallback(BaseCallback):
                 self.logger.record(f"{prefix}/is_worst_w{self.window_size}", 1.0 if item["task_id"] == worst_task_id else 0.0, exclude="stdout")
                 self.logger.record(f"{prefix}/success_deficit_from_mean_w{self.window_size}", float(mean_success - item["success_rate"]), exclude="stdout")
                 self.logger.record(f"{prefix}/success_deficit_from_best_w{self.window_size}", float(best_success - item["success_rate"]), exclude="stdout")
+
+        # Branch-route metrics expose mode collapse that vessel-level averages
+        # hide (for example target_01=100%, target_02=0%).
+        for model_id in ARTIFICIAL_MODEL_IDS:
+            if not model_id.startswith("B"):
+                continue
+            for route_index in range(1, 7):
+                route_id = f"target_{route_index:02d}"
+                route_key = f"{model_id}/{route_id}"
+                route_window = list(self.task_windows.get(route_key, []))
+                if not route_window:
+                    continue
+                prefix = f"route/{model_id}_{route_id}"
+                self.logger.record(
+                    f"{prefix}/success_{self.success_label}_w{self.window_size}",
+                    self._rate(ep["success_target"] for ep in route_window),
+                    exclude="stdout",
+                )
+                self.logger.record(
+                    f"{prefix}/route_completion_w{self.window_size}",
+                    self._mean(ep["route_completion"] for ep in route_window),
+                    exclude="stdout",
+                )
+                self.logger.record(
+                    f"{prefix}/episodes_w{self.window_size}",
+                    float(len(route_window)),
+                    exclude="stdout",
+                )
 
 
 class DistributedRuntimeCallback(BaseCallback):
@@ -1139,6 +1170,10 @@ def build_env(args):
                     getattr(args, "training_curriculum", TRAINING_CURRICULUM_ENABLED)
                 ),
                 "verbose_scene": bool(args.scene_verbose),
+                # Stable per-worker offset used by MCREnv's cyclic branch-route
+                # sampler.  Across 32 workers every target route is represented
+                # nearly equally from the first batch onward.
+                "sampling_slot": global_env_offset + int(rank),
             }
             # If running with GUI (human), enable debug_rendering so the scene
             # creates the visual OglModel and ensure vessels are sufficiently

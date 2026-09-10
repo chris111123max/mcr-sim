@@ -436,9 +436,8 @@ class MCREnv(SofaEnv):
             )
         )
 
-        # Actor observation V12: 38-D current local state plus the latest 7-D
-        # action/response tuple = 45-D.  Redundant bend, contact, waypoint and
-        # multi-frame history values are removed.  Three points along the
+        # Actor observation: 38-D current local state plus a configurable
+        # history of 7-D action/response tuples. Three points along the
         # physically inserted shaft, elapsed-time budget and inserted length
         # make the flexible-catheter state substantially less aliased while
         # retaining translation/rotation invariance.  PPO, RecurrentPPO and SAC
@@ -646,11 +645,20 @@ class MCREnv(SofaEnv):
         self._last_smoothed_action = np.zeros(3, dtype=np.float32)
         self._prev_smoothed_action = np.zeros(3, dtype=np.float32)
         self._last_actor_tip_pos = None
+        self._last_tip_forward_world = None
+        self.current_tip_heading_change_rad = 0.0
+        self.current_rotation_command_rad = 0.0
 
         # Task sampling: uniform over active vessels unless --force-model is used.
         self._explicit_force_model = str(create_scene_kwargs.get("force_model", "") or "").strip()
+        self._explicit_centerline_file = str(
+            create_scene_kwargs.get("centerline_file", "") or ""
+        ).strip()
         self._sampler_rng = np.random.default_rng()
         self.current_sampling_model = self._explicit_force_model if self._explicit_force_model else None
+        self._sampling_slot = max(0, int(create_scene_kwargs.get("sampling_slot", 0)))
+        self._branch_route_counters = defaultdict(int)
+        self.current_target_route_id = "default"
 
         # Single-vessel soft reset.
         self.soft_randomize_single_vessel = bool(create_scene_kwargs.get("soft_randomize_single_vessel", True))
@@ -811,6 +819,39 @@ class MCREnv(SofaEnv):
         chosen = str(self._sampler_rng.choice(models, p=probabilities))
         self.create_scene_kwargs["force_model"] = chosen
         self.current_sampling_model = chosen
+
+    def _sample_next_target_route(self) -> None:
+        """Select every branch target evenly without exposing its ID to policy.
+
+        Each worker cycles through all six routes with a worker-specific phase.
+        This removes the old hidden random-shuffle imbalance while preserving
+        the local-coordinate task definition.  Explicit centerline requests are
+        left untouched for GUI and targeted diagnostic runs.
+        """
+
+        if self._explicit_centerline_file:
+            self.create_scene_kwargs["centerline_file"] = self._explicit_centerline_file
+            stem = Path(self._explicit_centerline_file).stem.lower()
+            self.current_target_route_id = (
+                stem[: -len("_centerline")]
+                if stem.startswith("target_") and stem.endswith("_centerline")
+                else "default"
+            )
+            return
+
+        model_id = str(self.current_sampling_model or "").upper()
+        if not model_id.startswith("B"):
+            self.create_scene_kwargs.pop("centerline_file", None)
+            self.current_target_route_id = "default"
+            return
+
+        counter = int(self._branch_route_counters[model_id])
+        route_index = (self._sampling_slot + counter) % 6 + 1
+        self._branch_route_counters[model_id] = counter + 1
+        self.current_target_route_id = f"target_{route_index:02d}"
+        self.create_scene_kwargs["centerline_file"] = (
+            f"{self.current_target_route_id}_centerline.vtk"
+        )
 
     def _apply_curriculum_domain_randomization(self, stage: int) -> dict:
         """Apply the stage fraction to the original user-requested DR range."""
@@ -1076,6 +1117,7 @@ class MCREnv(SofaEnv):
 
     def reset(self, seed: Union[int, np.random.SeedSequence, None] = None, options: Optional[Dict[str, Any]] = None) -> Tuple[Union[np.ndarray, None], Dict]:
         self._sample_next_training_model(seed=seed)
+        self._sample_next_target_route()
         # A callback may advance the curriculum while other vectorized
         # environments are still inside an episode.  Latch the stage/DR that
         # actually created this episode so its outcome cannot contaminate the
@@ -1202,6 +1244,9 @@ class MCREnv(SofaEnv):
         self._last_smoothed_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._prev_smoothed_action = np.zeros(self.action_space.shape, dtype=np.float32)
         self._last_actor_tip_pos = None
+        self._last_tip_forward_world = None
+        self.current_tip_heading_change_rad = 0.0
+        self.current_rotation_command_rad = 0.0
         self._reset_actor_history()
         self.reward_info = {}
         self.reward_features = {}
@@ -1353,6 +1398,8 @@ class MCREnv(SofaEnv):
             ),
             "rot_n": float(action_np[0]) if action_np.size > 0 else 0.0,
             "rot_b": float(action_np[1]) if action_np.size > 1 else 0.0,
+            "rotation_command_rad": float(self.current_rotation_command_rad),
+            "tip_heading_change_rad": float(self.current_tip_heading_change_rad),
             "raw_insert": float(self.current_raw_insert),
             "effective_insert": float(self.current_effective_insert),
             "inserted_length_m": finite_or_nan(self.current_sdf_inserted_length),
@@ -1449,6 +1496,24 @@ class MCREnv(SofaEnv):
         tip_pos = tip_pose[0:3]
         tip_quat = tip_pose[3:7]
         frame = self._build_tip_local_frame(tip_quat)
+        tip_forward = np.asarray(frame[:, 0], dtype=np.float32)
+        previous_tip_forward = getattr(self, "_last_tip_forward_world", None)
+        if previous_tip_forward is None:
+            self.current_tip_heading_change_rad = 0.0
+        else:
+            self.current_tip_heading_change_rad = float(
+                np.arccos(
+                    np.clip(
+                        np.dot(
+                            tip_forward,
+                            np.asarray(previous_tip_forward, dtype=np.float32),
+                        ),
+                        -1.0,
+                        1.0,
+                    )
+                )
+            )
+        self._last_tip_forward_world = tip_forward.copy()
 
         # Refresh selected-route geometry plus direct SDF/graph safety features.
         self._update_vessel_safety_state(tip_pos)
@@ -1793,6 +1858,12 @@ class MCREnv(SofaEnv):
             "task_id": str(getattr(self, "task_id", "unknown")),
             "chosen_model": chosen_model,
             "sampling_model": str(getattr(self, "current_sampling_model", chosen_model)),
+            "target_route_id": str(
+                getattr(self, "current_target_route_id", "default")
+            ),
+            "target_route_index": int(
+                str(getattr(self, "current_target_route_id", "default")).split("_")[-1]
+            ) if str(getattr(self, "current_target_route_id", "default")).startswith("target_") else 0,
             "sampling_probability": float(
                 getattr(self, "training_model_sampling_weights", {}).get(
                     str(getattr(self, "current_sampling_model", chosen_model)),
@@ -3009,6 +3080,9 @@ class MCREnv(SofaEnv):
         rot_n = float(action[0]) if action.shape[0] > 0 else 0.0
         rot_b = float(action[1]) if action.shape[0] > 1 else 0.0
         raw_insert = float(action[2]) if action.shape[0] > 2 else 0.0
+        self.current_rotation_command_rad = float(
+            np.hypot(rot_n, rot_b) * float(self.local_field_action_angle)
+        )
 
         effective_insert = self._apply_insert_safety_shield(raw_insert)
         self.raw_insert_action_sum_episode += float(raw_insert)
@@ -3029,6 +3103,11 @@ class MCREnv(SofaEnv):
         self.chosen_model = self.scene_creation_result.get("chosen_model", "unknown")
         self.centerline_vtk = self.scene_creation_result.get("centerline_vtk", "unknown")
         self.task_id = self.scene_creation_result.get("task_id", str(self.chosen_model))
+        self.current_target_route_id = str(
+            self.scene_creation_result.get(
+                "target_route_id", self.current_target_route_id
+            )
+        )
         self.vessel_scale_factor = float(
             self.scene_creation_result.get("vessel_scale_factor", 1.0)
         )

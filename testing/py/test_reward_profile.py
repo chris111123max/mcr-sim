@@ -308,12 +308,12 @@ class RewardProfileTest(unittest.TestCase):
         self.assertEqual(PPO_N_ENVS, 32)
         self.assertAlmostEqual(math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD), 3.0)
 
-    def test_observation_v11_is_local_compact_and_contains_one_response_step(self) -> None:
-        self.assertEqual(ACTOR_HISTORY_STEPS, 1)
+    def test_observation_keeps_long_local_response_history(self) -> None:
+        self.assertEqual(ACTOR_HISTORY_STEPS, 32)
         self.assertEqual(ACTOR_SHAFT_LOOKBACK_DISTANCES_M, (0.010, 0.030, 0.060))
         self.assertEqual(VESSEL_SECTION_FEATURE_DIM, 26)
         self.assertEqual(ACTOR_STATIC_ROUTE_FEATURE_DIM, 12)
-        self.assertEqual(ACTOR_OBSERVATION_DIM, 45)
+        self.assertEqual(ACTOR_OBSERVATION_DIM, 262)
 
     def test_equal_completion_progress_has_equal_reward_across_routes(self) -> None:
         delta_completion = 0.01

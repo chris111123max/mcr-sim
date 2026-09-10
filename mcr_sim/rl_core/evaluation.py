@@ -61,6 +61,7 @@ class ValidationEpisodeResult:
     min_distance_mm: float = math.inf
     error: str = ""
     diagnostics: Dict[str, object] = field(default_factory=dict)
+    target_route_id: str = "default"
 
 
 @dataclass(frozen=True)
@@ -424,6 +425,10 @@ def evaluate_policy(
                                     if math.isfinite(min_distance)
                                     else math.inf
                                 ),
+                                diagnostics=_terminal_diagnostics(final_info),
+                                target_route_id=str(
+                                    final_info.get("target_route_id", "default")
+                                ),
                             )
                         )
                         print(
@@ -471,6 +476,8 @@ def evaluate_policy(
                                 final_distance_mm=item.final_distance_mm,
                                 min_distance_mm=item.min_distance_mm,
                                 error=error_text,
+                                diagnostics=item.diagnostics,
+                                target_route_id=item.target_route_id,
                             )
             vessel_errors = any(
                 item.error
@@ -625,6 +632,9 @@ def evaluate_vector_policy(
                                         else math.inf
                                     ),
                                     diagnostics=diagnostics,
+                                    target_route_id=str(
+                                        info.get("target_route_id", "default")
+                                    ),
                                 )
                             )
                             active[slot] = False
@@ -671,6 +681,7 @@ def validation_result_to_json(result: ValidationResult) -> str:
                 "final_distance_mm": item.final_distance_mm,
                 "min_distance_mm": item.min_distance_mm,
                 "error": item.error,
+                "target_route_id": item.target_route_id,
             }
             for item in result.episodes
         ],

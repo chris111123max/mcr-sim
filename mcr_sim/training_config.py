@@ -29,7 +29,11 @@ SETTLE_STEPS = 8
 TARGET_THRESHOLD_M = 0.003
 MAX_EPISODE_STEPS = 2048
 RADIUS_OBSERVATION_SCALE_M = 0.005
-ACTOR_HISTORY_STEPS = 1
+# A flexible magnetic catheter has delayed, hysteretic response.  One previous
+# sample cannot distinguish "command has not taken effect yet" from "command is
+# ineffective" and encourages repeated over-correction.  Keep 320 ms of local
+# action/motion/progress history at the default 10 ms control interval.
+ACTOR_HISTORY_STEPS = 32
 ACTOR_SHAFT_LOOKBACK_DISTANCES_M = (0.010, 0.030, 0.060)
 VESSEL_SECTION_FEATURE_DIM = 26
 ACTOR_STATIC_ROUTE_FEATURE_DIM = 12
@@ -43,8 +47,11 @@ ACTOR_OBSERVATION_DIM = (
 # complete route; recurrent tracking is local and physically gated so nearby
 # arms of a U-turn cannot create artificial progress. Two moving guidance
 # points replace discrete waypoint spheres.
-ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.010, 0.030)
-ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.020
+# Branch steering must start before the tip reaches the junction.  These remain
+# tip-local vectors (not vessel IDs or global coordinates), so the additional
+# preview is available equally to MLP, recurrent, and future transformer agents.
+ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M = (0.020, 0.060)
+ROUTE_GUIDANCE_OBSERVATION_SCALE_M = 0.040
 # Translation/rotation-invariant horizon feature used by the actor instead of
 # absolute route completion.  The longest generated training route is the
 # natural normalization scale; held-out routes are clipped rather than exposing
@@ -74,7 +81,7 @@ SDF_OUTSIDE_CENTER_TOLERANCE_M = 0.0005
 SDF_BODY_WARNING_MARGIN_M = 0.0005
 SDF_OUTSIDE_CONFIRM_STEPS = 3
 SDF_SAMPLE_STEP_FRACTION = 0.5
-CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.005, 0.015, 0.030)
+CENTERLINE_LOOKAHEAD_DISTANCES_M = (0.010, 0.030, 0.060)
 TIP_NEAR_WALL_GRACE_STEPS = 5
 TIP_NEAR_WALL_RAMP_STEPS = 20
 
@@ -397,6 +404,9 @@ def curriculum_protocol_profile() -> dict:
         "route_remaining_distance_scale_m": ROUTE_REMAINING_DISTANCE_SCALE_M,
         "actor_coordinate_frame": "catheter_tip_local",
         "actor_route_horizon_feature": "remaining_route_distance",
+        "branch_target_sampling": "six_route_worker_phased_cycle",
+        "branch_target_routes": [f"target_{index:02d}" for index in range(1, 7)],
+        "branch_mastery_metric": "minimum_per_route_success",
         "observation_dim": ACTOR_OBSERVATION_DIM,
     }
 
