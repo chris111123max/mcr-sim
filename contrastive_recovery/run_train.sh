@@ -5,7 +5,9 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PY_ROOT="$(cd "$HERE/.." && pwd)"
 PROJECT_ROOT="$(cd "$PY_ROOT/.." && pwd)"
-WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/.." && pwd)"
+# python/ is inside <project>/; setup_mcr_sofa.sh is stored one level above
+# mcr_project, alongside mcr_env, matching the established launchers.
+WORKSPACE_ROOT="$(cd "$PROJECT_ROOT/../.." && pwd)"
 TRAIN="$HERE/train.py"
 DEFAULT_EXP="contrastive_recovery_2npu_32env"
 
