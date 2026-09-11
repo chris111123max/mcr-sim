@@ -9,6 +9,8 @@ This folder is a self-contained experiment and does not modify PPO, SAC, Goal-SA
 - **Risk critic**: predicts whether the following short horizon contains SDF warning, wrong-branch warning, out-of-vessel, or non-finite state.
 - **Recovery actor + twin critic**: a second direct history-aware SAC actor, trained from clearance change and unsafe termination. It is gated briefly by measured SDF warning or learned risk; it is not a scripted controller and does not write a nominal action over the task actor.
 
+The recovery gate is deliberately disabled for the first 2,000 learner updates. A new risk critic is initially uncalibrated and would otherwise produce approximately 0.5 risk everywhere; after warm-up the default gate threshold is 0.65.
+
 The current environment supplies the selected centreline geometry as local guide vectors and a final target. This experimental policy does **not** receive a discrete route/branch ID. The route ID is retained only in diagnostics for per-route failure analysis.
 
 ## Two-910B3 default

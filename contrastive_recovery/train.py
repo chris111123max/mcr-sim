@@ -154,8 +154,9 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--tau", type=float, default=0.005)
     p.add_argument("--entropy-weight", type=float, default=0.05)
     p.add_argument("--risk-weight", type=float, default=1.0)
-    p.add_argument("--recovery-gate-threshold", type=float, default=0.40)
+    p.add_argument("--recovery-gate-threshold", type=float, default=0.65)
     p.add_argument("--recovery-min-steps", type=int, default=12)
+    p.add_argument("--recovery-gate-warmup-updates", type=int, default=2_000)
     p.add_argument("--metric-sync-interval", type=int, default=50)
     # stable SOFA environment contract (same names as train_sac.build_env).
     p.add_argument("--env-type", default="aortic", choices=("aortic", "flat"))
@@ -232,7 +233,7 @@ def main():
     try:
         env = ProgressGoalVecEnv(build_env(args))
         obs = env.reset()
-        agent = ContrastiveRecoveryAgent(AgentConfig(observation_dim=obs.shape[1], action_dim=int(env.action_space.shape[0]), num_envs=env.num_envs, device=context.device.resolved, sequence_length=args.sequence_length, hidden_dim=args.hidden_dim, embedding_dim=args.embedding_dim, learning_rate=args.learning_rate, gamma=args.gamma, tau=args.tau, entropy_weight=args.entropy_weight, risk_weight=args.risk_weight, recovery_gate_threshold=args.recovery_gate_threshold, recovery_min_steps=args.recovery_min_steps, distributed=context.enabled))
+        agent = ContrastiveRecoveryAgent(AgentConfig(observation_dim=obs.shape[1], action_dim=int(env.action_space.shape[0]), num_envs=env.num_envs, device=context.device.resolved, sequence_length=args.sequence_length, hidden_dim=args.hidden_dim, embedding_dim=args.embedding_dim, learning_rate=args.learning_rate, gamma=args.gamma, tau=args.tau, entropy_weight=args.entropy_weight, risk_weight=args.risk_weight, recovery_gate_threshold=args.recovery_gate_threshold, recovery_min_steps=args.recovery_min_steps, recovery_gate_warmup_updates=args.recovery_gate_warmup_updates, distributed=context.enabled))
         print(f"[CRRL] npu_execution={args.npu_execution} fused_adam={agent.fused_adam_status}", flush=True)
         replay = EpisodeSequenceReplay(args.replay_capacity, env.num_envs, obs.shape[1], int(env.action_space.shape[0]))
         writer = SummaryWriter(str(run_dir / "tb" / f"rank_{context.rank}"))

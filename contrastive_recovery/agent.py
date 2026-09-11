@@ -57,8 +57,9 @@ class AgentConfig:
     tau: float = 0.005
     entropy_weight: float = 0.05
     risk_weight: float = 1.0
-    recovery_gate_threshold: float = 0.40
+    recovery_gate_threshold: float = 0.65
     recovery_min_steps: int = 12
+    recovery_gate_warmup_updates: int = 2_000
     distributed: bool = False
 
 
@@ -146,7 +147,14 @@ class ContrastiveRecoveryAgent:
         risk_logits = self.risk(obs, previous, task_actions)
         predicted_risk = torch.sigmoid(risk_logits[:, -1, 0]).detach().cpu().numpy()
         warnings = np.zeros(self.cfg.num_envs, dtype=np.float32) if sdf_warning is None else np.asarray(sdf_warning, dtype=np.float32)
-        activate = (predicted_risk >= self.cfg.recovery_gate_threshold) | (warnings >= self.cfg.recovery_gate_threshold)
+        # A randomly initialised BCE critic outputs ~0.5. Let the main policy
+        # collect/learn safety transitions first; otherwise recovery would
+        # incorrectly seize every environment at startup.  After warm-up,
+        # either a calibrated learned-risk prediction or measured SDF warning
+        # can activate the independently trained recovery policy.
+        learned_gate = predicted_risk >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(predicted_risk, dtype=bool)
+        hard_warning_gate = warnings >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(predicted_risk, dtype=bool)
+        activate = learned_gate | hard_warning_gate
         self._recovery_remaining = np.maximum(self._recovery_remaining - 1, 0)
         self._recovery_remaining[activate] = int(self.cfg.recovery_min_steps)
         recover = self._recovery_remaining > 0
