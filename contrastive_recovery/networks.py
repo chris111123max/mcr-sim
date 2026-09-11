@@ -12,23 +12,41 @@ def _mlp(in_dim: int, hidden: int, out_dim: int) -> nn.Sequential:
     return nn.Sequential(nn.Linear(in_dim, hidden), nn.SiLU(), nn.Linear(hidden, hidden), nn.SiLU(), nn.Linear(hidden, out_dim))
 
 
-class RecurrentTrunk(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int):
+class FixedHistoryTrunk(nn.Module):
+    """Fixed-window temporal encoder using only Ascend-stable Linear ops.
+
+    torch_npu 2.2 dispatches :class:`~torch.nn.GRU` to DynamicGRUV2, which
+    fails on the deployed 910B3/CANN combination before the first rollout.
+    Flattening a fixed, ordered history preserves every observation/action in
+    the 32-step context while avoiding that backend-specific recurrent kernel.
+    """
+
+    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, sequence_length: int):
         super().__init__()
-        self.input = nn.Linear(observation_dim + action_dim, hidden_dim)
-        self.gru = nn.GRU(hidden_dim, hidden_dim, batch_first=True)
+        self.sequence_length = int(sequence_length)
+        self.input = nn.Sequential(
+            nn.Linear((observation_dim + action_dim) * self.sequence_length, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.SiLU(),
+        )
         self.hidden_dim = int(hidden_dim)
 
     def forward(self, obs: torch.Tensor, previous_actions: torch.Tensor) -> torch.Tensor:
+        if obs.shape[1] != self.sequence_length or previous_actions.shape[1] != self.sequence_length:
+            raise ValueError(
+                f"FixedHistoryTrunk expects sequence length {self.sequence_length}, "
+                f"received obs={obs.shape[1]}, actions={previous_actions.shape[1]}."
+            )
         x = torch.cat((obs, previous_actions), dim=-1)
-        x = torch.nn.functional.silu(self.input(x))
-        return self.gru(x)[0]
+        x = x.reshape(x.shape[0], -1)
+        return self.input(x).unsqueeze(1)
 
 
 class RecurrentActor(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int):
+    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, sequence_length: int):
         super().__init__()
-        self.trunk = RecurrentTrunk(observation_dim, action_dim, hidden_dim)
+        self.trunk = FixedHistoryTrunk(observation_dim, action_dim, hidden_dim, sequence_length)
         self.head = _mlp(hidden_dim, hidden_dim, action_dim * 2)
         self.action_dim = int(action_dim)
 
@@ -53,9 +71,9 @@ class RecurrentActor(nn.Module):
 class ContrastiveCritic(nn.Module):
     """C(s, a, g) score trained by in-batch future-goal classification."""
 
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, embedding_dim: int):
+    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, embedding_dim: int, sequence_length: int):
         super().__init__()
-        self.trunk = RecurrentTrunk(observation_dim, action_dim, hidden_dim)
+        self.trunk = FixedHistoryTrunk(observation_dim, action_dim, hidden_dim, sequence_length)
         self.query = _mlp(hidden_dim + action_dim, hidden_dim, embedding_dim)
         self.goal = _mlp(1, hidden_dim, embedding_dim)
         self.log_temperature = nn.Parameter(torch.tensor(math.log(0.2)))
@@ -88,9 +106,9 @@ class ContrastiveCritic(nn.Module):
 
 
 class RiskCritic(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int):
+    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, sequence_length: int):
         super().__init__()
-        self.trunk = RecurrentTrunk(observation_dim, action_dim, hidden_dim)
+        self.trunk = FixedHistoryTrunk(observation_dim, action_dim, hidden_dim, sequence_length)
         self.head = _mlp(hidden_dim + action_dim, hidden_dim, 1)
 
     def forward(self, obs, previous_actions, action):
@@ -99,9 +117,9 @@ class RiskCritic(nn.Module):
 
 
 class RecoveryCritic(nn.Module):
-    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int):
+    def __init__(self, observation_dim: int, action_dim: int, hidden_dim: int, sequence_length: int):
         super().__init__()
-        self.trunk = RecurrentTrunk(observation_dim, action_dim, hidden_dim)
+        self.trunk = FixedHistoryTrunk(observation_dim, action_dim, hidden_dim, sequence_length)
         self.q1 = _mlp(hidden_dim + action_dim, hidden_dim, 1)
         self.q2 = _mlp(hidden_dim + action_dim, hidden_dim, 1)
 

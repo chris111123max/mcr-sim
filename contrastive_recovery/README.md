@@ -4,10 +4,10 @@ This folder is a self-contained experiment and does not modify PPO, SAC, Goal-SA
 
 ## Architecture
 
-- **Task actor**: a recurrent, direct 3-action policy (`rot_n`, `rot_b`, `insert`). It receives the existing local-centreline/target state plus achieved and final goal fractions. It never receives `target_route_id`.
+- **Task actor**: a fixed-history, direct 3-action policy (`rot_n`, `rot_b`, `insert`). It receives the existing local-centreline/target state plus achieved and final goal fractions. It never receives `target_route_id`. The ordered 32-step context is encoded with Linear/SiLU rather than GRU because the deployed torch-npu DynamicGRUV2 kernel fails on 910B3.
 - **Contrastive critic**: samples a reachable future progress from the *same complete trajectory* as a positive and every other batch goal as a negative (InfoNCE). The task actor maximizes reachability and minimizes learned risk instead of relying on a large hand-shaped dense reward.
 - **Risk critic**: predicts whether the following short horizon contains SDF warning, wrong-branch warning, out-of-vessel, or non-finite state.
-- **Recovery actor + twin critic**: a second direct recurrent SAC actor, trained from clearance change and unsafe termination. It is gated briefly by measured SDF warning or learned risk; it is not a scripted controller and does not write a nominal action over the task actor.
+- **Recovery actor + twin critic**: a second direct history-aware SAC actor, trained from clearance change and unsafe termination. It is gated briefly by measured SDF warning or learned risk; it is not a scripted controller and does not write a nominal action over the task actor.
 
 The current environment supplies the selected centreline geometry as local guide vectors and a final target. This experimental policy does **not** receive a discrete route/branch ID. The route ID is retained only in diagnostics for per-route failure analysis.
 

@@ -61,11 +61,12 @@ class ContrastiveRecoveryAgent:
         self.cfg = config
         self.device = torch.device(config.device)
         o, a, h = config.observation_dim, config.action_dim, config.hidden_dim
-        self.actor = RecurrentActor(o, a, h).to(self.device)
-        self.contrastive = ContrastiveCritic(o, a, h, config.embedding_dim).to(self.device)
-        self.risk = RiskCritic(o, a, h).to(self.device)
-        self.recovery_actor = RecurrentActor(o, a, h).to(self.device)
-        self.recovery_critic = RecoveryCritic(o, a, h).to(self.device)
+        sequence = config.sequence_length
+        self.actor = RecurrentActor(o, a, h, sequence).to(self.device)
+        self.contrastive = ContrastiveCritic(o, a, h, config.embedding_dim, sequence).to(self.device)
+        self.risk = RiskCritic(o, a, h, sequence).to(self.device)
+        self.recovery_actor = RecurrentActor(o, a, h, sequence).to(self.device)
+        self.recovery_critic = RecoveryCritic(o, a, h, sequence).to(self.device)
         self.target_recovery_critic = copy.deepcopy(self.recovery_critic).to(self.device).eval()
         for parameter in self.target_recovery_critic.parameters():
             parameter.requires_grad_(False)
@@ -158,12 +159,12 @@ class ContrastiveRecoveryAgent:
         obs, actions, next_obs = data["obs"], data["actions"], data["next_obs"]
         previous = torch.cat((torch.zeros_like(actions[:, :1]), actions[:, :-1]), dim=1)
         goals = data["future_goals"].unsqueeze(-1)
-        last_obs, last_prev, last_action, last_goal = obs[:, -1:], previous[:, -1:], actions[:, -1:], goals[:, -1:]
+        last_action, last_goal = actions[:, -1:], goals[:, -1:]
 
         # Contrastive future-goal classification. Positives are feasible future
         # positions from the same unbroken episode; all other batch futures are
         # negatives. This is the actual learning signal for the main actor.
-        query, goal_embed, temperature = self.contrastive(last_obs, last_prev, last_action, last_goal, True)
+        query, goal_embed, temperature = self.contrastive(obs, previous, last_action, last_goal, True)
         query, goal_embed = query.squeeze(1), goal_embed.squeeze(1)
         logits = query @ goal_embed.t() / temperature
         labels = torch.arange(logits.shape[0], device=self.device)
@@ -173,8 +174,8 @@ class ContrastiveRecoveryAgent:
         torch.nn.utils.clip_grad_norm_(self.contrastive.parameters(), 10.0)
         self.contrastive_opt.step()
 
-        risk_logits = self.risk(obs, previous, actions)
-        risk_loss = F.binary_cross_entropy_with_logits(risk_logits, data["risk_targets"].unsqueeze(-1))
+        risk_logits = self.risk(obs, previous, last_action)
+        risk_loss = F.binary_cross_entropy_with_logits(risk_logits, data["risk_targets"][:, -1:].unsqueeze(-1))
         self.risk_opt.zero_grad(set_to_none=True)
         risk_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.risk.parameters(), 10.0)
@@ -185,7 +186,7 @@ class ContrastiveRecoveryAgent:
         for parameter in list(self.risk.parameters()) + list(self.contrastive.parameters()):
             parameter.requires_grad_(False)
         proposed, log_prob, _ = _sample_actor(self.actor, obs, previous)
-        reachability = self.contrastive(obs, previous, proposed, goals).mean()
+        reachability = self.contrastive(obs, previous, proposed, last_goal).mean()
         risk_cost = torch.sigmoid(self.risk(obs, previous, proposed)).mean()
         actor_loss = -reachability + self.cfg.risk_weight * risk_cost + self.cfg.entropy_weight * log_prob.mean()
         self.actor_opt.zero_grad(set_to_none=True)
@@ -202,8 +203,8 @@ class ContrastiveRecoveryAgent:
             next_previous = actions
             next_action, next_logp, _ = _sample_actor(self.recovery_actor, next_obs, next_previous)
             target_q1, target_q2 = self.target_recovery_critic(next_obs, next_previous, next_action)
-            target = data["recovery_rewards"].unsqueeze(-1) + self.cfg.gamma * (1.0 - data["dones"].unsqueeze(-1)) * (torch.minimum(target_q1, target_q2) - self.cfg.entropy_weight * next_logp)
-        q1, q2 = self.recovery_critic(obs, previous, actions)
+            target = data["recovery_rewards"][:, -1:].unsqueeze(-1) + self.cfg.gamma * (1.0 - data["dones"][:, -1:].unsqueeze(-1)) * (torch.minimum(target_q1, target_q2) - self.cfg.entropy_weight * next_logp)
+        q1, q2 = self.recovery_critic(obs, previous, last_action)
         recovery_critic_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
         self.recovery_critic_opt.zero_grad(set_to_none=True)
         recovery_critic_loss.backward()
