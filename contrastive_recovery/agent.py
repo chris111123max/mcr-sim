@@ -137,7 +137,15 @@ class ContrastiveRecoveryAgent:
         self._recovery_remaining[activate] = int(self.cfg.recovery_min_steps)
         recover = self._recovery_remaining > 0
         recovery_actions, _, recovery_means = _sample_actor(self.recovery_actor, obs, previous, deterministic=deterministic)
-        chosen = torch.where(torch.as_tensor(recover, device=self.device).view(-1, 1), recovery_means if deterministic else recovery_actions, task_means if deterministic else task_actions)
+        # Actors return an action for every element of the recurrent context;
+        # the environment receives only the action for the newest observation.
+        task_current = (task_means if deterministic else task_actions)[:, -1, :]
+        recovery_current = (recovery_means if deterministic else recovery_actions)[:, -1, :]
+        chosen = torch.where(
+            torch.as_tensor(recover, device=self.device).view(-1, 1),
+            recovery_current,
+            task_current,
+        )
         actions = chosen.detach().cpu().numpy().astype(np.float32)
         self._previous_action[:] = actions
         return actions, predicted_risk.astype(np.float32), recover.astype(np.float32)
