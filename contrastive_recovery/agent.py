@@ -30,6 +30,19 @@ def _sample_actor(actor, obs, previous_actions, deterministic: bool = False):
     return action, log_prob.sum(dim=-1, keepdim=True), torch.tanh(mean)
 
 
+def _zero_grad(optimizer) -> None:
+    """Use the zeroing API supported by the deployed NpuFusedAdam."""
+    optimizer_type = type(optimizer)
+    fused = (
+        optimizer_type.__name__.startswith("NpuFused")
+        or optimizer_type.__module__.startswith("torch_npu.optim")
+    )
+    if fused:
+        optimizer.zero_grad()
+    else:
+        optimizer.zero_grad(set_to_none=True)
+
+
 @dataclass
 class AgentConfig:
     observation_dim: int
@@ -169,14 +182,14 @@ class ContrastiveRecoveryAgent:
         logits = query @ goal_embed.t() / temperature
         labels = torch.arange(logits.shape[0], device=self.device)
         contrastive_loss = F.cross_entropy(logits, labels)
-        self.contrastive_opt.zero_grad(set_to_none=True)
+        _zero_grad(self.contrastive_opt)
         contrastive_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.contrastive.parameters(), 10.0)
         self.contrastive_opt.step()
 
         risk_logits = self.risk(obs, previous, last_action)
         risk_loss = F.binary_cross_entropy_with_logits(risk_logits, data["risk_targets"][:, -1:].unsqueeze(-1))
-        self.risk_opt.zero_grad(set_to_none=True)
+        _zero_grad(self.risk_opt)
         risk_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.risk.parameters(), 10.0)
         self.risk_opt.step()
@@ -189,7 +202,7 @@ class ContrastiveRecoveryAgent:
         reachability = self.contrastive(obs, previous, proposed, last_goal).mean()
         risk_cost = torch.sigmoid(self.risk(obs, previous, proposed)).mean()
         actor_loss = -reachability + self.cfg.risk_weight * risk_cost + self.cfg.entropy_weight * log_prob.mean()
-        self.actor_opt.zero_grad(set_to_none=True)
+        _zero_grad(self.actor_opt)
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0)
         self.actor_opt.step()
@@ -206,7 +219,7 @@ class ContrastiveRecoveryAgent:
             target = data["recovery_rewards"][:, -1:].unsqueeze(-1) + self.cfg.gamma * (1.0 - data["dones"][:, -1:].unsqueeze(-1)) * (torch.minimum(target_q1, target_q2) - self.cfg.entropy_weight * next_logp)
         q1, q2 = self.recovery_critic(obs, previous, last_action)
         recovery_critic_loss = F.mse_loss(q1, target) + F.mse_loss(q2, target)
-        self.recovery_critic_opt.zero_grad(set_to_none=True)
+        _zero_grad(self.recovery_critic_opt)
         recovery_critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.recovery_critic.parameters(), 10.0)
         self.recovery_critic_opt.step()
@@ -215,7 +228,7 @@ class ContrastiveRecoveryAgent:
         rec_action, rec_logp, _ = _sample_actor(self.recovery_actor, obs, previous)
         rec_q1, rec_q2 = self.recovery_critic(obs, previous, rec_action)
         recovery_actor_loss = (self.cfg.entropy_weight * rec_logp - torch.minimum(rec_q1, rec_q2)).mean()
-        self.recovery_actor_opt.zero_grad(set_to_none=True)
+        _zero_grad(self.recovery_actor_opt)
         recovery_actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.recovery_actor.parameters(), 10.0)
         self.recovery_actor_opt.step()
