@@ -43,6 +43,16 @@ def _zero_grad(optimizer) -> None:
         optimizer.zero_grad(set_to_none=True)
 
 
+def _choose_recovery(eligible, task_risk, recovery_risk, margin):
+    """Never force a learned recovery action with higher predicted risk."""
+    return np.asarray(eligible, dtype=bool) & (np.asarray(recovery_risk) + margin < np.asarray(task_risk))
+
+
+def _bounded_goal_margin(future_score: torch.Tensor, current_score: torch.Tensor) -> torch.Tensor:
+    """A common logit offset cannot inflate this bounded auxiliary signal."""
+    return torch.sigmoid((future_score - current_score) / 10.0)
+
+
 @dataclass
 class AgentConfig:
     observation_dim: int
@@ -60,10 +70,11 @@ class AgentConfig:
     risk_weight: float = 0.10
     risk_warmup_updates: int = 2_000
     risk_ramp_updates: int = 4_000
-    contrastive_actor_weight: float = 0.10
+    contrastive_actor_weight: float = 0.05
     recovery_gate_threshold: float = 0.65
     recovery_min_steps: int = 12
     recovery_gate_warmup_updates: int = 2_000
+    recovery_risk_margin: float = 0.05
     distributed: bool = False
 
 
@@ -128,6 +139,8 @@ class ContrastiveRecoveryAgent:
         self._action_history = [deque(maxlen=config.sequence_length) for _ in range(config.num_envs)]
         self._previous_action = np.zeros((config.num_envs, a), dtype=np.float32)
         self._recovery_remaining = np.zeros(config.num_envs, dtype=np.int32)
+        self.last_recovery_candidate_risk = np.zeros(config.num_envs, dtype=np.float32)
+        self.last_recovery_rejected = np.zeros(config.num_envs, dtype=bool)
 
     def reset_envs(self, dones) -> None:
         for index, done in enumerate(np.asarray(dones, dtype=bool)):
@@ -155,25 +168,33 @@ class ContrastiveRecoveryAgent:
     def act(self, observations: np.ndarray, sdf_warning: Optional[np.ndarray] = None, deterministic: bool = False):
         obs, previous = self._online_sequences(observations)
         task_actions, _, task_means = _sample_actor(self.actor, obs, previous, deterministic=deterministic)
-        risk_logits = self.risk(obs, previous, task_actions)
-        predicted_risk = torch.sigmoid(risk_logits[:, -1, 0]).detach().cpu().numpy()
         warnings = np.zeros(self.cfg.num_envs, dtype=np.float32) if sdf_warning is None else np.asarray(sdf_warning, dtype=np.float32)
+        task_current = (task_means if deterministic else task_actions)[:, -1, :]
+        task_risk = torch.sigmoid(self.risk(obs, previous, task_current.unsqueeze(1))[:, -1, 0]).detach().cpu().numpy()
         # A randomly initialised BCE critic outputs ~0.5. Let the main policy
         # collect/learn safety transitions first; otherwise recovery would
         # incorrectly seize every environment at startup.  After warm-up,
         # either a calibrated learned-risk prediction or measured SDF warning
         # can activate the independently trained recovery policy.
-        learned_gate = predicted_risk >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(predicted_risk, dtype=bool)
-        hard_warning_gate = warnings >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(predicted_risk, dtype=bool)
+        learned_gate = task_risk >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(task_risk, dtype=bool)
+        hard_warning_gate = warnings >= self.cfg.recovery_gate_threshold if self.update_count >= self.cfg.recovery_gate_warmup_updates else np.zeros_like(task_risk, dtype=bool)
         activate = learned_gate | hard_warning_gate
         self._recovery_remaining = np.maximum(self._recovery_remaining - 1, 0)
         self._recovery_remaining[activate] = int(self.cfg.recovery_min_steps)
-        recover = self._recovery_remaining > 0
         recovery_actions, _, recovery_means = _sample_actor(self.recovery_actor, obs, previous, deterministic=deterministic)
         # Actors return an action for every element of the recurrent context;
         # the environment receives only the action for the newest observation.
-        task_current = (task_means if deterministic else task_actions)[:, -1, :]
         recovery_current = (recovery_means if deterministic else recovery_actions)[:, -1, :]
+        # The old gate forced the recovery actor to control for at least 12
+        # steps, even when its proposed action was predicted to be riskier.
+        # Keep the warning/hysteresis, but compare both RL candidates on the
+        # same observation before each handoff.
+        recovery_risk = torch.sigmoid(self.risk(obs, previous, recovery_current.unsqueeze(1))[:, -1, 0]).detach().cpu().numpy()
+        eligible = self._recovery_remaining > 0
+        recover = _choose_recovery(eligible, task_risk, recovery_risk, self.cfg.recovery_risk_margin)
+        self.last_recovery_candidate_risk[:] = recovery_risk
+        self.last_recovery_rejected[:] = eligible & ~recover
+        predicted_risk = task_risk
         chosen = torch.where(
             torch.as_tensor(recover, device=self.device).view(-1, 1),
             recovery_current,
@@ -244,7 +265,14 @@ class ContrastiveRecoveryAgent:
         # Do not score an unsupported goal=1 or reward a backward/unchanged
         # future goal as if it were forward navigation.
         forward_goal = (last_goal - obs[:, -1:, -2:-1]).detach() >= 0.005
-        reachability_scores = self.contrastive(obs, previous, proposed, last_goal)
+        # A raw contrastive logit climbed above 22 in the pilot and dominated
+        # the task Q (~0.15).  Compare the reachable future against *current*
+        # progress and squash the margin to [0, 1]; absolute logit scale can
+        # no longer be maximized without bound by the actor.
+        candidate_goals = torch.cat((last_goal, obs[:, -1:, -2:-1].detach()), dim=1)
+        contrastive_scores = self.contrastive(obs, previous, proposed, candidate_goals)
+        contrastive_margin = contrastive_scores[:, :1] - contrastive_scores[:, 1:2]
+        reachability_scores = _bounded_goal_margin(contrastive_scores[:, :1], contrastive_scores[:, 1:2])
         forward_count = forward_goal.float().sum().clamp_min(1.0)
         reachability = (reachability_scores * forward_goal.float()).sum() / forward_count
         goal_support = float(forward_goal.float().mean().detach().cpu().item())
@@ -305,6 +333,7 @@ class ContrastiveRecoveryAgent:
             "recovery_critic_loss": recovery_critic_loss,
             "recovery_actor_loss": recovery_actor_loss,
             "reachability_supported_goal": reachability,
+            "contrastive_margin": contrastive_margin.mean(),
             "contrastive_future_goal_mean": last_goal.mean(),
         }
         # One NPU-to-CPU transfer instead of a separate device synchronization

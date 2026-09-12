@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path: sys.path.insert(0, str(ROOT))
 import numpy as np
 import torch
-from contrastive_recovery.agent import AgentConfig, ContrastiveRecoveryAgent
+from contrastive_recovery.agent import AgentConfig, ContrastiveRecoveryAgent, _bounded_goal_margin, _choose_recovery
 from contrastive_recovery.replay import EpisodeSequenceReplay
 
 
@@ -46,6 +46,11 @@ def main():
     assert metrics["risk_weight_effective"] == 0.0
     assert "task_critic_loss" in metrics and metrics["goal_support_rate"] > 0.0
     assert metrics["contrastive_weight_effective"] > 0.0
+    assert 0.0 <= metrics["reachability_supported_goal"] <= 1.0
+    low = torch.tensor([[[2.0]]]); high = torch.tensor([[[5.0]]])
+    assert torch.allclose(_bounded_goal_margin(high, low), _bounded_goal_margin(high + 100.0, low + 100.0))
+    assert _bounded_goal_margin(high, low).item() <= 1.0
+    assert _choose_recovery([True, True, False], [0.8, 0.5, 0.9], [0.6, 0.7, 0.1], 0.05).tolist() == [True, False, False]
     print("[PASS] contrastive_recovery structural smoke", metrics)
 
 

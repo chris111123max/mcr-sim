@@ -157,10 +157,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--risk-weight", type=float, default=0.10)
     p.add_argument("--risk-warmup-updates", type=int, default=2_000)
     p.add_argument("--risk-ramp-updates", type=int, default=4_000)
-    p.add_argument("--contrastive-actor-weight", type=float, default=0.10)
+    p.add_argument("--contrastive-actor-weight", type=float, default=0.05)
     p.add_argument("--recovery-gate-threshold", type=float, default=0.65)
     p.add_argument("--recovery-min-steps", type=int, default=12)
     p.add_argument("--recovery-gate-warmup-updates", type=int, default=2_000)
+    p.add_argument("--recovery-risk-margin", type=float, default=0.05)
     p.add_argument("--metric-sync-interval", type=int, default=50)
     # stable SOFA environment contract (same names as train_sac.build_env).
     p.add_argument("--env-type", default="aortic", choices=("aortic", "flat"))
@@ -224,12 +225,13 @@ def _episode_row(global_step, rank, info, action_stats):
         "insert_mean": float(action_stats["insert_sum"] / max(1, action_stats["steps"])),
         "action_abs_mean": float(action_stats["action_abs_sum"] / max(1, action_stats["steps"])),
         "recovery_fraction": float(action_stats["recovery_steps"] / max(1, action_stats["steps"])),
+        "recovery_rejected_fraction": float(action_stats["recovery_rejected_steps"] / max(1, action_stats["steps"])),
         "predicted_risk_mean": float(action_stats["predicted_risk_sum"] / max(1, action_stats["steps"])),
     }
 
 
 def _empty_action_stats():
-    return {key: 0.0 for key in ("steps", "insert_positive", "insert_negative", "insert_sum", "action_abs_sum", "recovery_steps", "predicted_risk_sum")}
+    return {key: 0.0 for key in ("steps", "insert_positive", "insert_negative", "insert_sum", "action_abs_sum", "recovery_steps", "recovery_rejected_steps", "predicted_risk_sum")}
 
 
 def main():
@@ -279,6 +281,7 @@ def main():
             recovery_gate_threshold=args.recovery_gate_threshold,
             recovery_min_steps=args.recovery_min_steps,
             recovery_gate_warmup_updates=args.recovery_gate_warmup_updates,
+            recovery_risk_margin=args.recovery_risk_margin,
             distributed=context.enabled,
         ))
         print(f"[CRRL] npu_execution={args.npu_execution} fused_adam={agent.fused_adam_status}", flush=True)
@@ -294,8 +297,8 @@ def main():
         recent_steps = [deque(maxlen=24) for _ in range(env.num_envs)]
         previous_recovery = np.zeros(env.num_envs, dtype=bool)
         episodes = deque(maxlen=100); active_recovery = deque(maxlen=1000)
-        episode_fields = ["global_env_steps_local", "rank", "vessel_id", "terminal_reason", "success", "route_completion", "final_distance_mm", "min_distance_mm", "sdf_body_clearance_mm", "risk", "steps", "insert_positive_fraction", "insert_negative_fraction", "insert_mean", "action_abs_mean", "recovery_fraction", "predicted_risk_mean"]
-        trace_fields = ["rank", "global_env_steps_local", "vessel_id", "episode_step", "steps_before_terminal", "event", "route_completion", "clearance_before_mm", "clearance_after_mm", "warning_before", "warning_after", "predicted_risk", "recovery_active", "action_rot_n", "action_rot_b", "action_insert"]
+        episode_fields = ["global_env_steps_local", "rank", "vessel_id", "terminal_reason", "success", "route_completion", "final_distance_mm", "min_distance_mm", "sdf_body_clearance_mm", "risk", "steps", "insert_positive_fraction", "insert_negative_fraction", "insert_mean", "action_abs_mean", "recovery_fraction", "recovery_rejected_fraction", "predicted_risk_mean"]
+        trace_fields = ["rank", "global_env_steps_local", "vessel_id", "episode_step", "steps_before_terminal", "event", "route_completion", "clearance_before_mm", "clearance_after_mm", "warning_before", "warning_after", "predicted_risk", "recovery_candidate_risk", "recovery_rejected", "recovery_active", "action_rot_n", "action_rot_b", "action_insert"]
         while global_completed_episodes < target_global_episodes and (local_limit is None or total_steps < local_limit):
             actions, predicted_risk, recovery_active = agent.act(obs, warnings)
             warning_before = warnings.copy()
@@ -315,6 +318,7 @@ def main():
                 stats["insert_sum"] += float(actions[index, 2])
                 stats["action_abs_sum"] += float(np.mean(np.abs(actions[index])))
                 stats["recovery_steps"] += float(recovery_active[index])
+                stats["recovery_rejected_steps"] += float(agent.last_recovery_rejected[index])
                 stats["predicted_risk_sum"] += float(predicted_risk[index])
                 trace = {
                     "rank": context.rank,
@@ -329,6 +333,8 @@ def main():
                     "warning_before": float(warning_before[index]),
                     "warning_after": float(risk),
                     "predicted_risk": float(predicted_risk[index]),
+                    "recovery_candidate_risk": float(agent.last_recovery_candidate_risk[index]),
+                    "recovery_rejected": int(agent.last_recovery_rejected[index]),
                     "recovery_active": int(bool(recovery_active[index])),
                     "action_rot_n": float(actions[index, 0]),
                     "action_rot_b": float(actions[index, 1]),
@@ -416,6 +422,7 @@ def main():
                             "insert_mean_rank0_window": float(np.mean([x["insert_mean"] for x in recent])) if recent else np.nan,
                             "action_abs_mean_rank0_window": float(np.mean([x["action_abs_mean"] for x in recent])) if recent else np.nan,
                             "recovery_fraction_rank0_window": float(np.mean([x["recovery_fraction"] for x in recent])) if recent else np.nan,
+                            "recovery_rejected_fraction_rank0_window": float(np.mean([x["recovery_rejected_fraction"] for x in recent])) if recent else np.nan,
                             "recovery_gate_fraction_rank0_recent": float(np.mean(active_recovery)) if active_recovery else 0.,
                             "checkpoint": str(checkpoint),
                         }
