@@ -109,7 +109,7 @@ def _risk_from_info(info) -> float:
 
 
 def _clearance_from_info(info) -> float:
-    for key in ("sdf_body_surface_clearance", "sdf_surface_clearance", "sdf_tip_surface_clearance"):
+    for key in ("sdf_body_min_surface_clearance", "sdf_tip_surface_clearance", "sdf_surface_clearance"):
         try:
             value = float(info.get(key))
             if np.isfinite(value):
@@ -153,7 +153,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--gamma", type=float, default=0.99)
     p.add_argument("--tau", type=float, default=0.005)
     p.add_argument("--entropy-weight", type=float, default=0.05)
-    p.add_argument("--risk-weight", type=float, default=1.0)
+    p.add_argument("--task-entropy-weight", type=float, default=0.002)
+    p.add_argument("--risk-weight", type=float, default=0.10)
+    p.add_argument("--risk-warmup-updates", type=int, default=2_000)
+    p.add_argument("--risk-ramp-updates", type=int, default=4_000)
+    p.add_argument("--contrastive-actor-weight", type=float, default=0.10)
     p.add_argument("--recovery-gate-threshold", type=float, default=0.65)
     p.add_argument("--recovery-min-steps", type=int, default=12)
     p.add_argument("--recovery-gate-warmup-updates", type=int, default=2_000)
@@ -192,7 +196,7 @@ def _append_csv(path: Path, fields, row):
         writer.writerow({key: row.get(key, "") for key in fields})
 
 
-def _episode_row(global_step, rank, info):
+def _episode_row(global_step, rank, info, action_stats):
     return {
         "global_env_steps_local": global_step, "rank": rank,
         "vessel_id": info.get("chosen_model", info.get("task_id", "unknown")),
@@ -203,7 +207,18 @@ def _episode_row(global_step, rank, info):
         "min_distance_mm": 1000. * float(info.get("min_dist_to_goal", np.nan)),
         "sdf_body_clearance_mm": 1000. * _clearance_from_info(info),
         "risk": _risk_from_info(info),
+        "steps": int(action_stats["steps"]),
+        "insert_positive_fraction": float(action_stats["insert_positive"] / max(1, action_stats["steps"])),
+        "insert_negative_fraction": float(action_stats["insert_negative"] / max(1, action_stats["steps"])),
+        "insert_mean": float(action_stats["insert_sum"] / max(1, action_stats["steps"])),
+        "action_abs_mean": float(action_stats["action_abs_sum"] / max(1, action_stats["steps"])),
+        "recovery_fraction": float(action_stats["recovery_steps"] / max(1, action_stats["steps"])),
+        "predicted_risk_mean": float(action_stats["predicted_risk_sum"] / max(1, action_stats["steps"])),
     }
+
+
+def _empty_action_stats():
+    return {key: 0.0 for key in ("steps", "insert_positive", "insert_negative", "insert_sum", "action_abs_sum", "recovery_steps", "predicted_risk_sum")}
 
 
 def main():
@@ -233,40 +248,84 @@ def main():
     try:
         env = ProgressGoalVecEnv(build_env(args))
         obs = env.reset()
-        agent = ContrastiveRecoveryAgent(AgentConfig(observation_dim=obs.shape[1], action_dim=int(env.action_space.shape[0]), num_envs=env.num_envs, device=context.device.resolved, sequence_length=args.sequence_length, hidden_dim=args.hidden_dim, embedding_dim=args.embedding_dim, learning_rate=args.learning_rate, gamma=args.gamma, tau=args.tau, entropy_weight=args.entropy_weight, risk_weight=args.risk_weight, recovery_gate_threshold=args.recovery_gate_threshold, recovery_min_steps=args.recovery_min_steps, recovery_gate_warmup_updates=args.recovery_gate_warmup_updates, distributed=context.enabled))
+        agent = ContrastiveRecoveryAgent(AgentConfig(
+            observation_dim=obs.shape[1],
+            action_dim=int(env.action_space.shape[0]),
+            num_envs=env.num_envs,
+            device=context.device.resolved,
+            sequence_length=args.sequence_length,
+            hidden_dim=args.hidden_dim,
+            embedding_dim=args.embedding_dim,
+            learning_rate=args.learning_rate,
+            gamma=args.gamma,
+            tau=args.tau,
+            entropy_weight=args.entropy_weight,
+            task_entropy_weight=args.task_entropy_weight,
+            risk_weight=args.risk_weight,
+            risk_warmup_updates=args.risk_warmup_updates,
+            risk_ramp_updates=args.risk_ramp_updates,
+            contrastive_actor_weight=args.contrastive_actor_weight,
+            recovery_gate_threshold=args.recovery_gate_threshold,
+            recovery_min_steps=args.recovery_min_steps,
+            recovery_gate_warmup_updates=args.recovery_gate_warmup_updates,
+            distributed=context.enabled,
+        ))
         print(f"[CRRL] npu_execution={args.npu_execution} fused_adam={agent.fused_adam_status}", flush=True)
         replay = EpisodeSequenceReplay(args.replay_capacity, env.num_envs, obs.shape[1], int(env.action_space.shape[0]))
         writer = SummaryWriter(str(run_dir / "tb" / f"rank_{context.rank}"))
         local_batch = args.sequence_batch_size // context.world_size
         local_limit = int(np.ceil(args.timesteps / context.world_size)) if args.timesteps > 0 else None
         target_global_episodes = int(args.epochs) * int(args.episodes_per_epoch)
-        total_steps = 0; update_metrics = defaultdict(float); update_count = 0
+        total_steps = 0; update_metrics = defaultdict(float); update_count = 0; training_ready = False
         global_completed_episodes = 0; local_unsynced_episodes = 0; rollout_loops = 0; last_saved_epoch = 0
         warnings = np.zeros(env.num_envs, dtype=np.float32); clearances = np.zeros(env.num_envs, dtype=np.float32)
+        action_stats = [_empty_action_stats() for _ in range(env.num_envs)]
         episodes = deque(maxlen=100); active_recovery = deque(maxlen=1000)
-        episode_fields = ["global_env_steps_local", "rank", "vessel_id", "terminal_reason", "success", "route_completion", "final_distance_mm", "min_distance_mm", "sdf_body_clearance_mm", "risk"]
+        episode_fields = ["global_env_steps_local", "rank", "vessel_id", "terminal_reason", "success", "route_completion", "final_distance_mm", "min_distance_mm", "sdf_body_clearance_mm", "risk", "steps", "insert_positive_fraction", "insert_negative_fraction", "insert_mean", "action_abs_mean", "recovery_fraction", "predicted_risk_mean"]
         while global_completed_episodes < target_global_episodes and (local_limit is None or total_steps < local_limit):
             actions, predicted_risk, recovery_active = agent.act(obs, warnings)
             next_obs, _, dones, infos = env.step(actions)
             terminal_next = np.asarray(next_obs, dtype=np.float32).copy()
-            rewards = np.zeros(env.num_envs, dtype=np.float32); risks = np.zeros(env.num_envs, dtype=np.float32); goals = np.zeros(env.num_envs, dtype=np.float32)
+            rewards = np.zeros(env.num_envs, dtype=np.float32); task_rewards = np.zeros(env.num_envs, dtype=np.float32); risks = np.zeros(env.num_envs, dtype=np.float32); goals = np.zeros(env.num_envs, dtype=np.float32)
             for index, info in enumerate(infos):
                 info = dict(info or {})
                 if dones[index] and info.get("terminal_observation") is not None:
                     terminal_next[index] = np.asarray(info["terminal_observation"], dtype=np.float32)
                 risk = _risk_from_info(info); clearance = _clearance_from_info(info)
+                stats = action_stats[index]
+                stats["steps"] += 1
+                stats["insert_positive"] += float(actions[index, 2] > 0.05)
+                stats["insert_negative"] += float(actions[index, 2] < -0.05)
+                stats["insert_sum"] += float(actions[index, 2])
+                stats["action_abs_sum"] += float(np.mean(np.abs(actions[index])))
+                stats["recovery_steps"] += float(recovery_active[index])
+                stats["predicted_risk_sum"] += float(predicted_risk[index])
                 clearance_delta = float(np.clip((clearance - clearances[index]) / 0.002, -1., 1.))
                 rewards[index] = clearance_delta - 1.5 * risk - (20. if bool(info.get("done_by_out_of_vessel", False)) else 0.) + (3. if bool(dones[index]) and risk < .1 else 0.)
                 risks[index] = risk; goals[index] = float(info.get("contrastive_achieved_goal", 0.))
+                progress_delta = float(np.clip(goals[index] - obs[index, -2], -0.05, 0.05))
+                valid_progress = not bool(info.get("done_by_out_of_vessel", False) or info.get("done_by_non_finite", False) or info.get("route_projection_jump_rejected", False))
+                task_rewards[index] = (
+                    20.0 * (progress_delta if valid_progress or progress_delta < 0.0 else 0.0)
+                    + (5.0 if bool(info.get("done_by_target", False)) else 0.0)
+                    - (1.0 if bool(info.get("done_by_out_of_vessel", False)) else 0.0)
+                    - 0.001
+                )
                 warnings[index] = risk; clearances[index] = clearance
                 if dones[index]:
                     local_unsynced_episodes += 1
-                    row = _episode_row(total_steps, context.rank, info)
+                    row = _episode_row(total_steps, context.rank, info, stats)
                     episodes.append(row); _append_csv(run_dir / "diagnostics" / f"episode_events_rank_{context.rank}.csv", episode_fields, row)
+                    action_stats[index] = _empty_action_stats()
                     clearances[index] = 0.; warnings[index] = 0.
-            replay.add_batch(obs, actions, terminal_next, dones, rewards, risks, goals)
+            replay.add_batch(obs, actions, terminal_next, dones, rewards, risks, goals, task_rewards=task_rewards)
             agent.reset_envs(dones); obs = next_obs; total_steps += env.num_envs; rollout_loops += 1; active_recovery.extend(recovery_active.tolist())
-            if total_steps >= args.learning_starts and replay.can_sample(local_batch, args.sequence_length):
+            if rollout_loops % max(1, args.rollout_steps) == 0 and not training_ready:
+                ready = float(total_steps >= args.learning_starts and replay.can_sample(local_batch, args.sequence_length))
+                ready_tensor = torch.tensor([ready], device=context.device.resolved)
+                context.all_reduce(ready_tensor, op=torch.distributed.ReduceOp.MIN)
+                training_ready = bool(ready_tensor.detach().cpu().item())
+            if training_ready:
                 for _ in range(args.updates_per_rollout):
                     metrics = agent.update(replay.sample(local_batch, args.sequence_length, args.future_horizon, args.risk_horizon))
                     update_count += 1
@@ -298,7 +357,23 @@ def main():
                         checkpoint = run_dir / "models" / f"contrastive_recovery_epoch_{completed_epoch:03d}_episodes_{global_completed_episodes:05d}.pt"
                         torch.save(agent.state_dict(), checkpoint)
                         recent = list(episodes)
-                        summary = {"epoch": completed_epoch, "global_completed_episodes": global_completed_episodes, "global_env_steps": global_steps, "episodes_window_rank0": len(recent), "success_rate_rank0_window": float(np.mean([x["success"] for x in recent])) if recent else np.nan, "route_completion_mean_rank0_window": float(np.nanmean([x["route_completion"] for x in recent])) if recent else np.nan, "out_of_vessel_rate_rank0_window": float(np.mean([x["terminal_reason"] == "out_of_vessel" for x in recent])) if recent else np.nan, "recovery_gate_fraction_rank0": float(np.mean(active_recovery)) if active_recovery else 0., "checkpoint": str(checkpoint)}
+                        summary = {
+                            "epoch": completed_epoch,
+                            "global_completed_episodes": global_completed_episodes,
+                            "global_env_steps": global_steps,
+                            "episodes_window_rank0": len(recent),
+                            "success_rate_rank0_window": float(np.mean([x["success"] for x in recent])) if recent else np.nan,
+                            "route_completion_mean_rank0_window": float(np.nanmean([x["route_completion"] for x in recent])) if recent else np.nan,
+                            "out_of_vessel_rate_rank0_window": float(np.mean([x["terminal_reason"] == "out_of_vessel" for x in recent])) if recent else np.nan,
+                            "timeout_rate_rank0_window": float(np.mean([x["terminal_reason"] == "timeout" for x in recent])) if recent else np.nan,
+                            "insert_positive_fraction_rank0_window": float(np.mean([x["insert_positive_fraction"] for x in recent])) if recent else np.nan,
+                            "insert_negative_fraction_rank0_window": float(np.mean([x["insert_negative_fraction"] for x in recent])) if recent else np.nan,
+                            "insert_mean_rank0_window": float(np.mean([x["insert_mean"] for x in recent])) if recent else np.nan,
+                            "action_abs_mean_rank0_window": float(np.mean([x["action_abs_mean"] for x in recent])) if recent else np.nan,
+                            "recovery_fraction_rank0_window": float(np.mean([x["recovery_fraction"] for x in recent])) if recent else np.nan,
+                            "recovery_gate_fraction_rank0_recent": float(np.mean(active_recovery)) if active_recovery else 0.,
+                            "checkpoint": str(checkpoint),
+                        }
                         _append_csv(run_dir / "train_summary.csv", list(summary), summary)
                         print("[CRRL][CHECKPOINT] " + json.dumps(summary), flush=True)
                     context.barrier()

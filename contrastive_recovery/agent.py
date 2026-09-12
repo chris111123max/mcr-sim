@@ -56,7 +56,11 @@ class AgentConfig:
     gamma: float = 0.99
     tau: float = 0.005
     entropy_weight: float = 0.05
-    risk_weight: float = 1.0
+    task_entropy_weight: float = 0.002
+    risk_weight: float = 0.10
+    risk_warmup_updates: int = 2_000
+    risk_ramp_updates: int = 4_000
+    contrastive_actor_weight: float = 0.10
     recovery_gate_threshold: float = 0.65
     recovery_min_steps: int = 12
     recovery_gate_warmup_updates: int = 2_000
@@ -81,6 +85,10 @@ class ContrastiveRecoveryAgent:
         self.risk = RiskCritic(o, a, h, sequence).to(self.device)
         self.recovery_actor = RecurrentActor(o, a, h, sequence).to(self.device)
         self.recovery_critic = RecoveryCritic(o, a, h, sequence).to(self.device)
+        self.task_critic = RecoveryCritic(o, a, h, sequence).to(self.device)
+        self.target_task_critic = copy.deepcopy(self.task_critic).to(self.device).eval()
+        for parameter in self.target_task_critic.parameters():
+            parameter.requires_grad_(False)
         self.target_recovery_critic = copy.deepcopy(self.recovery_critic).to(self.device).eval()
         for parameter in self.target_recovery_critic.parameters():
             parameter.requires_grad_(False)
@@ -96,19 +104,22 @@ class ContrastiveRecoveryAgent:
             self.risk = DDP(self.risk, **kwargs)
             self.recovery_actor = DDP(self.recovery_actor, **kwargs)
             self.recovery_critic = DDP(self.recovery_critic, **kwargs)
+            self.task_critic = DDP(self.task_critic, **kwargs)
             self.target_recovery_critic.load_state_dict(_unwrap(self.recovery_critic).state_dict())
+            self.target_task_critic.load_state_dict(_unwrap(self.task_critic).state_dict())
 
         self.actor_opt = torch.optim.Adam(self.actor.parameters(), lr=config.learning_rate)
         self.contrastive_opt = torch.optim.Adam(self.contrastive.parameters(), lr=config.learning_rate)
         self.risk_opt = torch.optim.Adam(self.risk.parameters(), lr=config.learning_rate)
         self.recovery_actor_opt = torch.optim.Adam(self.recovery_actor.parameters(), lr=config.learning_rate)
         self.recovery_critic_opt = torch.optim.Adam(self.recovery_critic.parameters(), lr=config.learning_rate)
+        self.task_critic_opt = torch.optim.Adam(self.task_critic.parameters(), lr=config.learning_rate)
         self.fused_adam_status = {}
         if self.device.type == "npu":
             # Kept lazy so the CPU-only structural smoke test is independent
             # of the full SOFA/SB3 installation.
             from mcr_sim.distributed.npu_performance import convert_to_npu_fused_adam
-            for name in ("actor", "contrastive", "risk", "recovery_actor", "recovery_critic"):
+            for name in ("actor", "contrastive", "risk", "recovery_actor", "recovery_critic", "task_critic"):
                 optimizer, status = convert_to_npu_fused_adam(getattr(self, f"{name}_opt"))
                 setattr(self, f"{name}_opt", optimizer)
                 self.fused_adam_status[name] = status
@@ -181,6 +192,7 @@ class ContrastiveRecoveryAgent:
         previous = torch.cat((torch.zeros_like(actions[:, :1]), actions[:, :-1]), dim=1)
         goals = data["future_goals"].unsqueeze(-1)
         last_action, last_goal = actions[:, -1:], goals[:, -1:]
+        true_goal = torch.ones_like(last_goal)
 
         # Contrastive future-goal classification. Positives are feasible future
         # positions from the same unbroken episode; all other batch futures are
@@ -189,6 +201,12 @@ class ContrastiveRecoveryAgent:
         query, goal_embed = query.squeeze(1), goal_embed.squeeze(1)
         logits = query @ goal_embed.t() / temperature
         labels = torch.arange(logits.shape[0], device=self.device)
+        # With a scalar progress goal, two trajectories can legitimately have
+        # the same achieved goal. Treating one as the other's negative gives
+        # contradictory supervision and can collapse the goal embedding.
+        same_goal = (last_goal[:, 0, 0][:, None] - last_goal[:, 0, 0][None, :]).abs() < 0.01
+        false_negative_mask = same_goal & ~torch.eye(logits.shape[0], dtype=torch.bool, device=self.device)
+        logits = logits.masked_fill(false_negative_mask, -1e4)
         contrastive_loss = F.cross_entropy(logits, labels)
         _zero_grad(self.contrastive_opt)
         contrastive_loss.backward()
@@ -202,19 +220,43 @@ class ContrastiveRecoveryAgent:
         torch.nn.utils.clip_grad_norm_(self.risk.parameters(), 10.0)
         self.risk_opt.step()
 
+        # Bellman task critic uses actual progress on the physical route.  It
+        # supplies a grounded action gradient even before any trajectory has
+        # reached the real endpoint (the contrastive goal=1 is then unseen).
+        with torch.no_grad():
+            next_action_task, next_logp_task, _ = _sample_actor(self.actor, next_obs, actions)
+            tq1, tq2 = self.target_task_critic(next_obs, actions, next_action_task)
+            task_target = data["task_rewards"][:, -1:].unsqueeze(-1) + self.cfg.gamma * (1.0 - data["dones"][:, -1:].unsqueeze(-1)) * (torch.minimum(tq1, tq2) - self.cfg.task_entropy_weight * next_logp_task)
+        task_q1, task_q2 = self.task_critic(obs, previous, last_action)
+        task_critic_loss = F.mse_loss(task_q1, task_target) + F.mse_loss(task_q2, task_target)
+        _zero_grad(self.task_critic_opt)
+        task_critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.task_critic.parameters(), 10.0)
+        self.task_critic_opt.step()
+
         # Direct policy optimisation: seek future-goal reachability while the
         # risk model is frozen for this actor update.
-        for parameter in list(self.risk.parameters()) + list(self.contrastive.parameters()):
+        frozen = list(self.risk.parameters()) + list(self.contrastive.parameters()) + list(self.task_critic.parameters())
+        for parameter in frozen:
             parameter.requires_grad_(False)
         proposed, log_prob, _ = _sample_actor(self.actor, obs, previous)
-        reachability = self.contrastive(obs, previous, proposed, last_goal).mean()
+        reachability = self.contrastive(obs, previous, proposed, true_goal).mean()
+        # A critic trained only on low-progress failures has no evidence about
+        # goal=1.  Keep that extrapolation out of the actor gradient until the
+        # replay actually contains near-endpoint positive examples.
+        goal_support = float(np.mean(batch.future_goals[:, -1] >= 0.90))
+        effective_contrastive_weight = self.cfg.contrastive_actor_weight * min(1.0, goal_support / 0.10)
+        proposed_q1, proposed_q2 = self.task_critic(obs, previous, proposed)
+        task_value = torch.minimum(proposed_q1, proposed_q2).mean()
         risk_cost = torch.sigmoid(self.risk(obs, previous, proposed)).mean()
-        actor_loss = -reachability + self.cfg.risk_weight * risk_cost + self.cfg.entropy_weight * log_prob.mean()
+        risk_fraction = max(0.0, min(1.0, (self.update_count - self.cfg.risk_warmup_updates) / float(max(1, self.cfg.risk_ramp_updates))))
+        effective_risk_weight = self.cfg.risk_weight * risk_fraction
+        actor_loss = -task_value - effective_contrastive_weight * reachability + effective_risk_weight * risk_cost + self.cfg.task_entropy_weight * log_prob.mean()
         _zero_grad(self.actor_opt)
         actor_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.actor.parameters(), 10.0)
         self.actor_opt.step()
-        for parameter in list(self.risk.parameters()) + list(self.contrastive.parameters()):
+        for parameter in frozen:
             parameter.requires_grad_(True)
 
         # Recovery SAC has its own critic and reward: leaving danger safely is
@@ -243,10 +285,52 @@ class ContrastiveRecoveryAgent:
         for parameter in self.recovery_critic.parameters():
             parameter.requires_grad_(True)
         with torch.no_grad():
+            for target_p, p in zip(self.target_task_critic.parameters(), _unwrap(self.task_critic).parameters()):
+                target_p.mul_(1.0 - self.cfg.tau).add_(p, alpha=self.cfg.tau)
             for target_p, p in zip(self.target_recovery_critic.parameters(), _unwrap(self.recovery_critic).parameters()):
                 target_p.mul_(1.0 - self.cfg.tau).add_(p, alpha=self.cfg.tau)
         self.update_count += 1
-        return {"contrastive_loss": float(contrastive_loss.detach().cpu()), "risk_loss": float(risk_loss.detach().cpu()), "actor_loss": float(actor_loss.detach().cpu()), "risk_prediction": float(torch.sigmoid(risk_logits).mean().detach().cpu()), "recovery_critic_loss": float(recovery_critic_loss.detach().cpu()), "recovery_actor_loss": float(recovery_actor_loss.detach().cpu()), "reachability": float(reachability.detach().cpu())}
+        tensor_metrics = {
+            "contrastive_loss": contrastive_loss,
+            "contrastive_false_negative_rate": false_negative_mask.float().mean(),
+            "risk_loss": risk_loss,
+            "actor_loss": actor_loss,
+            "task_critic_loss": task_critic_loss,
+            "task_value": task_value,
+            "risk_prediction": torch.sigmoid(risk_logits).mean(),
+            "risk_target_rate": data["risk_targets"].mean(),
+            "recovery_critic_loss": recovery_critic_loss,
+            "recovery_actor_loss": recovery_actor_loss,
+            "reachability_true_goal": reachability,
+            "contrastive_future_goal_mean": last_goal.mean(),
+        }
+        # One NPU-to-CPU transfer instead of a separate device synchronization
+        # for each diagnostic metric on every learner update.
+        metric_names = list(tensor_metrics)
+        metric_values = torch.stack([tensor_metrics[name].detach().reshape(()) for name in metric_names]).cpu().tolist()
+        metrics = dict(zip(metric_names, metric_values))
+        metrics.update({
+            "risk_weight_effective": float(effective_risk_weight),
+            "contrastive_weight_effective": float(effective_contrastive_weight),
+            "goal_support_rate": float(goal_support),
+        })
+        return metrics
 
     def state_dict(self):
-        return {"config": self.cfg.__dict__, "fused_adam": self.fused_adam_status, "actor": _unwrap(self.actor).state_dict(), "contrastive": _unwrap(self.contrastive).state_dict(), "risk": _unwrap(self.risk).state_dict(), "recovery_actor": _unwrap(self.recovery_actor).state_dict(), "recovery_critic": _unwrap(self.recovery_critic).state_dict(), "target_recovery_critic": self.target_recovery_critic.state_dict(), "optimizers": {"actor": self.actor_opt.state_dict(), "contrastive": self.contrastive_opt.state_dict(), "risk": self.risk_opt.state_dict(), "recovery_actor": self.recovery_actor_opt.state_dict(), "recovery_critic": self.recovery_critic_opt.state_dict()}, "updates": self.update_count}
+        return {
+            "config": self.cfg.__dict__,
+            "fused_adam": self.fused_adam_status,
+            "actor": _unwrap(self.actor).state_dict(),
+            "contrastive": _unwrap(self.contrastive).state_dict(),
+            "risk": _unwrap(self.risk).state_dict(),
+            "task_critic": _unwrap(self.task_critic).state_dict(),
+            "target_task_critic": self.target_task_critic.state_dict(),
+            "recovery_actor": _unwrap(self.recovery_actor).state_dict(),
+            "recovery_critic": _unwrap(self.recovery_critic).state_dict(),
+            "target_recovery_critic": self.target_recovery_critic.state_dict(),
+            "optimizers": {
+                name: getattr(self, "{}_opt".format(name)).state_dict()
+                for name in ("actor", "contrastive", "risk", "task_critic", "recovery_actor", "recovery_critic")
+            },
+            "updates": self.update_count,
+        }

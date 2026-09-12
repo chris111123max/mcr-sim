@@ -16,6 +16,7 @@ class SequenceBatch:
     next_obs: np.ndarray
     dones: np.ndarray
     recovery_rewards: np.ndarray
+    task_rewards: np.ndarray
     risk_targets: np.ndarray
     future_goals: np.ndarray
 
@@ -40,7 +41,7 @@ class EpisodeSequenceReplay:
 
     @staticmethod
     def _empty_episode() -> Dict[str, list]:
-        return {key: [] for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards", "risks", "goals")}
+        return {key: [] for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards", "task_rewards", "risks", "goals")}
 
     @property
     def size(self) -> int:
@@ -50,7 +51,9 @@ class EpisodeSequenceReplay:
     def episode_count(self) -> int:
         return len(self._episodes)
 
-    def add_batch(self, obs, actions, next_obs, dones, recovery_rewards, risks, goals) -> None:
+    def add_batch(self, obs, actions, next_obs, dones, recovery_rewards, risks, goals, task_rewards=None) -> None:
+        if task_rewards is None:
+            task_rewards = np.zeros(self.num_envs, dtype=np.float32)
         for index in range(self.num_envs):
             episode = self._pending[index]
             episode["obs"].append(np.asarray(obs[index], dtype=np.float32).copy())
@@ -58,6 +61,7 @@ class EpisodeSequenceReplay:
             episode["next_obs"].append(np.asarray(next_obs[index], dtype=np.float32).copy())
             episode["dones"].append(float(bool(dones[index])))
             episode["recovery_rewards"].append(float(recovery_rewards[index]))
+            episode["task_rewards"].append(float(task_rewards[index]))
             episode["risks"].append(float(risks[index]))
             episode["goals"].append(float(goals[index]))
             if bool(dones[index]):
@@ -85,12 +89,12 @@ class EpisodeSequenceReplay:
             raise RuntimeError("Sequence replay has no complete episode long enough to sample.")
         rng = np.random.default_rng()
         selected = [eligible[int(rng.integers(len(eligible)))] for _ in range(int(batch_size))]
-        result = {key: [] for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards", "risk_targets", "future_goals")}
+        result = {key: [] for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards", "task_rewards", "risk_targets", "future_goals")}
         for ep in selected:
             length = len(ep["obs"])
             start = int(rng.integers(0, length - sequence_length + 1))
             stop = start + sequence_length
-            for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards"):
+            for key in ("obs", "actions", "next_obs", "dones", "recovery_rewards", "task_rewards"):
                 result[key].append(ep[key][start:stop])
             risks = ep["risks"]
             risk_values = []
