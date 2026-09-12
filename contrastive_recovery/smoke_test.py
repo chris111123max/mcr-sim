@@ -37,10 +37,15 @@ def main():
     assert actions.shape == (envs, action_dim) and risks.shape == (envs,) and recovering.shape == (envs,)
     batch = replay.sample(4, length, 6, 4)
     assert batch.task_rewards.shape == (4, length)
+    # Exercise the cold-start path: feasible local future goals must activate
+    # the contrastive actor term even without a 0.90-progress trajectory.
+    batch.obs[:, -1, -2] = 0.10
+    batch.future_goals[:, -1] = 0.20
     metrics = agent.update(batch)
     assert all(np.isfinite(value) for value in metrics.values()), metrics
     assert metrics["risk_weight_effective"] == 0.0
-    assert "task_critic_loss" in metrics and "goal_support_rate" in metrics
+    assert "task_critic_loss" in metrics and metrics["goal_support_rate"] > 0.0
+    assert metrics["contrastive_weight_effective"] > 0.0
     print("[PASS] contrastive_recovery structural smoke", metrics)
 
 

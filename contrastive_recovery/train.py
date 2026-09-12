@@ -196,6 +196,17 @@ def _append_csv(path: Path, fields, row):
         writer.writerow({key: row.get(key, "") for key in fields})
 
 
+def _append_csv_rows(path: Path, fields, rows):
+    if not rows:
+        return
+    fresh = not path.exists()
+    with path.open("a", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fields)
+        if fresh:
+            writer.writeheader()
+        writer.writerows({key: row.get(key, "") for key in fields} for row in rows)
+
+
 def _episode_row(global_step, rank, info, action_stats):
     return {
         "global_env_steps_local": global_step, "rank": rank,
@@ -280,10 +291,15 @@ def main():
         global_completed_episodes = 0; local_unsynced_episodes = 0; rollout_loops = 0; last_saved_epoch = 0
         warnings = np.zeros(env.num_envs, dtype=np.float32); clearances = np.zeros(env.num_envs, dtype=np.float32)
         action_stats = [_empty_action_stats() for _ in range(env.num_envs)]
+        recent_steps = [deque(maxlen=24) for _ in range(env.num_envs)]
+        previous_recovery = np.zeros(env.num_envs, dtype=bool)
         episodes = deque(maxlen=100); active_recovery = deque(maxlen=1000)
         episode_fields = ["global_env_steps_local", "rank", "vessel_id", "terminal_reason", "success", "route_completion", "final_distance_mm", "min_distance_mm", "sdf_body_clearance_mm", "risk", "steps", "insert_positive_fraction", "insert_negative_fraction", "insert_mean", "action_abs_mean", "recovery_fraction", "predicted_risk_mean"]
+        trace_fields = ["rank", "global_env_steps_local", "vessel_id", "episode_step", "steps_before_terminal", "event", "route_completion", "clearance_before_mm", "clearance_after_mm", "warning_before", "warning_after", "predicted_risk", "recovery_active", "action_rot_n", "action_rot_b", "action_insert"]
         while global_completed_episodes < target_global_episodes and (local_limit is None or total_steps < local_limit):
             actions, predicted_risk, recovery_active = agent.act(obs, warnings)
+            warning_before = warnings.copy()
+            clearance_before = clearances.copy()
             next_obs, _, dones, infos = env.step(actions)
             terminal_next = np.asarray(next_obs, dtype=np.float32).copy()
             rewards = np.zeros(env.num_envs, dtype=np.float32); task_rewards = np.zeros(env.num_envs, dtype=np.float32); risks = np.zeros(env.num_envs, dtype=np.float32); goals = np.zeros(env.num_envs, dtype=np.float32)
@@ -300,6 +316,28 @@ def main():
                 stats["action_abs_sum"] += float(np.mean(np.abs(actions[index])))
                 stats["recovery_steps"] += float(recovery_active[index])
                 stats["predicted_risk_sum"] += float(predicted_risk[index])
+                trace = {
+                    "rank": context.rank,
+                    "global_env_steps_local": total_steps + env.num_envs,
+                    "vessel_id": str(info.get("chosen_model", info.get("task_id", "unknown"))),
+                    "episode_step": int(stats["steps"]),
+                    "steps_before_terminal": "",
+                    "event": "step",
+                    "route_completion": float(info.get("route_progress_ratio", np.nan)),
+                    "clearance_before_mm": 1000.0 * float(clearance_before[index]),
+                    "clearance_after_mm": 1000.0 * float(clearance),
+                    "warning_before": float(warning_before[index]),
+                    "warning_after": float(risk),
+                    "predicted_risk": float(predicted_risk[index]),
+                    "recovery_active": int(bool(recovery_active[index])),
+                    "action_rot_n": float(actions[index, 0]),
+                    "action_rot_b": float(actions[index, 1]),
+                    "action_insert": float(actions[index, 2]),
+                }
+                recent_steps[index].append(trace)
+                if recovery_active[index] and not previous_recovery[index]:
+                    _append_csv(run_dir / "diagnostics" / f"recovery_events_rank_{context.rank}.csv", trace_fields, {**trace, "event": "recovery_start"})
+                previous_recovery[index] = bool(recovery_active[index])
                 clearance_delta = float(np.clip((clearance - clearances[index]) / 0.002, -1., 1.))
                 rewards[index] = clearance_delta - 1.5 * risk - (20. if bool(info.get("done_by_out_of_vessel", False)) else 0.) + (3. if bool(dones[index]) and risk < .1 else 0.)
                 risks[index] = risk; goals[index] = float(info.get("contrastive_achieved_goal", 0.))
@@ -313,10 +351,17 @@ def main():
                 )
                 warnings[index] = risk; clearances[index] = clearance
                 if dones[index]:
+                    if bool(info.get("done_by_out_of_vessel", False)):
+                        history = list(recent_steps[index])
+                        _append_csv_rows(run_dir / "diagnostics" / f"terminal_trace_rank_{context.rank}.csv", trace_fields, [
+                            {**item, "steps_before_terminal": len(history) - offset - 1, "event": "out_of_vessel" if offset == len(history) - 1 else "pre_terminal"}
+                            for offset, item in enumerate(history)
+                        ])
                     local_unsynced_episodes += 1
                     row = _episode_row(total_steps, context.rank, info, stats)
                     episodes.append(row); _append_csv(run_dir / "diagnostics" / f"episode_events_rank_{context.rank}.csv", episode_fields, row)
                     action_stats[index] = _empty_action_stats()
+                    recent_steps[index].clear(); previous_recovery[index] = False
                     clearances[index] = 0.; warnings[index] = 0.
             replay.add_batch(obs, actions, terminal_next, dones, rewards, risks, goals, task_rewards=task_rewards)
             agent.reset_envs(dones); obs = next_obs; total_steps += env.num_envs; rollout_loops += 1; active_recovery.extend(recovery_active.tolist())

@@ -5,7 +5,7 @@ This folder is a self-contained experiment and does not modify PPO, SAC, Goal-SA
 ## Architecture
 
 - **Task actor**: a fixed-history, direct 3-action policy (`rot_n`, `rot_b`, `insert`). It receives the existing local-centreline/target state plus achieved and final goal fractions. It never receives `target_route_id`. The ordered 32-step context is encoded with Linear/SiLU rather than GRU because the deployed torch-npu DynamicGRUV2 kernel fails on 910B3.
-- **Contrastive critic**: samples a reachable future progress from the *same complete trajectory* as a positive and different-progress batch goals as negatives (InfoNCE). Near-identical scalar goals are masked to avoid contradictory false negatives. The task actor always scores the real endpoint (`goal=1`); this auxiliary score affects its gradient only when replay has near-endpoint examples, so unseen goals are not extrapolated blindly.
+- **Contrastive critic**: samples a reachable future progress from the *same complete trajectory* as a positive and different-progress batch goals as negatives (InfoNCE). Near-identical scalar goals are masked to avoid contradictory false negatives. The actor's contrastive term scores only sampled, forward future goals at least 0.005 beyond its current route fraction; it is active before any near-endpoint trajectory exists. The final destination remains the environment's true target, not a fabricated training success.
 - **Task twin critic**: learns a Bellman value from measured route progress change, true target success, unsafe termination, and a small step cost. Its action gradient remains available while the contrastive critic lacks endpoint examples.
 - **Risk critic**: predicts whether the following short horizon contains SDF warning, wrong-branch warning, out-of-vessel, or non-finite state.
 - **Recovery actor + twin critic**: a second direct history-aware SAC actor, trained from clearance change and unsafe termination. It is gated briefly by measured SDF warning or learned risk; it is not a scripted controller and does not write a nominal action over the task actor.
@@ -20,7 +20,7 @@ The current environment supplies the selected centreline geometry as local guide
 
 ## Logs
 
-Each run contains `models/`, `tb/rank_*/`, `logs/console*.log`, `diagnostics/episode_events_rank_*.csv`, `diagnostics/update_metrics.csv`, `train_summary.csv`, and `run_config.json`. Episode CSVs include forward/backward insertion fractions, action magnitude, recovery fraction, actual SDF risk and terminal reason. Update metrics include task critic loss/value, contrastive goal support and weight, and the current risk weight.
+Each run contains `models/`, `tb/rank_*/`, `logs/console*.log`, `diagnostics/episode_events_rank_*.csv`, `diagnostics/update_metrics.csv`, `train_summary.csv`, and `run_config.json`. Episode CSVs include forward/backward insertion fractions, action magnitude, recovery fraction, actual SDF risk and terminal reason. `diagnostics/recovery_events_rank_*.csv` records each recovery onset; `diagnostics/terminal_trace_rank_*.csv` records the final 24 steps before every out-of-vessel event, including before/after SDF clearance, warning, predicted risk, active policy and action. These event files appear only when the corresponding event occurs. Update metrics include task critic loss/value, supported-forward-goal fraction and contrastive weight, and the current risk weight.
 
 ## Tests
 

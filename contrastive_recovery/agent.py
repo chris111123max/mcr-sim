@@ -192,7 +192,6 @@ class ContrastiveRecoveryAgent:
         previous = torch.cat((torch.zeros_like(actions[:, :1]), actions[:, :-1]), dim=1)
         goals = data["future_goals"].unsqueeze(-1)
         last_action, last_goal = actions[:, -1:], goals[:, -1:]
-        true_goal = torch.ones_like(last_goal)
 
         # Contrastive future-goal classification. Positives are feasible future
         # positions from the same unbroken episode; all other batch futures are
@@ -240,12 +239,16 @@ class ContrastiveRecoveryAgent:
         for parameter in frozen:
             parameter.requires_grad_(False)
         proposed, log_prob, _ = _sample_actor(self.actor, obs, previous)
-        reachability = self.contrastive(obs, previous, proposed, true_goal).mean()
-        # A critic trained only on low-progress failures has no evidence about
-        # goal=1.  Keep that extrapolation out of the actor gradient until the
-        # replay actually contains near-endpoint positive examples.
-        goal_support = float(np.mean(batch.future_goals[:, -1] >= 0.90))
-        effective_contrastive_weight = self.cfg.contrastive_actor_weight * min(1.0, goal_support / 0.10)
+        # Train the actor toward *observed, forward* future goals.  Requiring a
+        # 0.90-progress example made this term identically zero in the pilot.
+        # Do not score an unsupported goal=1 or reward a backward/unchanged
+        # future goal as if it were forward navigation.
+        forward_goal = (last_goal - obs[:, -1:, -2:-1]).detach() >= 0.005
+        reachability_scores = self.contrastive(obs, previous, proposed, last_goal)
+        forward_count = forward_goal.float().sum().clamp_min(1.0)
+        reachability = (reachability_scores * forward_goal.float()).sum() / forward_count
+        goal_support = float(forward_goal.float().mean().detach().cpu().item())
+        effective_contrastive_weight = self.cfg.contrastive_actor_weight * min(1.0, goal_support / 0.25)
         proposed_q1, proposed_q2 = self.task_critic(obs, previous, proposed)
         task_value = torch.minimum(proposed_q1, proposed_q2).mean()
         risk_cost = torch.sigmoid(self.risk(obs, previous, proposed)).mean()
@@ -301,7 +304,7 @@ class ContrastiveRecoveryAgent:
             "risk_target_rate": data["risk_targets"].mean(),
             "recovery_critic_loss": recovery_critic_loss,
             "recovery_actor_loss": recovery_actor_loss,
-            "reachability_true_goal": reachability,
+            "reachability_supported_goal": reachability,
             "contrastive_future_goal_mean": last_goal.mean(),
         }
         # One NPU-to-CPU transfer instead of a separate device synchronization
