@@ -32,6 +32,7 @@ from mcr_sim.paths import TRAINING_RUNS_DIR
 from mcr_sim.rl_core.base import RenderFramework, RenderMode
 from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
 from recurrent_goal_tqc.agent import Config, RecurrentGoalTQC
+from recurrent_goal_tqc.curriculum import CurriculumController
 from recurrent_goal_tqc.replay import TopologyHerReplay
 
 
@@ -169,8 +170,8 @@ def parser():
     p.add_argument("--rollout-steps", type=int, default=32)
     p.add_argument("--metric-sync-interval", type=int, default=50)
     p.add_argument("--env-type", default="aortic", choices=("aortic", "flat"))
-    p.add_argument("--force-model", default="B01")
-    p.add_argument("--centerline-file", default="target_01_centerline.vtk")
+    p.add_argument("--force-model", default="")
+    p.add_argument("--centerline-file", default="")
     p.add_argument("--render", default="headless", choices=("headless", "human"))
     p.add_argument("--time-step", type=float, default=.01)
     p.add_argument("--frame-skip", type=int, default=1)
@@ -178,16 +179,25 @@ def parser():
     p.add_argument("--target-threshold", type=float, default=.003)
     p.add_argument("--max-episode-steps", type=int, default=2048)
     p.add_argument("--radius-observation-scale", type=float, default=.005)
-    p.add_argument("--randomize-start-target", action="store_true")
-    p.add_argument("--start-window-mm", type=float, default=0.)
-    p.add_argument("--target-window-mm", type=float, default=0.)
-    p.add_argument("--randomize-initial-orientation", action="store_true")
-    p.add_argument("--initial-orientation-max-angle-deg", type=float, default=0.)
+    p.add_argument("--randomize-start-target", dest="randomize_start_target",
+                   action="store_true", default=True)
+    p.add_argument("--no-randomize-start-target", dest="randomize_start_target",
+                   action="store_false")
+    p.add_argument("--start-window-mm", type=float, default=10.)
+    p.add_argument("--target-window-mm", type=float, default=10.)
+    p.add_argument("--randomize-initial-orientation", dest="randomize_initial_orientation",
+                   action="store_true", default=True)
+    p.add_argument("--no-randomize-initial-orientation", dest="randomize_initial_orientation",
+                   action="store_false")
+    p.add_argument("--initial-orientation-max-angle-deg", type=float, default=10.)
     p.add_argument("--entry-tangent-points", type=int, default=5)
     p.add_argument("--soft-randomize-single-vessel", action="store_true")
-    p.add_argument("--vessel-scale-min", type=float, default=1.)
+    p.add_argument("--vessel-scale-min", type=float, default=.9)
     p.add_argument("--vessel-scale-max", type=float, default=1.)
-    p.add_argument("--training-curriculum", action="store_true")
+    p.add_argument("--training-curriculum", dest="training_curriculum",
+                   action="store_true", default=True)
+    p.add_argument("--no-training-curriculum", dest="training_curriculum",
+                   action="store_false")
     p.add_argument("--curriculum-stage", type=int, default=0)
     p.add_argument("--scene-verbose", action="store_true")
     p.add_argument("--asset-root", default="")
@@ -215,6 +225,9 @@ def main():
         raise ValueError("Must retain at least one quantile per critic")
     if args.centerline_file and not args.force_model:
         raise ValueError("--centerline-file requires --force-model")
+    if args.training_curriculum and (args.force_model or args.centerline_file):
+        raise ValueError("Automatic curriculum requires no --force-model/--centerline-file; "
+                         "use --no-training-curriculum for a fixed route")
     if args.render == "human" and args.n_envs > 1:
         raise ValueError("GUI requires one environment")
     os.environ["MCR_SOFA_DT"] = str(args.time_step)
@@ -237,7 +250,8 @@ def main():
                          run_dir=str(run_dir), local_n_envs=args.local_n_envs)
     print(f"[RGTQC] rank={context.rank}/{context.world_size} device={context.device.resolved} "
           f"envs={args.local_n_envs}/{args.n_envs} batch={args.sequence_batch_size // context.world_size}/"
-          f"{args.sequence_batch_size} route={args.force_model}/{args.centerline_file or 'cycling'} "
+          f"{args.sequence_batch_size} route={args.force_model or 'curriculum'}/"
+          f"{args.centerline_file or 'cycling'} "
           f"run={run_dir}", flush=True)
     try:
         env = build_env(args)
@@ -255,13 +269,16 @@ def main():
         ))
         print(f"[RGTQC] npu={args.npu_execution} fused_adam={agent.fused_adam}", flush=True)
         replay = TopologyHerReplay(args.replay_capacity, env.num_envs)
+        curriculum = CurriculumController(args.curriculum_stage) if args.training_curriculum else None
         writer = SummaryWriter(str(run_dir / "tb" / f"rank_{context.rank}"))
         local_batch = args.sequence_batch_size // context.world_size
         target_episodes = args.epochs * args.episodes_per_epoch
         global_episodes = 0; pending_episodes = 0; total_steps = 0; loops = 0
         ready = False; last_epoch = 0; update_sums = defaultdict(float)
         recent = deque(maxlen=100); recent_rank_episodes = deque(maxlen=100)
+        pending_events = []
         episode_fields = ["rank", "global_env_steps_local", "vessel_id", "target_route_id",
+                          "curriculum_stage",
                           "success", "terminal_reason", "route_completion", "final_distance_mm",
                           "sdf_body_clearance_mm", "route_consistency_error", "steps"]
         step_counts = np.zeros(env.num_envs, dtype=np.int32)
@@ -282,6 +299,7 @@ def main():
                         "rank": context.rank, "global_env_steps_local": total_steps + env.num_envs,
                         "vessel_id": info.get("chosen_model", "unknown"),
                         "target_route_id": info.get("target_route_id", "default"),
+                        "curriculum_stage": int(info.get("curriculum_stage", -1)),
                         "success": int(bool(info.get("done_by_target", False))),
                         "terminal_reason": info.get("terminal_reason", "unknown"),
                         "route_completion": float(info.get("route_progress_ratio", np.nan)),
@@ -293,6 +311,10 @@ def main():
                     append_csv(run_dir / "diagnostics" / f"episodes_rank_{context.rank}.csv",
                                episode_fields, row)
                     recent.append(row); recent_rank_episodes.append(row)
+                    if curriculum is not None:
+                        pending_events.append({"vessel_id": row["vessel_id"],
+                                               "success": row["success"],
+                                               "stage": row["curriculum_stage"]})
                     step_counts[i] = 0
             agent.reset_envs(dones)
             obs = next_obs; total_steps += env.num_envs; loops += 1
@@ -322,6 +344,27 @@ def main():
                                 writer.add_scalar("train/" + key, value, agent.update_count)
                         update_sums.clear()
             if loops % args.rollout_steps == 0:
+                if curriculum is not None:
+                    gathered = context.all_gather_text(json.dumps(pending_events))
+                    events = [event for payload in gathered for event in json.loads(payload)]
+                    pending_events.clear()
+                    transitions = curriculum.observe(events)
+                    if transitions:
+                        applied = env.env_method("set_curriculum_stage", curriculum.stage)
+                        if any(int(stage) != curriculum.stage for stage in applied):
+                            raise RuntimeError("SOFA workers rejected curriculum promotion")
+                        if context.is_main:
+                            for transition in transitions:
+                                append_csv(run_dir / "diagnostics" / "curriculum_events.csv",
+                                           ["global_env_steps", "from_stage", "to_stage",
+                                            "from_status", "to_status"], {
+                                               "global_env_steps": total_steps * context.world_size,
+                                               "from_stage": transition["from"]["stage"],
+                                               "to_stage": transition["to"]["stage"],
+                                               "from_status": json.dumps(transition["from"]),
+                                               "to_status": json.dumps(transition["to"]),
+                                           })
+                                print("[RGTQC][CURRICULUM] " + json.dumps(transition), flush=True)
                 counter = torch.tensor([float(pending_episodes)], device=context.device.resolved)
                 context.all_reduce(counter)
                 global_episodes += int(counter.detach().cpu().item())
@@ -343,6 +386,9 @@ def main():
                             "updates": agent.update_count, "elapsed_s": time.perf_counter() - started,
                             "checkpoint": str(checkpoint),
                         }
+                        if curriculum is not None:
+                            summary["curriculum_stage"] = curriculum.stage
+                            summary["curriculum_status"] = json.dumps(curriculum.status())
                         append_csv(run_dir / "train_summary.csv", list(summary), summary)
                         print("[RGTQC][CHECKPOINT] " + json.dumps(summary), flush=True)
                     context.barrier()

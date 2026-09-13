@@ -15,6 +15,7 @@ import torch
 
 from mcr_sim.goal_contract import condition_observation
 from recurrent_goal_tqc.agent import Config, RecurrentGoalTQC, quantile_huber
+from recurrent_goal_tqc.curriculum import CurriculumController
 from recurrent_goal_tqc.replay import TopologyHerReplay, goal_reward
 
 
@@ -62,6 +63,12 @@ def main():
     assert np.all(unsafe_batch.rewards < 0.0)
     assert goal_reward(.1, .2, 1., False, True) < 0.0
     assert 20.0 * 0.99 - 25.0 < 0.0  # Unsafe near-finish failure stays net-negative.
+    curriculum = CurriculumController(0)
+    first_stage = ([{"stage": 0, "vessel_id": "B01", "success": 1}] * 100
+                   + [{"stage": 0, "vessel_id": "B02", "success": 1}] * 102)
+    promotions = curriculum.observe(first_stage)
+    assert len(promotions) == 1 and curriculum.stage == 1
+    assert curriculum.status()["models"] == ["C01", "C02"]
 
     agent = RecurrentGoalTQC(Config(observation_dim=20, action_dim=3,
                                      num_envs=2, device="cpu", sequence_length=8,
