@@ -19,11 +19,8 @@ CONTROLLER_MAX_INSERTION_M = 0.510
 # horizon remains 2048; this doubles the reachable distance per episode without
 # changing termination semantics or the learned observation/reward definition.
 MAX_INSERTION_PER_ACTION_M = 0.0008
-# Retraction remains available for bend recovery, but it is deliberately slower
-# than insertion. The environment uses a zero-preserving piecewise map:
-# raw -1/0/+1 -> effective -0.25/0/+1. A zero policy action must never create a
-# hidden forward command.
-INSERT_ACTION_NEGATIVE_LIMIT = -0.25
+# Symmetric, zero-preserving authority: raw -1/0/+1 -> -0.8/0/+0.8 mm.
+INSERT_ACTION_NEGATIVE_LIMIT = -1.0
 
 # Environment/task defaults.
 SOFA_TIME_STEP_S = 0.01
@@ -40,7 +37,7 @@ ACTOR_HISTORY_STEPS = 32
 ACTOR_SHAFT_LOOKBACK_DISTANCES_M = (0.010, 0.030, 0.060)
 VESSEL_SECTION_FEATURE_DIM = 26
 ACTOR_STATIC_ROUTE_FEATURE_DIM = 12
-ACTOR_CURRENT_GEOMETRY_DIM = ACTOR_STATIC_ROUTE_FEATURE_DIM + VESSEL_SECTION_FEATURE_DIM
+ACTOR_CURRENT_GEOMETRY_DIM = 33  # field3 + points15 + goal3 + shaft9 + time/insertion/radius3
 ACTOR_DYNAMIC_STEP_DIM = 7
 ACTOR_OBSERVATION_DIM = (
     ACTOR_CURRENT_GEOMETRY_DIM + ACTOR_HISTORY_STEPS * ACTOR_DYNAMIC_STEP_DIM
@@ -108,31 +105,31 @@ ENTRY_TANGENT_POINTS = 5
 # Reward profile v13.0. PPO receives direct normalized route-completion change.
 # Earned partial progress is no longer removed in one large terminal transition;
 # retraction still cancels forward credit, so oscillation cannot create return.
-REWARD_PROFILE_VERSION = "13.0"
+REWARD_PROFILE_VERSION = "14.0-discrete"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
 REWARD_PROGRESS_SCALE = 60.0
 # Compatibility alias for older reporting code. In V13 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
 REWARD_ROUTE_PROGRESS = REWARD_PROGRESS_SCALE
-REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE
+REWARD_PROGRESS_BUDGET = REWARD_PROGRESS_SCALE * TRAIN_ROUTE_MAX_LENGTH_M
 # Common learner discount; V13 progress itself is an undiscounted difference.
 REWARD_DISCOUNT_GAMMA = 0.9995
 # The diagnostic audit showed body escape while the tip was still inside. The
 # earlier coefficient was typically 8-15x smaller than immediate progress near
 # the failure bend. This remains a single bounded safety term, but now provides
 # useful pre-contact credit assignment.
-REWARD_WALL_PROXIMITY = -0.020
-REWARD_OFF_TARGET_BRANCH = -0.005
-REWARD_SUCCESS = 100.0
-REWARD_OUT_OF_VESSEL = -80.0
-REWARD_NON_FINITE = -100.0
-REWARD_TIMEOUT = -80.0
+REWARD_WALL_PROXIMITY = 0.0
+REWARD_OFF_TARGET_BRANCH = 0.0
+REWARD_SUCCESS = 30.0
+REWARD_OUT_OF_VESSEL = -30.0
+REWARD_NON_FINITE = -30.0
+REWARD_TIMEOUT = -10.0
 REWARD_STEP = -0.002
 # Stagnation never terminates an episode.  This bounded per-step cost provides
 # local credit assignment after a grace period; the terminal timeout alone is
 # too delayed to discourage retract-and-wait under gamma=0.9995.
-REWARD_STAGNATION = -0.020
+REWARD_STAGNATION = 0.0
 
 # A short, rollout-visible window distinguishes deliberate steering pauses from
 # a policy that has collapsed to zero insertion/retraction.  It never terminates
@@ -154,11 +151,13 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
 
     return {
         "version": REWARD_PROFILE_VERSION,
-        "progress_normalization": "selected_route_completion_potential_0_1",
+        "progress_normalization": "none_distance_in_metres",
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_scale": REWARD_PROGRESS_SCALE,
         "discount_gamma": float(discount_gamma),
-        "progress_formula": "scale*(completion_next-completion_previous)",
+        "progress_formula": "60*(distance_before-distance_after)_same_active_point_metres",
+        "discrete_navigation": {"gentle_spacing_m": .004, "tight_spacing_m": .002, "gentle_radius_m": .0012, "tight_radius_m": .0008, "final_radius_m": .003, "preview_points": 5},
+        "discrete_bend_rule": "offline_4mm_window_direction_change_ge_10deg_or_graph_degree_ge_3_within_2mm",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
         "wall_proximity": REWARD_WALL_PROXIMITY,
@@ -169,10 +168,10 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "timeout": REWARD_TIMEOUT,
         "step": REWARD_STEP,
         "stagnation": REWARD_STAGNATION,
-        "stagnation_formula": "bounded_window32_net_route_progress_below_1mm_after_grace",
+        "stagnation_formula": "disabled_no_stagnation_termination_or_cost",
         "body_sdf_warning_margin_m": SDF_BODY_WARNING_MARGIN_M,
         "body_sdf_warning_formula": "linear_surface_clearance_0.5mm_to_contact",
-        "insert_action_mapping": "piecewise_zero_preserving_-0.25_0_1.0",
+        "insert_action_mapping": "symmetric_-1_0_1_max_0.8mm",
         "max_insertion_per_action_m": MAX_INSERTION_PER_ACTION_M,
         "no_progress_window_steps": NO_PROGRESS_WINDOW_STEPS,
         "no_progress_grace_steps": NO_PROGRESS_GRACE_STEPS,
@@ -386,14 +385,14 @@ def curriculum_protocol_profile() -> dict:
         "ppo_max_action_std": PPO_MAX_ACTION_STD,
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
-        "actor_future_tangent_features": "tip_local_tangents_5_10_20mm",
+        "actor_future_tangent_features": "five_ordered_point_vectors_no_tangent_features",
         "actor_shaft_lookback_distances_m": list(ACTOR_SHAFT_LOOKBACK_DISTANCES_M),
         "actor_time_feature": "fraction_of_episode_remaining",
         "actor_inserted_length_feature": "controller_insertion_fraction",
         "actor_history_steps": ACTOR_HISTORY_STEPS,
         "max_insertion_per_action_m": MAX_INSERTION_PER_ACTION_M,
         "local_field_action_angle_deg": math.degrees(LOCAL_FIELD_ACTION_ANGLE_RAD),
-        "navigation": "continuous_selected_route",
+        "navigation": "ordered_discrete_points",
         "route_guidance_lookahead_distances_m": list(
             ROUTE_GUIDANCE_LOOKAHEAD_DISTANCES_M
         ),
@@ -408,7 +407,9 @@ def curriculum_protocol_profile() -> dict:
         "route_success_progress_margin_m": ROUTE_SUCCESS_PROGRESS_MARGIN_M,
         "route_remaining_distance_scale_m": ROUTE_REMAINING_DISTANCE_SCALE_M,
         "actor_coordinate_frame": "catheter_tip_local",
-        "actor_route_horizon_feature": "remaining_route_distance",
+        "actor_route_horizon_feature": "five_tip_relative_points_and_final_goal",
+        "actor_wall_features": False,
+        "actor_dynamic_features": "previous_effective_action3_tip_motion3_actual_insertion_delta1",
         "branch_target_sampling": "six_route_worker_phased_cycle",
         "branch_target_routes": [f"target_{index:02d}" for index in range(1, 7)],
         "branch_mastery_metric": "minimum_per_route_success",
@@ -601,8 +602,8 @@ def validate_training_defaults() -> None:
         raise ValueError("Continuous route tracking settings are invalid.")
     if not (
         REWARD_ROUTE_PROGRESS > 0.0
-        and REWARD_WALL_PROXIMITY < 0.0
-        and REWARD_OFF_TARGET_BRANCH < 0.0
+        and REWARD_WALL_PROXIMITY == 0.0
+        and REWARD_OFF_TARGET_BRANCH == 0.0
         and REWARD_SUCCESS > 0.0
         and REWARD_OUT_OF_VESSEL < 0.0
         and REWARD_NON_FINITE < 0.0
@@ -617,7 +618,7 @@ def validate_training_defaults() -> None:
         and REWARD_SUCCESS > maximum_navigation_credit
     ):
         raise ValueError("Reward V13 terminal outcomes must dominate shaping.")
-    if REWARD_STAGNATION >= 0.0:
+    if REWARD_STAGNATION != 0.0:
         raise ValueError("Reward V13 stagnation must be a non-terminal penalty.")
     if not (
         NO_PROGRESS_WINDOW_STEPS > 0

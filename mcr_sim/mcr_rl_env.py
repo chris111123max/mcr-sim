@@ -106,6 +106,9 @@ class EnvType(Enum):
     AORTIC = 1
 
 
+from mcr_sim.discrete_navigation import compile_points, PointTracker
+
+
 class MCREnv(SofaEnv):
     """Multi-asset continuous-route mCR RL environment.
 
@@ -1486,332 +1489,102 @@ class MCREnv(SofaEnv):
             obs = fixed
         return np.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
 
-    def _get_observation(self, image_observation: Union[np.ndarray, None]) -> Union[np.ndarray, dict]:
+
+
+    def _initialize_continuous_route_from_current_tip(self) -> None:
+        # Target/route pairing is resolved by _sample_next_target_route and scene
+        # creation BEFORE this conversion. Endpoint localization is reset-only.
+        branches = np.empty((0, 3))
+        if self.centerline_graph_points is not None and self.centerline_graph_edges is not None:
+            degree = np.bincount(np.asarray(self.centerline_graph_edges).ravel(), minlength=len(self.centerline_graph_points))
+            branches = self.centerline_graph_points[degree >= 3]
+        points, arc, radii, kinds = compile_points(
+            self.centerline_points, branches,
+            self.current_route_start_progress, self.current_route_target_progress,
+        )
+        points[-1] = np.asarray(self.target_position)
+        tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[:3])
+        self._point_tracker = PointTracker(points, arc, radii, kinds, tip)
+        self._last_actor_inserted_length = float(self.mcr_controller_sofa._getXTipValue())
+        self._sync_discrete_progress()
+
+    def _sync_discrete_progress(self):
+        tracker = self._point_tracker
+        # Diagnostic completion is accepted point arc, NOT nearest projection.
+        accepted = self.current_route_start_progress if tracker.index == 0 else tracker.arc[tracker.index-1]
+        if self.episode_success:
+            accepted = self.current_route_target_progress
+        self.current_route_progress = float(accepted)
+        self.current_route_progress_delta = float(tracker.last_delta)
+        self.current_route_progress_ratio = normalized_route_progress(accepted, self.current_route_start_progress, self.current_route_target_progress)
+        self.current_route_potential = self.current_route_progress_ratio
+        self.current_reward_route_potential = self.current_route_progress_ratio
+        self.current_route_potential_delta = 0.0
+        self.waypoint_reached_count = tracker.index
+        self.waypoint_total_count = len(tracker.points)-1
+
+    def _get_tracked_centerline_projection_state(self, tip_pos):
+        # Geometry-only diagnostic/fallback safety query. Never changes point
+        # index, progress reward, preview points, or success gating.
+        projection = project_to_route(self.centerline_points, self.centerline_cumlength, tip_pos, previous_progress=None)
+        return (float(projection.progress), int(projection.segment_index), float(projection.distance), projection.point, projection.tangent)
+
+    def _get_reward_features(self):
+        tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[:3], dtype=float)
+        final_dist = float(np.linalg.norm(tip-np.asarray(self.target_position)))
+        self.non_finite_failure = bool(not np.isfinite(tip).all() or not np.isfinite(final_dist))
+        if not self.non_finite_failure:
+            self._update_vessel_safety_state(tip, advance_failure_counters=True)
+        inside = not (self.non_finite_failure or self.current_out_of_vessel)
+        delta = 0.0 if self.non_finite_failure else self._point_tracker.update(tip, inside)
+        self.min_dist_this_episode = min(self.min_dist_this_episode, final_dist)
+        self.out_of_vessel_failure = bool(self.current_out_of_vessel)
+        self.out_of_vessel_this_episode |= self.out_of_vessel_failure
+        self.wrong_branch_failure = False
+        self.no_progress_failure = False
+        tracker = self._point_tracker
+        reached = inside and tracker.index == len(tracker.points)-1 and final_dist <= self.target_distance_threshold
+        self.current_target_reached_this_step = bool(reached)
+        self.episode_success = bool(reached)
+        self.episode_success_2mm = bool(reached and final_dist <= .002)
+        self.episode_safe_success = bool(reached and (self.sdf_grid is None or self.current_sdf_surface_clearance >= 0))
+        self.episode_contact_free_success = bool(self.episode_safe_success and not self.sdf_penetration_this_episode)
+        self._sync_discrete_progress()
+        # No waypoint bonus, projection reward, branch/wall/stagnation penalty.
+        return {"route_progress": delta, "successful_task": float(reached),
+                "out_of_vessel_penalty": float(self.out_of_vessel_failure),
+                "non_finite_penalty": float(self.non_finite_failure),
+                "timeout_penalty": 0.0, "step_penalty": 1.0}
+
+    def _get_observation(self, image_observation):
         if self.observation_type == ObservationType.RGB:
             return image_observation
         if self.observation_type != ObservationType.STATE:
             return {}
-
-        tip_pose = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip(), dtype=np.float32)
-        tip_pos = tip_pose[0:3]
-        tip_quat = tip_pose[3:7]
-        frame = self._build_tip_local_frame(tip_quat)
-        tip_forward = np.asarray(frame[:, 0], dtype=np.float32)
-        previous_tip_forward = getattr(self, "_last_tip_forward_world", None)
-        if previous_tip_forward is None:
-            self.current_tip_heading_change_rad = 0.0
-        else:
-            self.current_tip_heading_change_rad = float(
-                np.arccos(
-                    np.clip(
-                        np.dot(
-                            tip_forward,
-                            np.asarray(previous_tip_forward, dtype=np.float32),
-                        ),
-                        -1.0,
-                        1.0,
-                    )
-                )
-            )
-        self._last_tip_forward_world = tip_forward.copy()
-
-        # Refresh selected-route geometry plus direct SDF/graph safety features.
-        self._update_vessel_safety_state(tip_pos)
-
-        last_tip_pos = getattr(self, "_last_actor_tip_pos", None)
-        tip_delta_world = np.zeros(3, dtype=np.float32) if last_tip_pos is None else np.asarray(tip_pos, dtype=np.float32) - np.asarray(last_tip_pos, dtype=np.float32)
-        tip_delta_local = np.clip(self._world_vec_to_local(tip_delta_world, frame) / 0.001, -5.0, 5.0).astype(np.float32)
-
-        mag_field = np.asarray(self.mcr_controller_sofa.get_mag_field_des(), dtype=np.float32)
-        magnetic_field_norm = np.clip(self._world_vec_to_local(mag_field, frame) / max(self.magnetic_field_observation_scale, 1e-9), -2.0, 2.0).astype(np.float32)
-
-        guidance_scale = max(float(self.route_guidance_observation_scale), 1e-9)
-        route_progress = float(getattr(self, "current_route_progress", np.nan))
-        target_progress = float(getattr(self, "current_route_target_progress", np.nan))
-        if np.isfinite(route_progress) and np.isfinite(target_progress):
-            remaining_route_distance = max(target_progress - route_progress, 0.0)
-            guidance_points = np.asarray(
-                [
-                    self._interpolate_centerline_point_at_progress(
-                        min(route_progress + distance, target_progress)
-                    )
-                    for distance in self.route_guidance_lookahead_distances
-                ],
-                dtype=np.float32,
-            )
-        else:
-            remaining_route_distance = float(
-                np.linalg.norm(
-                    np.asarray(self.target_position, dtype=np.float32) - tip_pos
-                )
-            )
-            guidance_points = np.repeat(
-                np.asarray(self.target_position, dtype=np.float32).reshape(1, 3),
-                2,
-                axis=0,
-            )
-        self.current_route_guidance_points = guidance_points.copy()
-        near_guidance_world = guidance_points[0] - tip_pos
-        near_guidance_vector_local = np.clip(
-            self._world_vec_to_local(near_guidance_world, frame) / guidance_scale,
-            -5.0,
-            5.0,
-        ).astype(np.float32)
-        far_guidance_world = guidance_points[1] - tip_pos
-        far_guidance_vector_local = np.clip(
-            self._world_vec_to_local(far_guidance_world, frame) / guidance_scale,
-            -5.0,
-            5.0,
-        ).astype(np.float32)
-
-        remaining_route_distance_norm = float(
-            np.clip(
-                remaining_route_distance
-                / max(float(ROUTE_REMAINING_DISTANCE_SCALE_M), 1e-9),
-                0.0,
-                1.0,
-            )
-        )
-        prev_action = np.asarray(getattr(self, "_last_smoothed_action", np.zeros(3, dtype=np.float32)), dtype=np.float32).reshape(3).copy()
-        prev_action[2] = float(getattr(self, "current_effective_insert", prev_action[2]))
-
-        vessel_section_features = self._get_vessel_section_features(
-            tip_pos=tip_pos,
-            tip_frame=frame,
-        )
-        time_remaining_norm = float(
-            np.clip(
-                (float(self.max_episode_steps) - float(self._elapsed_steps))
-                / max(float(self.max_episode_steps), 1.0),
-                0.0,
-                1.0,
-            )
-        )
-        inserted_length_norm = float(
-            np.clip(
-                float(self.current_sdf_inserted_length)
-                / max(float(CONTROLLER_MAX_INSERTION_M), 1e-9),
-                0.0,
-                1.0,
-            )
-        )
-        actor_current_geometry = self._build_actor_current_geometry_observation(
-            magnetic_field_norm=magnetic_field_norm,
-            near_guidance_vector_local=near_guidance_vector_local,
-            far_guidance_vector_local=far_guidance_vector_local,
-            remaining_route_distance_norm=remaining_route_distance_norm,
-            time_remaining_norm=time_remaining_norm,
-            inserted_length_norm=inserted_length_norm,
-            vessel_section_features=vessel_section_features,
-        )
-        actor_dynamic_step = self._build_actor_dynamic_step_observation(
-            prev_action=prev_action,
-            tip_delta_local=tip_delta_local,
-            progress_delta_norm=np.array([np.clip(float(self.current_route_progress_delta) / 0.001, -5.0, 5.0)], dtype=np.float32),
-        )
-        self._push_actor_dynamic_history(actor_dynamic_step)
-        self._last_actor_tip_pos = np.asarray(tip_pos, dtype=np.float32).copy()
-
-        return self._get_actor_observation(actor_current_geometry)
-
-    def _get_reward_features(self) -> dict:
-        current_final_dist = float(self._get_distance_tip_to_dest())
-        if not np.isfinite(current_final_dist):
-            current_final_dist = 1e3
-            self.non_finite_failure = True
-        self.min_dist_this_episode = min(float(self.min_dist_this_episode), current_final_dist)
-
-        try:
-            tip_pose = np.asarray(
-                self.mcr_controller_sofa.get_pos_quat_catheter_tip(),
-                dtype=np.float32,
-            )
-            tip_pos = tip_pose[0:3]
-        except Exception:
-            tip_pos = np.zeros(3, dtype=np.float32)
-
-        self._update_vessel_safety_state(
-            tip_pos,
-            advance_failure_counters=True,
-        )
-        sdf_center_outside = bool(
-            self.sdf_grid is not None
-            and np.isfinite(self.current_sdf_max_signed_distance)
-            and self.current_sdf_max_signed_distance
-            > float(self.sdf_outside_center_tolerance)
-        )
-        valid_inside_vessel = not bool(
-            self.current_out_of_vessel
-            or self.current_wrong_branch
-            or sdf_center_outside
-        )
-        # Net continuous arc-length progress detects stagnation without a
-        # waypoint-switch discontinuity. Backward corrections remain negative,
-        # so oscillation cannot look productive.
-        approach_delta = float(self.current_route_progress_delta)
-        self._no_progress_deltas.append(approach_delta)
-        self.no_progress_net_approach = float(sum(self._no_progress_deltas))
-        eligible = bool(
-            self._elapsed_steps >= self.no_progress_grace_steps
-            and len(self._no_progress_deltas) >= self.no_progress_window_steps
-        )
-        if eligible:
-            threshold = max(float(self.no_progress_min_net_approach), 1e-9)
-            self.no_progress_feature = float(
-                np.clip(
-                    (threshold - self.no_progress_net_approach) / threshold,
-                    0.0,
-                    1.0,
-                )
-            )
-            if self.no_progress_net_approach <= 0.1 * threshold:
-                self.no_progress_counter += 1
-            else:
-                self.no_progress_counter = 0
-        else:
-            self.no_progress_feature = 0.0
-            self.no_progress_counter = 0
-        if self.no_progress_feature > 0.0:
-            self.no_progress_this_episode = True
-        # Stagnation is recoverable and never terminates the episode.  Its
-        # bounded feature supplies prompt credit against retract-and-wait;
-        # progress immediately clears the cost.
-        self.no_progress_failure = False
-
-        try:
-            inserted_length = float(self.mcr_controller_sofa._getXTipValue())
-        except Exception:
-            inserted_length = float(getattr(self, "current_sdf_inserted_length", 0.0))
-        if np.isfinite(inserted_length):
-            self.max_inserted_length_episode = max(
-                float(self.max_inserted_length_episode),
-                max(0.0, inserted_length),
-            )
-
-        # Normalized completion is both a diagnostic and the V13 progress state.
-        if valid_inside_vessel:
-            self.current_route_potential = self._continuous_route_potential()
-            self.current_route_potential_delta = float(
-                self.current_route_potential - self.previous_route_potential
-            )
-            self.previous_route_potential = self.current_route_potential
-        else:
-            self.current_route_potential_delta = 0.0
-        if self.sdf_grid is not None and np.isfinite(self.current_sdf_surface_clearance):
-            # Tip clearance keeps the original contact shaping.  Whole-body
-            # samples add a bounded pre-terminal warning, while ordinary shaft
-            # contact remains legal and can still slide along the wall.
-            tip_clearance = float(self.current_sdf_surface_clearance)
-            base_near_wall_feature = float(
-                np.clip(
-                    (float(self.sdf_near_wall_margin) - max(tip_clearance, 0.0))
-                    / max(float(self.sdf_near_wall_margin), 1e-9),
-                    0.0,
-                    1.0,
-                )
-            )
-            persistence = max(
-                0,
-                int(self.sdf_tip_near_wall_counter)
-                - int(self.tip_near_wall_grace_steps),
-            )
-            persistence_scale = float(
-                np.clip(
-                    persistence / float(self.tip_near_wall_ramp_steps),
-                    0.0,
-                    1.0,
-                )
-            )
-            tip_near_wall_feature = base_near_wall_feature * persistence_scale
-            # One bounded safety term combines tip persistence and whole-body
-            # warning.  Contact remains legal; confirmed centre exit is handled
-            # by the terminal failure reward.
-            near_wall_feature = max(
-                tip_near_wall_feature,
-                float(self.current_sdf_body_warning_feature),
-            )
-        else:
-            # Legacy vessels without VTI keep navigation rewards but do not
-            # invent a dense SDF wall term from the selected route centreline.
-            near_wall_feature = 0.0
-
-        # Episode diagnostics are updated exactly once from the reward path.
-        # Observation construction may query the SDF more than once, so these
-        # counters deliberately do not live in _update_sdf_safety_state().
-        body_warning = float(self.current_sdf_body_warning_feature)
-        if body_warning > 0.0:
-            self.sdf_body_warning_steps_episode += 1
-            if float(self.current_effective_insert) > 0.05:
-                self.sdf_body_warning_positive_insert_steps_episode += 1
-        if (
-            np.isfinite(self.current_sdf_body_min_surface_clearance)
-            and float(self.current_sdf_body_min_surface_clearance) <= 0.0
-        ):
-            self.sdf_body_contact_steps_episode += 1
-        self.sdf_body_warning_sum_episode += body_warning
-
-        if self.current_out_of_vessel:
-            self.out_of_vessel_this_episode = True
-            self.out_of_vessel_failure = True
-        if self.current_wrong_branch:
-            self.wrong_branch_this_episode = True
-        # A wrong branch remains recoverable and never ends the episode by
-        # itself.  The continuous off-route feature is the only branch cost.
-        self.wrong_branch_failure = False
-
-        final_close = bool(current_final_dist <= float(self.target_distance_threshold))
-        route_ready = bool(
-            np.isfinite(self.current_route_progress)
-            and self.current_route_progress
-            >= self.current_route_target_progress
-            - float(self.route_success_progress_margin)
-        )
-        self.current_target_reached_this_step = bool(
-            valid_inside_vessel and route_ready and final_close
-        )
-        current_completion = float(self.current_route_potential)
-        if not np.isfinite(current_completion):
-            current_completion = float(self.previous_reward_route_potential)
-            self.non_finite_failure = True
-        current_completion = float(np.clip(current_completion, 0.0, 1.0))
-        previous_completion = float(self.previous_reward_route_potential)
-        # Preserve genuine partial progress on failure/timeout. A later
-        # retraction produces the matching negative delta, so oscillation
-        # cannot manufacture route-progress return.
-        approach_feature = current_completion - previous_completion
-        self.current_reward_route_potential = current_completion
-        self.previous_reward_route_potential = current_completion
-
-        reward_features = {
-            "route_progress": approach_feature,
-            "wall_proximity_penalty": near_wall_feature,
-            "off_target_branch_penalty": float(self.current_off_target_branch_feature),
-            "out_of_vessel_penalty": 1.0 if self.current_out_of_vessel else 0.0,
-            "non_finite_penalty": 1.0 if self.non_finite_failure else 0.0,
-            "timeout_penalty": 0.0,
-            "step_penalty": 1.0,
-            "stagnation_penalty": float(self.no_progress_feature),
-            "successful_task": 0.0,
-        }
-        if self.current_target_reached_this_step:
-            reward_features["successful_task"] = 1.0
-            self.episode_success = True
-            self.episode_success_2mm = bool(current_final_dist <= 0.002 + 1e-12)
-            current_clearance_safe = bool(
-                self.sdf_grid is None
-                or (
-                    np.isfinite(self.current_sdf_surface_clearance)
-                    and self.current_sdf_surface_clearance >= 0.0
-                )
-            )
-            self.episode_safe_success = current_clearance_safe
-            self.episode_contact_free_success = bool(
-                current_clearance_safe
-                and not self.sdf_penetration_this_episode
-            )
-            self.is_out_of_bounds = True
-
-        return {k: float(v) for k, v in reward_features.items()}
+        pose = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip(), dtype=float)
+        tip, frame = pose[:3], self._build_tip_local_frame(pose[3:7])
+        tracker = self._point_tracker
+        local = lambda p: np.asarray([(np.asarray(q)-tip) @ frame for q in p]).ravel()
+        field = self._world_vec_to_local(np.asarray(self.mcr_controller_sofa.get_mag_field_des()), frame)/max(self.magnetic_field_observation_scale, 1e-9)
+        shaft = self._get_shaft_landmark_points(self._get_sdf_sample_points(tip))
+        inserted = float(self.mcr_controller_sofa._getXTipValue())
+        current = np.concatenate([np.clip(field, -2, 2),
+            np.clip(local(tracker.window())/.04, -5, 5),
+            np.clip(local([self.target_position])/.5, -2, 2),
+            np.clip(local(shaft)/.06, -2, 2),
+            [max(0., 1-self._elapsed_steps/self.max_episode_steps),
+             inserted/CONTROLLER_MAX_INSERTION_M, tracker.radii[tracker.index]/.003]])
+        previous_tip = getattr(self, "_last_actor_tip_pos", None)
+        motion = np.zeros(3) if previous_tip is None else self._world_vec_to_local(tip-previous_tip, frame)/.001
+        response = (inserted-self._last_actor_inserted_length)/.0008
+        action = self._last_smoothed_action.copy()
+        action[2] = self.current_effective_insert
+        self._push_actor_dynamic_history(self._build_actor_dynamic_step_observation(action, motion, [response]))
+        self._last_actor_tip_pos = tip.copy()
+        self._last_actor_inserted_length = inserted
+        if len(current) != self.actor_current_geometry_dim:
+            raise RuntimeError("Discrete navigation observation dimension mismatch")
+        return self._get_actor_observation(current)
 
     def _get_reward(self) -> float:
         reward = 0.0
@@ -2178,6 +1951,17 @@ class MCREnv(SofaEnv):
             **self.reward_info,
             **self.reward_features,
             **episode_reward_totals,
+            "navigation_mode": "ordered_discrete_points",
+            "success": bool(self.episode_success),
+            "vessel_id": str(getattr(self, "chosen_model", "unknown")),
+            "target_route_id": str(getattr(self, "current_target_route_id", "unknown")),
+            "navigation_point_index": int(self._point_tracker.index),
+            "navigation_point_count": len(self._point_tracker.points),
+            "navigation_point_region": self._point_tracker.kinds[self._point_tracker.index],
+            "navigation_arrival_radius_m": float(self._point_tracker.radii[self._point_tracker.index]),
+            "navigation_point_distance_m": float(self._point_tracker.previous_distance),
+            "navigation_distance_delta_m": float(self._point_tracker.last_delta),
+            "navigation_points_switched_this_step": int(self._point_tracker.switches),
         }
 
     # ------------------------------------------------------------------
@@ -2952,115 +2736,7 @@ class MCREnv(SofaEnv):
             1e-6,
         )
 
-    def _initialize_continuous_route_from_current_tip(self) -> None:
-        """Initialize once globally, then use only local recurrent projection."""
 
-        try:
-            tip = np.asarray(
-                self.mcr_controller_sofa.get_pos_quat_catheter_tip()[0:3],
-                dtype=np.float32,
-            )
-            projection = project_to_route(
-                self.centerline_points,
-                self.centerline_cumlength,
-                tip,
-                previous_progress=None,
-            )
-            progress = float(
-                np.clip(
-                    projection.progress,
-                    self.current_route_start_progress,
-                    self.current_route_target_progress,
-                )
-            )
-            self.current_route_progress = progress
-            self.previous_route_progress = progress
-            self.current_route_progress_delta = 0.0
-            self.current_route_progress_ratio = normalized_route_progress(
-                progress,
-                self.current_route_start_progress,
-                self.current_route_target_progress,
-            )
-            self.current_route_projection_segment = int(projection.segment_index)
-            self.current_route_projection_distance = float(projection.distance)
-            self.current_route_projection_jump_rejected = False
-            self._route_projection_cache_step = int(self._elapsed_steps)
-            self._route_projection_cache_tip = tip.copy()
-            self._route_projection_cache_value = projection
-        except Exception:
-            self.current_route_progress = float(self.current_route_start_progress)
-            self.previous_route_progress = float(self.current_route_start_progress)
-            self.current_route_progress_delta = 0.0
-            self.current_route_progress_ratio = 0.0
-            self._route_projection_cache_step = -1
-            self._route_projection_cache_tip = None
-            self._route_projection_cache_value = None
-
-    def _get_tracked_centerline_projection_state(self, tip_pos: np.ndarray):
-        """Return a cached, local and physically gated route projection."""
-
-        tip = np.asarray(tip_pos, dtype=np.float32).reshape(3)
-        cached_tip = getattr(self, "_route_projection_cache_tip", None)
-        if (
-            cached_tip is not None
-            and int(getattr(self, "_route_projection_cache_step", -1))
-            == int(self._elapsed_steps)
-            and np.allclose(tip, cached_tip, rtol=0.0, atol=1e-9)
-            and getattr(self, "_route_projection_cache_value", None) is not None
-        ):
-            projection = self._route_projection_cache_value
-            return (
-                float(self.current_route_progress),
-                int(projection.segment_index),
-                float(projection.distance),
-                np.asarray(projection.point, dtype=np.float32),
-                np.asarray(projection.tangent, dtype=np.float32),
-            )
-
-        previous = float(getattr(self, "current_route_progress", np.nan))
-        previous_arg = previous if np.isfinite(previous) else None
-        projection = project_to_route(
-            self.centerline_points,
-            self.centerline_cumlength,
-            tip,
-            previous_progress=previous_arg,
-            backward_window=self.route_projection_backward_window,
-            forward_window=self.route_projection_forward_window,
-            ambiguity_tolerance=self.route_projection_ambiguity_tolerance,
-            max_progress_step=self.route_projection_max_progress_step,
-        )
-        progress = float(
-            np.clip(
-                projection.progress,
-                self.current_route_start_progress,
-                self.current_route_target_progress,
-            )
-        )
-        self.previous_route_progress = previous if previous_arg is not None else progress
-        self.current_route_progress = progress
-        self.current_route_progress_delta = (
-            progress - previous if previous_arg is not None else 0.0
-        )
-        self.current_route_progress_ratio = normalized_route_progress(
-            progress,
-            self.current_route_start_progress,
-            self.current_route_target_progress,
-        )
-        self.current_route_projection_segment = int(projection.segment_index)
-        self.current_route_projection_distance = float(projection.distance)
-        self.current_route_projection_jump_rejected = bool(projection.jump_rejected)
-        if projection.jump_rejected:
-            self.route_projection_jump_rejections_episode += 1
-        self._route_projection_cache_step = int(self._elapsed_steps)
-        self._route_projection_cache_tip = tip.copy()
-        self._route_projection_cache_value = projection
-        return (
-            progress,
-            int(projection.segment_index),
-            float(projection.distance),
-            np.asarray(projection.point, dtype=np.float32),
-            np.asarray(projection.tangent, dtype=np.float32),
-        )
 
     def _continuous_route_potential(self) -> float:
         return normalized_route_progress(
