@@ -1656,8 +1656,24 @@ class MCREnv(SofaEnv):
             else 0.0
         )
         # Canonicalise terminal diagnostics and downstream curriculum metrics.
+        discrete_completion = float(getattr(self, "current_route_potential", route_completion_from_progress))
         self.current_route_progress_ratio = route_completion_from_progress
         self.current_route_potential = route_completion_from_progress
+        # Discrete navigation owns progress reporting. The legacy continuous
+        # projection fields can be stale or use a different arc convention;
+        # publishing them here caused route_completion to disagree with the
+        # point tracker/potential (and made curriculum diagnostics misleading).
+        if hasattr(self, "_point_tracker"):
+            # _sync_discrete_progress() is the source of truth and has already
+            # set current_route_potential from the ordered point index.
+            route_completion_from_progress = float(
+                np.clip(discrete_completion, 0.0, 1.0)
+            )
+            self.current_route_progress_ratio = route_completion_from_progress
+            self.current_route_potential = route_completion_from_progress
+            route_span = max(route_target_progress - route_start_progress, 0.0)
+            route_progress = route_start_progress + route_completion_from_progress * route_span
+            route_completion_consistency_error = 0.0
         terminal_reason = (
             "target"
             if self.episode_success

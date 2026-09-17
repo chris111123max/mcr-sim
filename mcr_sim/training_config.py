@@ -102,9 +102,9 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v13.0. PPO receives direct normalized route-completion change.
-# Earned partial progress is no longer removed in one large terminal transition;
-# retraction still cancels forward credit, so oscillation cannot create return.
+# Reward profile v14.0. PPO receives signed distance progress to the active
+# ordered navigation point.
+# Retracting cancels forward credit; switching points never creates a bonus.
 REWARD_PROFILE_VERSION = "14.0-discrete"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
 REWARD_PROGRESS_SCALE = 60.0
@@ -276,7 +276,7 @@ TRAINING_CURRICULUM_DIFFICULTY_POWER = 2.0
 TRAINING_CURRICULUM_MAX_SAMPLING_FACTOR = 2.0
 # Use the previously stable exploration floors in every stage.  Exploration
 # still anneals naturally through the learned PPO log_std / SAC entropy tuner.
-PPO_ACTION_STD_FLOOR_BY_STAGE = (0.10,) * 5
+PPO_ACTION_STD_FLOOR_BY_STAGE = (0.20,) * 5
 SAC_ENT_COEF_FLOOR_BY_STAGE = (0.02,) * 5
 
 
@@ -551,18 +551,18 @@ PPO_EPISODES_PER_EPOCH = TRAIN_EPISODES_PER_EPOCH
 # One 910B3 + the allocated CPU quota is balanced at 32 independent SOFA envs.
 # Keep this explicit instead of inheriting the SAC throughput-oriented default.
 PPO_N_ENVS = 32
-PPO_LEARNING_RATE = 3e-4
+PPO_LEARNING_RATE = 1e-4
 PPO_N_STEPS = 256
 PPO_BATCH_SIZE = 1024
-PPO_N_EPOCHS = 10
+PPO_N_EPOCHS = 5
 PPO_GAMMA = SAC_GAMMA
 PPO_GAE_LAMBDA = 0.98
-PPO_CLIP_RANGE = 0.2
-PPO_ENT_COEF = 0.0005
+PPO_CLIP_RANGE = 0.10
+PPO_ENT_COEF = 0.002
 PPO_VF_COEF = 0.5
-PPO_MAX_GRAD_NORM = 0.5
+PPO_MAX_GRAD_NORM = 0.3
 PPO_INITIAL_ACTION_STD = 0.50
-PPO_MIN_ACTION_STD = 0.10
+PPO_MIN_ACTION_STD = 0.20
 PPO_MAX_ACTION_STD = 0.60
 
 
