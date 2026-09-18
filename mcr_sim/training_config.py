@@ -22,6 +22,13 @@ MAX_INSERTION_PER_ACTION_M = 0.0008
 # Symmetric, zero-preserving authority: raw -1/0/+1 -> -0.8/0/+0.8 mm.
 INSERT_ACTION_NEGATIVE_LIMIT = -1.0
 
+# Ordered-point navigation starts from a forward reference rather than the
+# first few samples immediately after the entry.  Those samples are often
+# behind the settled catheter pose and would create an artificial reverse-turn
+# objective.  The distance is converted to an index on each route, so tight
+# bends with 2 mm spacing may skip more samples than a straight segment.
+DISCRETE_INITIAL_SKIP_DISTANCE_M = 0.008
+
 # Environment/task defaults.
 SOFA_TIME_STEP_S = 0.01
 FRAME_SKIP = 1
@@ -102,12 +109,12 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v14.0. PPO receives signed distance progress to the active
+# Reward profile v15.0. PPO receives signed distance progress to the active
 # ordered navigation point.
 # Retracting cancels forward credit; switching points never creates a bonus.
-REWARD_PROFILE_VERSION = "14.0-discrete"
+REWARD_PROFILE_VERSION = "15.1-discrete-forward-start-2mm"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
-REWARD_PROGRESS_SCALE = 60.0
+REWARD_PROGRESS_SCALE = 2000.0
 # Compatibility alias for older reporting code. In V13 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
@@ -121,11 +128,11 @@ REWARD_DISCOUNT_GAMMA = 0.9995
 # useful pre-contact credit assignment.
 REWARD_WALL_PROXIMITY = 0.0
 REWARD_OFF_TARGET_BRANCH = 0.0
-REWARD_SUCCESS = 30.0
+REWARD_SUCCESS = 500.0
 REWARD_OUT_OF_VESSEL = -30.0
 REWARD_NON_FINITE = -30.0
 REWARD_TIMEOUT = -10.0
-REWARD_STEP = -0.002
+REWARD_STEP = -0.0005
 # Stagnation never terminates an episode.  This bounded per-step cost provides
 # local credit assignment after a grace period; the terminal timeout alone is
 # too delayed to discourage retract-and-wait under gamma=0.9995.
@@ -155,8 +162,8 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_scale": REWARD_PROGRESS_SCALE,
         "discount_gamma": float(discount_gamma),
-        "progress_formula": "60*(distance_before-distance_after)_same_active_point_metres",
-        "discrete_navigation": {"gentle_spacing_m": .004, "tight_spacing_m": .002, "gentle_radius_m": .0012, "tight_radius_m": .0008, "final_radius_m": .003, "preview_points": 5},
+        "progress_formula": "2000*(distance_before-distance_after)_same_active_point_metres",
+        "discrete_navigation": {"gentle_spacing_m": .004, "tight_spacing_m": .002, "gentle_radius_m": .0012, "tight_radius_m": .0008, "final_radius_m": .003, "preview_points": 5, "initial_skip_distance_m": DISCRETE_INITIAL_SKIP_DISTANCE_M},
         "discrete_bend_rule": "offline_4mm_window_direction_change_ge_10deg_or_graph_degree_ge_3_within_2mm",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
@@ -612,12 +619,16 @@ def validate_training_defaults() -> None:
     ):
         raise ValueError("Reward V13 signs are invalid.")
     maximum_navigation_credit = REWARD_PROGRESS_BUDGET
+    # The discrete-point baseline intentionally gives meaningful positive
+    # credit for safe advancement before a complete episode is available.
+    # Terminal failure remains a clear negative event, while a sufficiently
+    # long forward trajectory must be preferable to waiting for timeout.
     if not (
-        REWARD_OUT_OF_VESSEL < -maximum_navigation_credit
-        and REWARD_NON_FINITE < -maximum_navigation_credit
-        and REWARD_SUCCESS > maximum_navigation_credit
+        REWARD_PROGRESS_SCALE * 0.12 > abs(REWARD_OUT_OF_VESSEL)
+        and REWARD_PROGRESS_SCALE > 0.0
+        and REWARD_SUCCESS > abs(REWARD_OUT_OF_VESSEL)
     ):
-        raise ValueError("Reward V13 terminal outcomes must dominate shaping.")
+        raise ValueError("Discrete progress reward must dominate short forward motion and failure cost.")
     if REWARD_STAGNATION != 0.0:
         raise ValueError("Reward V13 stagnation must be a non-terminal penalty.")
     if not (

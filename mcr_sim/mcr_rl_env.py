@@ -20,6 +20,7 @@ from .training_config import (
     CATHETER_RADIUS_M,
     CENTERLINE_LOOKAHEAD_DISTANCES_M,
     CONTROLLER_MAX_INSERTION_M,
+    DISCRETE_INITIAL_SKIP_DISTANCE_M,
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
@@ -539,6 +540,10 @@ class MCREnv(SofaEnv):
         self._route_projection_cache_tip = None
         self._route_projection_cache_value = None
         self.current_target_reached_this_step = False
+        self.navigation_initial_skip_distance_m = float(DISCRETE_INITIAL_SKIP_DISTANCE_M)
+        self.navigation_initial_skip_points = 0
+        self.navigation_initial_active_arc_m = 0.0
+        self.navigation_initial_active_point_distance_m = np.nan
 
         # Safety state.
         self.current_centerline_local_radius = np.nan
@@ -1504,14 +1509,43 @@ class MCREnv(SofaEnv):
         )
         points[-1] = np.asarray(self.target_position)
         tip = np.asarray(self.mcr_controller_sofa.get_pos_quat_catheter_tip()[:3])
-        self._point_tracker = PointTracker(points, arc, radii, kinds, tip)
+        # Skip the initial route samples.  They are reference samples behind
+        # the settled entry pose, not mandatory navigation targets.  Select by
+        # arc distance so the rule is independent of whether this section was
+        # sampled at 4 mm or 2 mm spacing.
+        skip_distance = float(max(DISCRETE_INITIAL_SKIP_DISTANCE_M, 0.0))
+        initial_index = int(np.searchsorted(
+            arc,
+            float(self.current_route_start_progress) + skip_distance,
+            side="left",
+        ))
+        # Keep at least one point for the policy and never make the final point
+        # the first active point on a non-trivial route.
+        initial_index = int(np.clip(initial_index, 0, max(len(points) - 2, 0)))
+        self._point_tracker = PointTracker(points, arc, radii, kinds, tip, initial_index)
+        self.navigation_initial_skip_points = int(initial_index)
+        self.navigation_initial_active_arc_m = float(arc[initial_index])
+        self.navigation_initial_active_point_distance_m = float(
+            np.linalg.norm(tip - points[initial_index])
+        )
+        # Completion is measured only over the navigable part.  The skipped
+        # samples are a reset/localization allowance, not free episode credit.
+        self.current_route_start_progress = float(arc[initial_index])
+        self.reward_progress_normalization = max(
+            float(self.current_route_target_progress - self.current_route_start_progress),
+            1e-6,
+        )
         self._last_actor_inserted_length = float(self.mcr_controller_sofa._getXTipValue())
         self._sync_discrete_progress()
 
     def _sync_discrete_progress(self):
         tracker = self._point_tracker
         # Diagnostic completion is accepted point arc, NOT nearest projection.
-        accepted = self.current_route_start_progress if tracker.index == 0 else tracker.arc[tracker.index-1]
+        accepted = (
+            self.current_route_start_progress
+            if tracker.index <= tracker.initial_index
+            else tracker.arc[tracker.index - 1]
+        )
         if self.episode_success:
             accepted = self.current_route_target_progress
         self.current_route_progress = float(accepted)
@@ -1972,6 +2006,10 @@ class MCREnv(SofaEnv):
             "vessel_id": str(getattr(self, "chosen_model", "unknown")),
             "target_route_id": str(getattr(self, "current_target_route_id", "unknown")),
             "navigation_point_index": int(self._point_tracker.index),
+            "navigation_initial_skip_points": int(self.navigation_initial_skip_points),
+            "navigation_initial_skip_distance_m": float(self.navigation_initial_skip_distance_m),
+            "navigation_initial_active_arc_m": float(self.navigation_initial_active_arc_m),
+            "navigation_initial_active_point_distance_m": float(self.navigation_initial_active_point_distance_m),
             "navigation_point_count": len(self._point_tracker.points),
             "navigation_point_region": self._point_tracker.kinds[self._point_tracker.index],
             "navigation_arrival_radius_m": float(self._point_tracker.radii[self._point_tracker.index]),

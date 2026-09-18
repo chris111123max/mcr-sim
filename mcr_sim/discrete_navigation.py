@@ -40,10 +40,14 @@ def compile_points(route, branch_points=(), start=0.0, end=None):
 
 
 class PointTracker:
-    def __init__(self, points, arc, radii, kinds, tip):
+    def __init__(self, points, arc, radii, kinds, tip, initial_index=0):
         self.points, self.arc, self.radii, self.kinds = points, arc, radii, kinds
-        self.index = 0
-        self.previous_distance = float(np.linalg.norm(tip-points[0]))
+        # The first few route samples are optional initialization samples.  They
+        # can lie behind the physical tip after reset and should not force the
+        # policy to turn back before it starts navigating.
+        self.initial_index = int(np.clip(initial_index, 0, max(len(points) - 1, 0)))
+        self.index = self.initial_index
+        self.previous_distance = float(np.linalg.norm(tip-points[self.index]))
         self.last_delta = 0.
         self.switches = 0
 

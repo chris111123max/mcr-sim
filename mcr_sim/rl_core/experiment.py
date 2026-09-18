@@ -422,7 +422,9 @@ class EpochExperimentCallback(BaseCallback):
             if info.get("navigation_mode") == "ordered_discrete_points":
                 fields = ["timesteps", "env_index", "vessel_id", "target_route_id", "success", "terminal_reason",
                           "navigation_point_index", "navigation_point_count", "navigation_point_region",
-                          "navigation_arrival_radius_m", "navigation_point_distance_m", "navigation_distance_delta_m"]
+                          "navigation_arrival_radius_m", "navigation_point_distance_m", "navigation_distance_delta_m",
+                          "navigation_initial_skip_points", "navigation_initial_skip_distance_m",
+                          "navigation_initial_active_arc_m", "navigation_initial_active_point_distance_m"]
                 row = {key: info.get(key, "") for key in fields}
                 row.update(timesteps=self.num_timesteps, env_index=index,
                            vessel_id=info.get("vessel_id", "unknown"), success=bool(info.get("success", False)))
