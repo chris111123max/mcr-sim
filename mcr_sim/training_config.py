@@ -6,6 +6,7 @@ the generator geometry changes.
 """
 
 import math
+import numpy as np
 
 
 # Geometry envelope (B01..B05 and C01..C05, source assets scaled to metres).
@@ -42,9 +43,14 @@ RADIUS_OBSERVATION_SCALE_M = 0.005
 # action/motion/progress history at the default 10 ms control interval.
 ACTOR_HISTORY_STEPS = 32
 ACTOR_SHAFT_LOOKBACK_DISTANCES_M = (0.010, 0.030, 0.060)
+# Active point plus future points.  Since the active point is normally about
+# 4 mm ahead on gentle segments, these offsets yield approximately the agreed
+# 4/12/24/40/60 mm tip-relative preview while keeping the rewarded point
+# explicitly observable.
+DISCRETE_PREVIEW_DISTANCES_M = (0.000, 0.008, 0.020, 0.036, 0.056)
 VESSEL_SECTION_FEATURE_DIM = 26
 ACTOR_STATIC_ROUTE_FEATURE_DIM = 12
-ACTOR_CURRENT_GEOMETRY_DIM = 33  # field3 + points15 + goal3 + shaft9 + time/insertion/radius3
+ACTOR_CURRENT_GEOMETRY_DIM = 31  # field3 + multiscale points15 + remaining1 + shaft9 + time/insertion/radius3
 ACTOR_DYNAMIC_STEP_DIM = 7
 ACTOR_OBSERVATION_DIM = (
     ACTOR_CURRENT_GEOMETRY_DIM + ACTOR_HISTORY_STEPS * ACTOR_DYNAMIC_STEP_DIM
@@ -229,52 +235,46 @@ def map_insert_action(
     return abs(min(float(negative_limit), 0.0)) * raw
 
 
-# Training-only five-stage vessel/robustness curriculum.  Every stage uses the
-# complete route.  Branching B01/B02 are learned first; their aggregate rolling
-# success must stably reach 90% before the continuously curved C01/C02 are
-# isolated for bend-control learning.  The four-vessel pool is then trained with
-# full DR, followed by all vessels on fixed geometry and finally full DR.
-# Validation remains locked until the final all-vessel/full-DR stage is active.
+# Training-only five-stage target-route curriculum for B01/B02.  Stages add
+# geometrically deeper branches without removing mastered routes.  The final
+# policy is therefore trained jointly on all twelve B01/B02 target tasks.
 TRAINING_CURRICULUM_ENABLED = True
 TRAINING_CURRICULUM_ALL_MODELS = (
     "B01", "B02", "B03", "B04", "B05",
     "C01", "C02", "C03", "C04", "C05",
 )
 TRAINING_CURRICULUM_BRANCH_MODELS = ("B01", "B02")
-TRAINING_CURRICULUM_CURVED_MODELS = ("C01", "C02")
-TRAINING_CURRICULUM_SIMPLE_MODELS = (
-    *TRAINING_CURRICULUM_BRANCH_MODELS,
-    *TRAINING_CURRICULUM_CURVED_MODELS,
-)
 TRAINING_CURRICULUM_MODELS = (
     TRAINING_CURRICULUM_BRANCH_MODELS,
-    TRAINING_CURRICULUM_CURVED_MODELS,
-    TRAINING_CURRICULUM_SIMPLE_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
-    TRAINING_CURRICULUM_ALL_MODELS,
+    TRAINING_CURRICULUM_BRANCH_MODELS,
+    TRAINING_CURRICULUM_BRANCH_MODELS,
+    TRAINING_CURRICULUM_BRANCH_MODELS,
+    TRAINING_CURRICULUM_BRANCH_MODELS,
+)
+TRAINING_CURRICULUM_ROUTES = (
+    {"B01": (1, 4), "B02": (1, 4)},
+    {"B01": (1, 4, 5, 6), "B02": (1, 4)},
+    {"B01": (1, 4, 5, 6), "B02": (1, 4, 5, 6)},
+    {"B01": (1, 2, 3, 4, 5, 6), "B02": (1, 4, 5, 6)},
+    {"B01": (1, 2, 3, 4, 5, 6), "B02": (1, 2, 3, 4, 5, 6)},
 )
 TRAINING_CURRICULUM_STAGE_NAMES = (
-    "branch_fixed",
-    "curved_fixed",
-    "simple_full_dr",
-    "all_fixed",
-    "all_full_dr",
+    "shallow_routes",
+    "b01_medium_routes",
+    "both_medium_routes",
+    "b01_all_routes",
+    "b01_b02_all_routes",
 )
 TRAINING_CURRICULUM_TARGET_FRACTIONS = (1.00,) * 5
-TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.90, 0.50, 0.50, 0.50)
-# Stage 0 follows the requested aggregate B01/B02 criterion.  Later stages use
-# the weakest active vessel so one geometry cannot hide another vessel's failure.
-TRAINING_CURRICULUM_PROMOTION_MODES = (
-    "aggregate",
-    "per_vessel_min",
-    "per_vessel_min",
-    "per_vessel_min",
-)
+TRAINING_CURRICULUM_SUCCESS_THRESHOLDS = (0.70, 0.70, 0.70, 0.70)
+TRAINING_CURRICULUM_PROMOTION_MODES = ("per_route_min",) * 4
 TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES = 3
 TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL = 100
-TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 100
-# DR is deliberately disabled again when difficult vessels are first added.
-TRAINING_CURRICULUM_DR_FRACTIONS = (0.00, 0.00, 1.00, 0.00, 1.00)
+TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL = 30
+TRAINING_CURRICULUM_ROLLING_EPISODES_PER_ROUTE = 50
+TRAINING_CURRICULUM_MIN_EPISODES_PER_ROUTE = 30
+# Keep geometry fixed while establishing the twelve-route control baseline.
+TRAINING_CURRICULUM_DR_FRACTIONS = (0.00,) * 5
 # Half the sampling distribution remains uniform.  The adaptive half focuses
 # on weak vessels but is capped so a single failure mode cannot erase skills
 # already acquired on the rest of the active pool.
@@ -358,6 +358,55 @@ def curriculum_sampling_weights(
     return {model_id: probability / total for model_id, probability in weights.items()}
 
 
+def curriculum_route_sampling_weights(
+    current_stage: int,
+    per_route_success_rates=None,
+    uniform_mix: float = 0.30,
+    max_sampling_factor: float = 2.0,
+) -> dict:
+    """Return bounded adaptive probabilities for each active vessel/route.
+
+    At least 30% of the distribution remains uniform, so mastered routes are
+    rehearsed while the remaining mass focuses on routes with low success.
+    """
+
+    stage = min(max(int(current_stage), 0), len(TRAINING_CURRICULUM_ROUTES) - 1)
+    rates = per_route_success_rates or {}
+    result = {}
+    for model_id, route_indices in TRAINING_CURRICULUM_ROUTES[stage].items():
+        keys = [f"{model_id}/target_{index:02d}" for index in route_indices]
+        difficulties = []
+        for key in keys:
+            rate = rates.get(key)
+            rate = 0.0 if rate is None or not math.isfinite(float(rate)) else float(rate)
+            difficulties.append(max(1.0 - min(max(rate, 0.0), 1.0), 0.05) ** 2)
+        uniform = 1.0 / len(keys)
+        total_difficulty = max(sum(difficulties), 1e-12)
+        raw = [
+            float(uniform_mix) * uniform
+            + (1.0 - float(uniform_mix)) * difficulty / total_difficulty
+            for difficulty in difficulties
+        ]
+        cap = min(float(max_sampling_factor) * uniform, 1.0)
+        clipped = np.minimum(np.asarray(raw, dtype=np.float64), cap)
+        # Iteratively redistribute unused probability without exceeding cap.
+        for _ in range(len(keys) + 1):
+            missing = 1.0 - float(clipped.sum())
+            if missing <= 1e-12:
+                break
+            eligible = clipped < cap - 1e-12
+            if not np.any(eligible):
+                break
+            add = missing * np.asarray(raw)[eligible] / max(float(np.asarray(raw)[eligible].sum()), 1e-12)
+            clipped[eligible] = np.minimum(clipped[eligible] + add, cap)
+        clipped /= max(float(clipped.sum()), 1e-12)
+        result[model_id] = {
+            int(index): float(probability)
+            for index, probability in zip(route_indices, clipped)
+        }
+    return result
+
+
 def curriculum_exploration_profile(current_stage: int) -> dict:
     """Return shared algorithm-specific exploration floors for one stage."""
 
@@ -375,6 +424,10 @@ def curriculum_protocol_profile() -> dict:
     return {
         "stage_names": list(TRAINING_CURRICULUM_STAGE_NAMES),
         "models_by_stage": [list(models) for models in TRAINING_CURRICULUM_MODELS],
+        "routes_by_stage": [
+            {model_id: list(indices) for model_id, indices in routes.items()}
+            for routes in TRAINING_CURRICULUM_ROUTES
+        ],
         "target_fraction_by_stage": list(TRAINING_CURRICULUM_TARGET_FRACTIONS),
         "success_thresholds": list(TRAINING_CURRICULUM_SUCCESS_THRESHOLDS),
         "promotion_modes": list(TRAINING_CURRICULUM_PROMOTION_MODES),
@@ -392,7 +445,8 @@ def curriculum_protocol_profile() -> dict:
         "ppo_max_action_std": PPO_MAX_ACTION_STD,
         "sac_ent_coef_floor_by_stage": list(SAC_ENT_COEF_FLOOR_BY_STAGE),
         "centerline_lookahead_distances_m": list(CENTERLINE_LOOKAHEAD_DISTANCES_M),
-        "actor_future_tangent_features": "five_ordered_point_vectors_no_tangent_features",
+        "actor_future_tangent_features": "five_multiscale_route_point_vectors_no_tangent_features",
+        "discrete_preview_offsets_from_active_point_m": list(DISCRETE_PREVIEW_DISTANCES_M),
         "actor_shaft_lookback_distances_m": list(ACTOR_SHAFT_LOOKBACK_DISTANCES_M),
         "actor_time_feature": "fraction_of_episode_remaining",
         "actor_inserted_length_feature": "controller_insertion_fraction",
@@ -414,10 +468,10 @@ def curriculum_protocol_profile() -> dict:
         "route_success_progress_margin_m": ROUTE_SUCCESS_PROGRESS_MARGIN_M,
         "route_remaining_distance_scale_m": ROUTE_REMAINING_DISTANCE_SCALE_M,
         "actor_coordinate_frame": "catheter_tip_local",
-        "actor_route_horizon_feature": "five_tip_relative_points_and_final_goal",
+        "actor_route_horizon_feature": "five_tip_relative_multiscale_points_and_remaining_route_distance",
         "actor_wall_features": False,
         "actor_dynamic_features": "previous_effective_action3_tip_motion3_actual_insertion_delta1",
-        "branch_target_sampling": "six_route_worker_phased_cycle",
+        "branch_target_sampling": "stage_filtered_failure_adaptive_with_uniform_rehearsal",
         "branch_target_routes": [f"target_{index:02d}" for index in range(1, 7)],
         "branch_mastery_metric": "minimum_per_route_success",
         "observation_dim": ACTOR_OBSERVATION_DIM,
@@ -654,31 +708,21 @@ def validate_training_defaults() -> None:
         raise ValueError("Curriculum DR fractions must be in [0, 1].")
     if len(TRAINING_CURRICULUM_STAGE_NAMES) != len(TRAINING_CURRICULUM_MODELS):
         raise ValueError("Curriculum stage names are inconsistent.")
-    if TRAINING_CURRICULUM_MODELS != (
-        TRAINING_CURRICULUM_BRANCH_MODELS,
-        TRAINING_CURRICULUM_CURVED_MODELS,
-        TRAINING_CURRICULUM_SIMPLE_MODELS,
-        TRAINING_CURRICULUM_ALL_MODELS,
-        TRAINING_CURRICULUM_ALL_MODELS,
-    ):
-        raise ValueError("The five-stage vessel curriculum is inconsistent.")
-    if not set(TRAINING_CURRICULUM_SIMPLE_MODELS).issubset(
-        set(TRAINING_CURRICULUM_ALL_MODELS)
-    ):
-        raise ValueError("Simple curriculum vessels must belong to the training pool.")
+    if any(tuple(models) != TRAINING_CURRICULUM_BRANCH_MODELS for models in TRAINING_CURRICULUM_MODELS):
+        raise ValueError("Every target-route curriculum stage must train B01/B02.")
+    if len(TRAINING_CURRICULUM_ROUTES) != len(TRAINING_CURRICULUM_MODELS):
+        raise ValueError("Target-route curriculum stages are inconsistent.")
+    for routes in TRAINING_CURRICULUM_ROUTES:
+        if set(routes) != set(TRAINING_CURRICULUM_BRANCH_MODELS):
+            raise ValueError("Every route stage must configure B01 and B02.")
+        if any(not indices or any(index not in range(1, 7) for index in indices) for indices in routes.values()):
+            raise ValueError("Curriculum target indices must lie in [1, 6].")
     if any(fraction != 1.0 for fraction in TRAINING_CURRICULUM_TARGET_FRACTIONS):
         raise ValueError("Every curriculum stage must use the complete route.")
-    if TRAINING_CURRICULUM_DR_FRACTIONS != (0.0, 0.0, 1.0, 0.0, 1.0):
+    if TRAINING_CURRICULUM_DR_FRACTIONS != (0.0,) * 5:
         raise ValueError("The five-stage curriculum DR schedule is inconsistent.")
-    if TRAINING_CURRICULUM_PROMOTION_MODES != (
-        "aggregate",
-        "per_vessel_min",
-        "per_vessel_min",
-        "per_vessel_min",
-    ):
+    if TRAINING_CURRICULUM_PROMOTION_MODES != ("per_route_min",) * 4:
         raise ValueError("The curriculum promotion modes are inconsistent.")
-    if TRAINING_CURRICULUM_DR_FRACTIONS[-1] != 1.0:
-        raise ValueError("The final curriculum stage must use full domain randomization.")
     if not (0.0 <= TRAINING_CURRICULUM_UNIFORM_SAMPLING_MIX <= 1.0):
         raise ValueError("Curriculum uniform sampling mix must be in [0, 1].")
     if TRAINING_CURRICULUM_DIFFICULTY_POWER <= 0.0:
@@ -701,6 +745,11 @@ def validate_training_defaults() -> None:
         <= TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
     ):
         raise ValueError("Invalid curriculum minimum per-vessel sample count.")
+    if not (
+        1 <= TRAINING_CURRICULUM_MIN_EPISODES_PER_ROUTE
+        <= TRAINING_CURRICULUM_ROLLING_EPISODES_PER_ROUTE
+    ):
+        raise ValueError("Invalid curriculum minimum per-route sample count.")
     if any(
         not (0.0 < threshold <= 1.0)
         for threshold in TRAINING_CURRICULUM_SUCCESS_THRESHOLDS

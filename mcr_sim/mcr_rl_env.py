@@ -20,6 +20,7 @@ from .training_config import (
     CATHETER_RADIUS_M,
     CENTERLINE_LOOKAHEAD_DISTANCES_M,
     CONTROLLER_MAX_INSERTION_M,
+    DISCRETE_PREVIEW_DISTANCES_M,
     DISCRETE_INITIAL_SKIP_DISTANCE_M,
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
@@ -73,6 +74,7 @@ from .training_config import (
     TRAINING_CURRICULUM_ENABLED,
     TRAINING_CURRICULUM_DR_FRACTIONS,
     TRAINING_CURRICULUM_MODELS,
+    TRAINING_CURRICULUM_ROUTES,
     TRAINING_CURRICULUM_TARGET_FRACTIONS,
     VESSEL_SCALE_MAX,
     VESSEL_SCALE_MIN,
@@ -440,7 +442,7 @@ class MCREnv(SofaEnv):
             )
         )
 
-        # Actor observation: 38-D current local state plus a configurable
+        # Actor observation: compact current local geometry plus a configurable
         # history of 7-D action/response tuples. Three points along the
         # physically inserted shaft, elapsed-time budget and inserted length
         # make the flexible-catheter state substantially less aliased while
@@ -666,6 +668,7 @@ class MCREnv(SofaEnv):
         self.current_sampling_model = self._explicit_force_model if self._explicit_force_model else None
         self._sampling_slot = max(0, int(create_scene_kwargs.get("sampling_slot", 0)))
         self._branch_route_counters = defaultdict(int)
+        self.training_route_sampling_weights = {}
         self.current_target_route_id = "default"
 
         # Single-vessel soft reset.
@@ -829,13 +832,7 @@ class MCREnv(SofaEnv):
         self.current_sampling_model = chosen
 
     def _sample_next_target_route(self) -> None:
-        """Select every branch target evenly without exposing its ID to policy.
-
-        Each worker cycles through all six routes with a worker-specific phase.
-        This removes the old hidden random-shuffle imbalance while preserving
-        the local-coordinate task definition.  Explicit centerline requests are
-        left untouched for GUI and targeted diagnostic runs.
-        """
+        """Sample one active route; route identity is encoded only by geometry."""
 
         if self._explicit_centerline_file:
             self.create_scene_kwargs["centerline_file"] = self._explicit_centerline_file
@@ -853,9 +850,20 @@ class MCREnv(SofaEnv):
             self.current_target_route_id = "default"
             return
 
-        counter = int(self._branch_route_counters[model_id])
-        route_index = (self._sampling_slot + counter) % 6 + 1
-        self._branch_route_counters[model_id] = counter + 1
+        active = (
+            tuple(TRAINING_CURRICULUM_ROUTES[self.curriculum_stage][model_id])
+            if self.training_curriculum_enabled and not self._explicit_force_model
+            else tuple(range(1, 7))
+        )
+        configured = self.training_route_sampling_weights.get(model_id, {})
+        probabilities = np.asarray(
+            [max(float(configured.get(index, 0.0)), 0.0) for index in active],
+            dtype=np.float64,
+        )
+        if not np.all(np.isfinite(probabilities)) or float(probabilities.sum()) <= 0.0:
+            probabilities = np.ones(len(active), dtype=np.float64)
+        probabilities /= float(probabilities.sum())
+        route_index = int(self._sampler_rng.choice(active, p=probabilities))
         self.current_target_route_id = f"target_{route_index:02d}"
         self.create_scene_kwargs["centerline_file"] = (
             f"{self.current_target_route_id}_centerline.vtk"
@@ -906,6 +914,28 @@ class MCREnv(SofaEnv):
         }
         return dict(self.training_model_sampling_weights)
 
+    def set_training_route_sampling_weights(self, weights: dict) -> dict:
+        """Set target-route probabilities for each active branching vessel."""
+
+        active_routes = TRAINING_CURRICULUM_ROUTES[self.curriculum_stage]
+        normalized = {}
+        for model_id, route_indices in active_routes.items():
+            configured = (weights or {}).get(model_id, {})
+            values = np.asarray(
+                [max(float(configured.get(index, configured.get(str(index), 0.0))), 0.0)
+                 for index in route_indices],
+                dtype=np.float64,
+            )
+            if not np.all(np.isfinite(values)) or float(values.sum()) <= 0.0:
+                values = np.ones(len(route_indices), dtype=np.float64)
+            values /= float(values.sum())
+            normalized[model_id] = {
+                int(index): float(probability)
+                for index, probability in zip(route_indices, values)
+            }
+        self.training_route_sampling_weights = normalized
+        return {model_id: dict(route_weights) for model_id, route_weights in normalized.items()}
+
     def set_curriculum_stage(self, stage: int) -> int:
         """Set the latched training geometry stage for future episode resets."""
 
@@ -919,6 +949,7 @@ class MCREnv(SofaEnv):
         )
         self._apply_curriculum_domain_randomization(stage)
         self.set_training_model_sampling_weights({})
+        self.set_training_route_sampling_weights({})
         return int(self.curriculum_stage)
 
     def _capture_soft_reset_reference_pose(self) -> None:
@@ -1602,9 +1633,13 @@ class MCREnv(SofaEnv):
         field = self._world_vec_to_local(np.asarray(self.mcr_controller_sofa.get_mag_field_des()), frame)/max(self.magnetic_field_observation_scale, 1e-9)
         shaft = self._get_shaft_landmark_points(self._get_sdf_sample_points(tip))
         inserted = float(self.mcr_controller_sofa._getXTipValue())
+        remaining_route = max(
+            float(self.current_route_target_progress - tracker.arc[tracker.index]),
+            0.0,
+        )
         current = np.concatenate([np.clip(field, -2, 2),
-            np.clip(local(tracker.window())/.04, -5, 5),
-            np.clip(local([self.target_position])/.5, -2, 2),
+            np.clip(local(tracker.preview(DISCRETE_PREVIEW_DISTANCES_M))/.06, -2, 2),
+            [np.clip(remaining_route / max(ROUTE_REMAINING_DISTANCE_SCALE_M, 1e-9), 0, 1)],
             np.clip(local(shaft)/.06, -2, 2),
             [max(0., 1-self._elapsed_steps/self.max_episode_steps),
              inserted/CONTROLLER_MAX_INSERTION_M, tracker.radii[tracker.index]/.003]])

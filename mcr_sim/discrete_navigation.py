@@ -65,3 +65,15 @@ class PointTracker:
 
     def window(self):
         return self.points[np.minimum(self.index+np.arange(5), len(self.points)-1)]
+
+    def preview(self, distances):
+        """Interpolate route references at fixed arc-length lookaheads."""
+
+        query = np.minimum(
+            float(self.arc[self.index]) + np.asarray(distances, dtype=float),
+            float(self.arc[-1]),
+        )
+        return np.stack(
+            [np.interp(query, self.arc, self.points[:, axis]) for axis in range(3)],
+            axis=1,
+        )

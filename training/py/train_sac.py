@@ -1000,9 +1000,9 @@ def parse_args():
         dest="training_curriculum",
         action="store_true",
         help=(
-            "Advance the five-stage branch-fixed/curved-fixed/simple-DR/"
-            "all-fixed/all-DR curriculum. Stage 0 requires aggregate B01/B02 "
-            "rolling 3 mm success >=90% plus three consecutive successful episodes."
+            "Advance the five-stage B01/B02 target-route curriculum from "
+            "shallow targets 01/04 to all twelve routes. Promotion requires "
+            "every active route to reach its rolling success threshold."
         ),
     )
     curriculum.add_argument(

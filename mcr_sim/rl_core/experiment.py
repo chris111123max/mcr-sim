@@ -19,14 +19,20 @@ from .evaluation import (
     validation_result_to_json,
 )
 from ..training_config import (
+    TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES,
     TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL,
+    TRAINING_CURRICULUM_MIN_EPISODES_PER_ROUTE,
     TRAINING_CURRICULUM_MODELS,
     TRAINING_CURRICULUM_PROMOTION_MODES,
     TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL,
+    TRAINING_CURRICULUM_ROLLING_EPISODES_PER_ROUTE,
+    TRAINING_CURRICULUM_ROUTES,
     TRAINING_CURRICULUM_STAGE_NAMES,
+    TRAINING_CURRICULUM_SUCCESS_THRESHOLDS,
     TRAINING_CURRICULUM_TARGET_FRACTIONS,
     curriculum_exploration_profile,
     curriculum_sampling_weights,
+    curriculum_route_sampling_weights,
     update_curriculum_progress,
     update_validation_unlocked,
 )
@@ -118,6 +124,7 @@ class EpochExperimentCallback(BaseCallback):
         self.curriculum_stage = 0
         self.curriculum_success_streak = 0
         self.curriculum_sampling_weights = {}
+        self.curriculum_route_sampling_weights = {}
         self.curriculum_dr_profile = {}
         self.curriculum_exploration_profile = {}
         self.curriculum_target_fraction = 1.0
@@ -218,7 +225,7 @@ class EpochExperimentCallback(BaseCallback):
         }
         self._curriculum_route_outcome_windows = {
             f"{model_id}/target_{route_index:02d}": deque(
-                maxlen=TRAINING_CURRICULUM_ROLLING_EPISODES_PER_VESSEL
+                maxlen=TRAINING_CURRICULUM_ROLLING_EPISODES_PER_ROUTE
             )
             for model_id in self._curriculum_model_ids
             if str(model_id).startswith("B")
@@ -355,6 +362,7 @@ class EpochExperimentCallback(BaseCallback):
         )
         rolling_rates, _, _, _ = self._rolling_curriculum_statistics(active_models)
         self._apply_curriculum_sampling(active_models, rolling_rates)
+        self._apply_curriculum_route_sampling(self.curriculum_stage)
 
     def _apply_curriculum_stage(self, stage: int) -> None:
         if not self.training_curriculum_enabled:
@@ -378,12 +386,28 @@ class EpochExperimentCallback(BaseCallback):
     def _apply_curriculum_sampling(self, active_models, success_rates) -> None:
         if not self.training_curriculum_enabled:
             return
-        weights = curriculum_sampling_weights(active_models, success_rates)
+        # Target difficulty is balanced within each vessel.  Keep B01/B02 at
+        # equal outer probability so a weak vessel cannot crowd out the other.
+        if set(active_models) == {"B01", "B02"}:
+            weights = {model_id: 1.0 / len(active_models) for model_id in active_models}
+        else:
+            weights = curriculum_sampling_weights(active_models, success_rates)
         self.training_env.env_method(
             "set_training_model_sampling_weights",
             weights,
         )
         self.curriculum_sampling_weights = dict(weights)
+
+    def _apply_curriculum_route_sampling(self, stage: int) -> None:
+        if not self.training_curriculum_enabled:
+            return
+        route_rates, _, _, _ = self._route_curriculum_statistics(stage)
+        weights = curriculum_route_sampling_weights(stage, route_rates)
+        self.training_env.env_method("set_training_route_sampling_weights", weights)
+        self.curriculum_route_sampling_weights = {
+            model_id: dict(route_weights)
+            for model_id, route_weights in weights.items()
+        }
 
     def _apply_curriculum_exploration(self, stage: int) -> None:
         """Apply the same stage schedule to all supported algorithms."""
@@ -778,6 +802,31 @@ class EpochExperimentCallback(BaseCallback):
             )
         return rates, counts, ready, mastery_rate
 
+    def _route_curriculum_statistics(self, stage: int):
+        """Return rolling statistics for exactly the routes active in a stage."""
+
+        stage = min(max(int(stage), 0), len(TRAINING_CURRICULUM_ROUTES) - 1)
+        keys = [
+            f"{model_id}/target_{route_index:02d}"
+            for model_id, route_indices in TRAINING_CURRICULUM_ROUTES[stage].items()
+            for route_index in route_indices
+        ]
+        counts = {key: len(self._curriculum_route_outcome_windows[key]) for key in keys}
+        rates = {
+            key: (
+                float(sum(self._curriculum_route_outcome_windows[key])) / counts[key]
+                if counts[key] > 0 else None
+            )
+            for key in keys
+        }
+        ready = bool(keys) and all(
+            counts[key] >= TRAINING_CURRICULUM_MIN_EPISODES_PER_ROUTE
+            and rates[key] is not None
+            for key in keys
+        )
+        mastery = min(float(rates[key]) for key in keys) if ready else 0.0
+        return rates, counts, ready, mastery
+
     def _record_model_metadata(self, epoch: int, train_success_rate: float) -> None:
         self.model.epoch = int(epoch)
         self.model.global_completed_episodes = int(self.global_completed_episodes)
@@ -823,6 +872,10 @@ class EpochExperimentCallback(BaseCallback):
         self.model.curriculum_sampling_weights = dict(
             self.curriculum_sampling_weights
         )
+        self.model.curriculum_route_sampling_weights = {
+            model_id: dict(weights)
+            for model_id, weights in self.curriculum_route_sampling_weights.items()
+        }
         self.model.curriculum_dr_profile = dict(self.curriculum_dr_profile)
         self.model.curriculum_target_fraction = float(
             self.curriculum_target_fraction
@@ -1159,69 +1212,23 @@ class EpochExperimentCallback(BaseCallback):
                 else None
             ),
         )
-        # A branching vessel is six distinct control tasks.  Its aggregate
-        # success can hide route-mode collapse, so curriculum promotion uses
-        # the weakest sufficiently sampled branch route while vessel sampling
-        # remains balanced at the outer level.
-        promotion_rates = dict(curriculum_rolling_success_rates)
-        promotion_counts = dict(curriculum_rolling_episode_counts)
-        for model_id in active_models:
-            if not str(model_id).startswith("B"):
-                continue
-            route_windows = [
-                self._curriculum_route_outcome_windows[
-                    f"{model_id}/target_{route_index:02d}"
-                ]
-                for route_index in range(1, 7)
-            ]
-            route_counts = [len(window) for window in route_windows]
-            if any(count == 0 for count in route_counts):
-                promotion_rates[model_id] = None
-                promotion_counts[model_id] = 0
-            else:
-                promotion_rates[model_id] = min(
-                    float(sum(window)) / float(len(window))
-                    for window in route_windows
-                )
-                promotion_counts[model_id] = min(route_counts)
-        promotion_ready = bool(
-            active_models
-            and all(
-                promotion_rates.get(model_id) is not None
-                and promotion_counts.get(model_id, 0)
-                >= TRAINING_CURRICULUM_MIN_EPISODES_PER_VESSEL
-                for model_id in active_models
-            )
+        route_rolling_rates, route_rolling_counts, promotion_ready, route_mastery = (
+            self._route_curriculum_statistics(curriculum_stage_used)
         )
-        if promotion_ready:
-            curriculum_mastery_success_rate = min(
-                float(promotion_rates[model_id]) for model_id in active_models
-            )
-        else:
-            curriculum_mastery_success_rate = 0.0
-        curriculum_mastery_ready = promotion_ready
-        curriculum_mastery_ready = bool(curriculum_mastery_ready)
+        curriculum_mastery_success_rate = float(route_mastery)
+        curriculum_mastery_ready = bool(promotion_ready)
         if self.training_curriculum_enabled:
-            # The curriculum helper historically aggregates vessel scores.
-            # Give every active vessel the same global worst-route score so an
-            # easy route can never hide an unlearned target branch.
-            strict_promotion_rates = {
-                model_id: (
-                    float(curriculum_mastery_success_rate)
-                    if promotion_ready
-                    else None
-                )
-                for model_id in promotion_rates
-            }
-            next_curriculum_stage, self.curriculum_success_streak = (
-                update_curriculum_progress(
-                    self.curriculum_stage,
-                    self.curriculum_success_streak,
-                    train_success_rate,
-                    strict_promotion_rates,
-                    promotion_counts,
-                )
-            )
+            next_curriculum_stage = self.curriculum_stage
+            if (
+                self.curriculum_stage < len(TRAINING_CURRICULUM_MODELS) - 1
+                and promotion_ready
+                and curriculum_mastery_success_rate
+                >= TRAINING_CURRICULUM_SUCCESS_THRESHOLDS[self.curriculum_stage]
+                and self.curriculum_success_streak
+                >= TRAINING_CURRICULUM_CONSECUTIVE_SUCCESS_EPISODES
+            ):
+                next_curriculum_stage += 1
+                self.curriculum_success_streak = 0
             if next_curriculum_stage != self.curriculum_stage:
                 self.curriculum_stage = next_curriculum_stage
                 for window in self._curriculum_outcome_windows.values():
@@ -1234,6 +1241,7 @@ class EpochExperimentCallback(BaseCallback):
                 sampling_models
             )
             self._apply_curriculum_sampling(sampling_models, sampling_rates)
+            self._apply_curriculum_route_sampling(self.curriculum_stage)
         self.model.curriculum_mastery_success_rate = float(
             curriculum_mastery_success_rate
         )
@@ -1247,6 +1255,8 @@ class EpochExperimentCallback(BaseCallback):
         self.model.curriculum_vessel_success_rates = dict(
             curriculum_vessel_success_rates
         )
+        self.model.curriculum_route_rolling_success_rates = dict(route_rolling_rates)
+        self.model.curriculum_route_rolling_episode_counts = dict(route_rolling_counts)
         self.validation_unlocked = update_validation_unlocked(
             self.validation_unlocked,
             train_success_rate,
@@ -1333,7 +1343,7 @@ class EpochExperimentCallback(BaseCallback):
             self.logger.record("train/global_env_steps", float(self.model.global_env_steps), exclude="stdout")
             _append_csv(
                 self.run_dir / "train_summary.csv",
-                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_terminal_mean", "reward_safety_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "route_projection_jump_rejections_mean", "curriculum_stage_used", "curriculum_stage_name_used", "curriculum_stage", "curriculum_stage_name", "curriculum_target_fraction_used", "curriculum_target_fraction", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_vessel_route_jump_rejections_mean", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "route_completion_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
+                ["epoch", "train_episodes", "train_success_count", "train_success_rate", "train_reward_mean", "train_episode_steps_mean", "out_of_vessel_count", "wrong_branch_count", "non_finite_count", "timeout_count", "no_progress_count", "positive_failure_count", "positive_failure_rate", "reward_progress_mean", "reward_terminal_mean", "reward_safety_mean", "reward_step_mean", "reward_component_total_mean", "route_potential_final_mean", "route_projection_jump_rejections_mean", "curriculum_stage_used", "curriculum_stage_name_used", "curriculum_stage", "curriculum_stage_name", "curriculum_target_fraction_used", "curriculum_target_fraction", "curriculum_success_streak", "curriculum_mastery_ready", "curriculum_mastery_success_rate", "curriculum_vessel_success_rates", "curriculum_vessel_episode_counts", "curriculum_vessel_route_jump_rejections_mean", "curriculum_rolling_success_rates", "curriculum_rolling_episode_counts", "curriculum_route_rolling_success_rates", "curriculum_route_rolling_episode_counts", "curriculum_sampling_weights", "curriculum_route_sampling_weights", "curriculum_dr_profile", "curriculum_exploration_profile", "insert_action_mean", "insert_positive_fraction", "insert_negative_fraction", "inserted_length_final_mean_mm", "route_completion_mean", "global_completed_episodes", "global_env_steps", "checkpoint"],
                 {
                     "epoch": epoch,
                     "train_episodes": self.episodes_per_epoch,
@@ -1393,8 +1403,19 @@ class EpochExperimentCallback(BaseCallback):
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
+                    "curriculum_route_rolling_success_rates": json.dumps(
+                        route_rolling_rates, sort_keys=True, separators=(",", ":")
+                    ),
+                    "curriculum_route_rolling_episode_counts": json.dumps(
+                        route_rolling_counts, sort_keys=True, separators=(",", ":")
+                    ),
                     "curriculum_sampling_weights": json.dumps(
                         self.curriculum_sampling_weights,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    "curriculum_route_sampling_weights": json.dumps(
+                        self.curriculum_route_sampling_weights,
                         sort_keys=True,
                         separators=(",", ":"),
                     ),
@@ -1564,7 +1585,10 @@ class EpochExperimentCallback(BaseCallback):
                 f"curriculum_vessel_success_rates={json.dumps(curriculum_vessel_success_rates, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_rolling_success_rates={json.dumps(curriculum_rolling_success_rates, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_rolling_episode_counts={json.dumps(curriculum_rolling_episode_counts, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_route_rolling_success_rates={json.dumps(route_rolling_rates, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_route_rolling_episode_counts={json.dumps(route_rolling_counts, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_sampling_weights={json.dumps(self.curriculum_sampling_weights, sort_keys=True, separators=(',', ':'))} "
+                f"curriculum_route_sampling_weights={json.dumps(self.curriculum_route_sampling_weights, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_dr_profile={json.dumps(self.curriculum_dr_profile, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_exploration_profile={json.dumps(self.curriculum_exploration_profile, sort_keys=True, separators=(',', ':'))} "
                 f"curriculum_success_streak={self.curriculum_success_streak} "
