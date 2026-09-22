@@ -1416,6 +1416,14 @@ class MCREnv(SofaEnv):
             value = float(value)
             return value if np.isfinite(value) else None
 
+        wall_trace = {}
+        wall_controller = getattr(self, "sdf_physics_wall_controller", None)
+        if wall_controller is not None:
+            try:
+                wall_trace = wall_controller.get_diagnostics()
+            except Exception:
+                wall_trace = {}
+
         self._terminal_diagnostic_trace.append({
             "step": int(self._elapsed_steps),
             "route_completion": finite_or_nan(self.current_route_progress_ratio),
@@ -1449,6 +1457,12 @@ class MCREnv(SofaEnv):
             "inserted_length_m": finite_or_nan(self.current_sdf_inserted_length),
             "tip_clearance_m": finite_or_nan(self.current_sdf_surface_clearance),
             "body_clearance_m": finite_or_nan(self.current_sdf_body_min_surface_clearance),
+            "sdf_wall_active_nodes": int(wall_trace.get("active_nodes", 0)),
+            "sdf_wall_max_force_N": float(wall_trace.get("max_force_N", 0.0)),
+            "sdf_wall_total_force_N": float(wall_trace.get("total_force_N", 0.0)),
+            "sdf_wall_min_clearance_m": finite_or_nan(
+                wall_trace.get("min_clearance_m", np.nan)
+            ),
             "body_warning": finite_or_nan(self.current_sdf_body_warning_feature),
             "off_target_branch": finite_or_nan(self.current_off_target_branch_feature),
             "no_progress": finite_or_nan(self.no_progress_feature),
