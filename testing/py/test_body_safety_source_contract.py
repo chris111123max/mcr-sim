@@ -27,7 +27,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         )
         observation_block = source.split(
             "def _get_observation", 1
-        )[1].split("def _get_reward_features", 1)[0]
+        )[1].split("def _get_vessel_section_features", 1)[0]
         self.assertNotIn("sdf_wall_", observation_block)
         self.assertNotIn("sdf_physics_wall", observation_block)
 
@@ -90,7 +90,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         self.assertIn('info["terminal_diagnostic_trace"]', source)
         observation_block = source.split(
             "def _get_observation", 1
-        )[1].split("def _get_reward_features", 1)[0]
+        )[1].split("def _get_vessel_section_features", 1)[0]
         self.assertNotIn("terminal_diagnostic_trace", observation_block)
 
 
