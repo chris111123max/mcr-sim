@@ -439,7 +439,7 @@ class EpochExperimentCallback(BaseCallback):
         infos = list(self.locals.get("infos", []))
         # Compact V13 event schema. Extra numeric diagnostics stay inside the
         # existing synchronized block, so they add no distributed collective.
-        events = np.zeros((len(dones), 62), dtype=np.float32)
+        events = np.zeros((len(dones), 66), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -588,6 +588,10 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("curve_alignment_error_20mm_max_episode", 0.0)),
                 float(info.get("target_route_index", 0.0)),
                 route_consistency_error,
+                float(info.get("sdf_wall_min_clearance_episode_m", np.nan)),
+                float(info.get("sdf_wall_max_force_episode_N", 0.0)),
+                float(info.get("sdf_wall_max_total_force_episode_N", 0.0)),
+                float(info.get("sdf_wall_active_steps_episode", 0.0)),
             ]
         return events
 
@@ -685,10 +689,10 @@ class EpochExperimentCallback(BaseCallback):
                 "sdf_tip_clearance_min_m": float(event[41]),
                 "sdf_body_clearance_min_m": float(event[42]),
                 "inserted_length_max_m": float(event[43]),
-                "sdf_wall_min_clearance_m": float(info.get("sdf_wall_min_clearance_episode_m", np.nan)),
-                "sdf_wall_max_force_N": float(info.get("sdf_wall_max_force_episode_N", 0.0)),
-                "sdf_wall_max_total_force_N": float(info.get("sdf_wall_max_total_force_episode_N", 0.0)),
-                "sdf_wall_active_steps": int(info.get("sdf_wall_active_steps_episode", 0)),
+                "sdf_wall_min_clearance_m": float(event[62]),
+                "sdf_wall_max_force_N": float(event[63]),
+                "sdf_wall_max_total_force_N": float(event[64]),
+                "sdf_wall_active_steps": int(round(float(event[65]))),
             }
             rows.append(row)
             if event[1] <= 0.5:
