@@ -246,6 +246,8 @@ class EpochExperimentCallback(BaseCallback):
             "reward_success", "reward_out_of_vessel", "reward_non_finite",
             "reward_timeout", "sdf_tip_clearance_min_m",
             "sdf_body_clearance_min_m", "inserted_length_max_m",
+            "sdf_wall_min_clearance_m", "sdf_wall_max_force_N",
+            "sdf_wall_max_total_force_N", "sdf_wall_active_steps",
         ]
         self._failure_episode_fieldnames = [
             "global_episode", "epoch", "vessel_id", "target_route_id",
@@ -683,6 +685,10 @@ class EpochExperimentCallback(BaseCallback):
                 "sdf_tip_clearance_min_m": float(event[41]),
                 "sdf_body_clearance_min_m": float(event[42]),
                 "inserted_length_max_m": float(event[43]),
+                "sdf_wall_min_clearance_m": float(info.get("sdf_wall_min_clearance_episode_m", np.nan)),
+                "sdf_wall_max_force_N": float(info.get("sdf_wall_max_force_episode_N", 0.0)),
+                "sdf_wall_max_total_force_N": float(info.get("sdf_wall_max_total_force_episode_N", 0.0)),
+                "sdf_wall_active_steps": int(info.get("sdf_wall_active_steps_episode", 0)),
             }
             rows.append(row)
             if event[1] <= 0.5:
