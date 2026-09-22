@@ -79,7 +79,7 @@ class BodySafetySourceContractTest(unittest.TestCase):
         source = (
             PROJECT_ROOT / "mcr_sim" / "rl_core" / "experiment.py"
         ).read_text(encoding="utf-8")
-        self.assertIn("events = np.zeros((len(dones), 62)", source)
+        self.assertIn("events = np.zeros((len(dones), 66)", source)
         self.assertIn('"sdf_wall_min_clearance_m"', source)
         self.assertIn('"sdf_wall_max_force_N"', source)
 
