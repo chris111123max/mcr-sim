@@ -115,12 +115,12 @@ TARGET_WINDOW_DISTANCE_M = 0.010
 INITIAL_ORIENTATION_MAX_ANGLE_DEG = 10.0
 ENTRY_TANGENT_POINTS = 5
 
-# Reward profile v15.0. PPO receives signed distance progress to the active
+# Reward profile V15.2-A. PPO receives signed distance progress to the active
 # ordered navigation point.
 # Retracting cancels forward credit; switching points never creates a bonus.
-REWARD_PROFILE_VERSION = "15.1-discrete-forward-start-2mm"
+REWARD_PROFILE_VERSION = "15.2A-discrete-forward-relaxed-waypoints"
 REWARD_PROGRESS_NORMALIZATION_M = TRAIN_ROUTE_MAX_LENGTH_M  # metadata/fallback only
-REWARD_PROGRESS_SCALE = 2000.0
+REWARD_PROGRESS_SCALE = 1000.0
 # Compatibility alias for older reporting code. In V13 this is per unit route
 # completion, not per physical metre.
 REWARD_PROGRESS_PER_M = REWARD_PROGRESS_SCALE
@@ -134,7 +134,7 @@ REWARD_DISCOUNT_GAMMA = 0.9995
 # useful pre-contact credit assignment.
 REWARD_WALL_PROXIMITY = 0.0
 REWARD_OFF_TARGET_BRANCH = 0.0
-REWARD_SUCCESS = 500.0
+REWARD_SUCCESS = 300.0
 REWARD_OUT_OF_VESSEL = -30.0
 REWARD_NON_FINITE = -30.0
 REWARD_TIMEOUT = -10.0
@@ -168,8 +168,8 @@ def reward_profile(discount_gamma: float = REWARD_DISCOUNT_GAMMA) -> dict:
         "progress_normalization_m": REWARD_PROGRESS_NORMALIZATION_M,
         "progress_scale": REWARD_PROGRESS_SCALE,
         "discount_gamma": float(discount_gamma),
-        "progress_formula": "2000*(distance_before-distance_after)_same_active_point_metres",
-        "discrete_navigation": {"gentle_spacing_m": .004, "tight_spacing_m": .002, "gentle_radius_m": .0012, "tight_radius_m": .0008, "final_radius_m": .003, "preview_points": 5, "initial_skip_distance_m": DISCRETE_INITIAL_SKIP_DISTANCE_M},
+        "progress_formula": "1000*(distance_before-distance_after)_same_active_point_metres",
+        "discrete_navigation": {"gentle_spacing_m": .004, "tight_spacing_m": .002, "gentle_radius_m": .0015, "tight_radius_m": .0012, "final_radius_m": .003, "preview_points": 5, "initial_skip_distance_m": DISCRETE_INITIAL_SKIP_DISTANCE_M},
         "discrete_bend_rule": "offline_4mm_window_direction_change_ge_10deg_or_graph_degree_ge_3_within_2mm",
         "progress_budget": REWARD_PROGRESS_BUDGET,
         "route_progress": REWARD_ROUTE_PROGRESS,
@@ -564,6 +564,17 @@ def update_validation_unlocked(
         )
     )
 
+# V15.2-B Physics Wall.  Mechanical beam resolution remains 30 body + 3 tip;
+# only the mapped collision representation is sampled more densely.  The SDF
+# term is a SOFA mechanical force and is never part of reward, observation, or
+# action processing.
+CATHETER_COLLISION_BODY_EDGES = 80
+CATHETER_COLLISION_TIP_EDGES = 12
+SDF_PHYSICS_WALL_ENABLED = True
+SDF_WALL_ACTIVATION_CLEARANCE_M = 0.0003
+SDF_WALL_STIFFNESS_N_PER_M = 10.0
+SDF_WALL_MAX_FORCE_N = 0.010
+
 # Collision/contact defaults.  Catheter Line/Point primitives represent their
 # physical radius through proximity.  Vessel collision remains triangle-only.
 VESSEL_TRIANGLE_PROXIMITY_M = 0.0002
@@ -644,6 +655,14 @@ def validate_training_defaults() -> None:
         )
     if not (0.0 <= LMD_CONTACT_DISTANCE_M < LMD_ALARM_DISTANCE_M):
         raise ValueError("LocalMinDistance requires contactDistance < alarmDistance.")
+    if CATHETER_COLLISION_BODY_EDGES < 1 or CATHETER_COLLISION_TIP_EDGES < 1:
+        raise ValueError("Catheter collision edge counts must be positive.")
+    if not (
+        SDF_WALL_ACTIVATION_CLEARANCE_M > 0.0
+        and SDF_WALL_STIFFNESS_N_PER_M > 0.0
+        and SDF_WALL_MAX_FORCE_N > 0.0
+    ):
+        raise ValueError("SDF physics-wall parameters must be positive.")
     if not (0.0 < OUT_OF_VESSEL_SAFETY_RATIO <= 1.0):
         raise ValueError("Out-of-vessel ratio must be in (0, 1] for physical containment.")
     if START_WINDOW_DISTANCE_M < 0.0 or TARGET_WINDOW_DISTANCE_M < 0.0:

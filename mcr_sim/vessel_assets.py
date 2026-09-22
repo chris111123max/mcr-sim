@@ -25,9 +25,38 @@ from typing import Any, Dict, Union
 from xml.etree import ElementTree
 
 import numpy as np
+from scipy.spatial.transform import Rotation as R
 
 
 PathLike = Union[str, Path]
+
+
+def sim_points_to_asset_source(
+    points_sim,
+    asset_T_env_sim,
+    asset_offset_sim,
+    asset_source_to_sim_scale,
+) -> np.ndarray:
+    """Convert SOFA positions to the generated asset's source coordinates."""
+
+    points = np.asarray(points_sim, dtype=np.float64).reshape((-1, 3))
+    transform = np.asarray(asset_T_env_sim, dtype=np.float64).reshape(7)
+    translation = transform[:3] + np.asarray(
+        asset_offset_sim, dtype=np.float64
+    ).reshape(3)
+    scale = float(asset_source_to_sim_scale)
+    if not np.isfinite(scale) or scale <= 0.0:
+        raise ValueError(f"Invalid asset_source_to_sim_scale={scale}")
+    rotation = R.from_quat(transform[3:7])
+    return rotation.inv().apply(points - translation[None, :]) / scale
+
+
+def asset_vectors_to_sim(vectors_source, asset_T_env_sim) -> np.ndarray:
+    """Rotate source-space vectors into the SOFA simulation frame."""
+
+    vectors = np.asarray(vectors_source, dtype=np.float64).reshape((-1, 3))
+    transform = np.asarray(asset_T_env_sim, dtype=np.float64).reshape(7)
+    return R.from_quat(transform[3:7]).apply(vectors)
 
 
 def _local_name(tag: str) -> str:

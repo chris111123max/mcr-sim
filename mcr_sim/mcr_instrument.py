@@ -2,7 +2,11 @@ import Sofa
 import os
 import numpy as np
 
-from .training_config import CATHETER_COLLISION_PROXIMITY_M
+from .training_config import (
+    CATHETER_COLLISION_BODY_EDGES,
+    CATHETER_COLLISION_PROXIMITY_M,
+    CATHETER_COLLISION_TIP_EDGES,
+)
 
 
 class Instrument(Sofa.Core.Controller):
@@ -92,8 +96,22 @@ class Instrument(Sofa.Core.Controller):
 
         self.fixed_directions = fixed_directions
 
-        num_edges_collis_body = int(os.environ.get("MCR_NUM_EDGES_COLLIS_BODY", str(self.num_elem_body)))
-        num_edges_collis_tip = int(os.environ.get("MCR_NUM_EDGES_COLLIS_TIP", str(self.num_elem_tip)))
+        num_edges_collis_body = int(
+            os.environ.get(
+                "MCR_NUM_EDGES_COLLIS_BODY",
+                str(CATHETER_COLLISION_BODY_EDGES),
+            )
+        )
+        num_edges_collis_tip = int(
+            os.environ.get(
+                "MCR_NUM_EDGES_COLLIS_TIP",
+                str(CATHETER_COLLISION_TIP_EDGES),
+            )
+        )
+        if num_edges_collis_body < 1 or num_edges_collis_tip < 1:
+            raise ValueError("Catheter collision edge counts must be positive.")
+        self.num_edges_collis_body = num_edges_collis_body
+        self.num_edges_collis_tip = num_edges_collis_tip
         if self.verbose:
             print(
                 "[CATHETER_COLLISION_EDGES]",
@@ -190,6 +208,16 @@ class Instrument(Sofa.Core.Controller):
             indices=indicesList,
             forces=forcesList,
             indexFromEnd=True)
+
+        # V15.2-B SDF wall force field.  A separate field prevents the wall
+        # controller from overwriting magnetic torques in CFF.  It acts on the
+        # same 30+3 Rigid3d beam nodes and contains no artificial torque.
+        self.SDFWallCFF = self.InstrumentCombined.addObject(
+            'ConstantForceField',
+            name='SDFWallCFF',
+            indices=indicesList,
+            forces=[[0.0] * 6 for _ in indicesList],
+            indexFromEnd=False)
 
         self.CFF_visu = self.InstrumentCombined.addObject(
             'ConstantForceField',

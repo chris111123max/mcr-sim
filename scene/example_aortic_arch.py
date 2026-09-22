@@ -22,6 +22,7 @@ from mcr_sim import (
     mcr_instrument,
     mcr_magnet,
     mcr_simulator,
+    sdf_physics_wall,
 )
 from mcr_sim.paths import DEFAULT_CALIBRATION_PATH, TEST_MESH_DIR, TRAIN_MESH_DIR
 from mcr_sim.training_config import (
@@ -1545,6 +1546,29 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     except Exception as e:
         print("[INSTRUMENT_MO_CHECK][WARN]", e)
 
+    # V15.2-B: apply near-wall SDF repulsion through a SOFA force field on
+    # inserted mechanical nodes.  Native triangle/line/point contact remains
+    # enabled and continues to provide the primary hard collision constraint.
+    sdf_wall_controller = None
+    if sdf_vti:
+        sdf_wall_controller = sdf_physics_wall.SDFPhysicsWallController(
+            name="SDFPhysicsWallController",
+            instrument=instrument,
+            sdf_vti=sdf_vti,
+            asset_T_env_sim=T_env_sim,
+            asset_offset_sim=centerline_offset_sim,
+            asset_source_to_sim_scale=centerline_scale,
+            catheter_radius_m=outer_diam / 2.0,
+            enabled=kwargs.get("sdf_physics_wall_enabled", None),
+            activation_clearance_m=kwargs.get(
+                "sdf_wall_activation_clearance_m", None
+            ),
+            stiffness_n_per_m=kwargs.get("sdf_wall_stiffness_n_per_m", None),
+            max_force_n=kwargs.get("sdf_wall_max_force_n", None),
+            verbose=scene_verbose,
+        )
+        root_node.addObject(sdf_wall_controller)
+
     controller_sofa = mcr_controller_sofa.ControllerSofa(
         root_node=root_node,
         e_mns=navion,
@@ -1556,6 +1580,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     scene_creation_result = {
         "mcr_controller_sofa": controller_sofa,
         "mcr_environment": environment,
+        "sdf_physics_wall_controller": sdf_wall_controller,
         "camera": camera,
         "target_position": target_point_sim,
         "centerline_points": centerline_data.points_sim if centerline_data is not None else None,

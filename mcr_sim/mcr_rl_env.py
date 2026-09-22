@@ -11,7 +11,12 @@ from scipy.spatial.transform import Rotation as R
 from .mcr_controller_sofa import ControllerSofa
 from .paths import SCENE_DIR
 from .rl_core.base import SofaEnv, RenderMode, RenderFramework
-from .vessel_assets import load_signed_distance_grid, load_vessel_metadata
+from .vessel_assets import (
+    asset_vectors_to_sim,
+    load_signed_distance_grid,
+    load_vessel_metadata,
+    sim_points_to_asset_source,
+)
 from .training_config import (
     ACTOR_HISTORY_STEPS,
     ACTOR_SHAFT_LOOKBACK_DISTANCES_M,
@@ -1757,6 +1762,13 @@ class MCREnv(SofaEnv):
             else "not_done"
         )
         chosen_model = str(getattr(self, "chosen_model", "unknown"))
+        wall_diagnostics = {}
+        wall_controller = getattr(self, "sdf_physics_wall_controller", None)
+        if wall_controller is not None:
+            try:
+                wall_diagnostics = wall_controller.get_diagnostics()
+            except Exception:
+                wall_diagnostics = {}
         info = {
             "task_id": str(getattr(self, "task_id", "unknown")),
             "chosen_model": chosen_model,
@@ -1854,6 +1866,42 @@ class MCREnv(SofaEnv):
             "centerline_safety_ratio_max_episode": float(self.max_safety_ratio_this_episode),
             "centerline_safety_margin_min_episode": float(self.min_safety_margin_this_episode),
             "sdf_available": bool(self.sdf_grid is not None),
+            "sdf_physics_wall_enabled": bool(
+                wall_diagnostics.get("enabled", False)
+            ),
+            "sdf_wall_active_nodes": int(
+                wall_diagnostics.get("active_nodes", 0)
+            ),
+            "sdf_wall_sampled_nodes": int(
+                wall_diagnostics.get("sampled_nodes", 0)
+            ),
+            "sdf_wall_invalid_nodes": int(
+                wall_diagnostics.get("invalid_nodes", 0)
+            ),
+            "sdf_wall_max_force_N": float(
+                wall_diagnostics.get("max_force_N", 0.0)
+            ),
+            "sdf_wall_total_force_N": float(
+                wall_diagnostics.get("total_force_N", 0.0)
+            ),
+            "sdf_wall_min_clearance_m": float(
+                wall_diagnostics.get("min_clearance_m", np.nan)
+            ),
+            "sdf_wall_max_force_episode_N": float(
+                wall_diagnostics.get("max_force_episode_N", 0.0)
+            ),
+            "sdf_wall_max_total_force_episode_N": float(
+                wall_diagnostics.get("max_total_force_episode_N", 0.0)
+            ),
+            "sdf_wall_min_clearance_episode_m": float(
+                wall_diagnostics.get("min_clearance_episode_m", np.nan)
+            ),
+            "sdf_wall_active_steps_episode": int(
+                wall_diagnostics.get("active_steps_episode", 0)
+            ),
+            "sdf_wall_stiffness_n_per_m": float(
+                wall_diagnostics.get("stiffness_n_per_m", 0.0)
+            ),
             "sdf_tip_signed_distance": float(self.current_sdf_tip_signed_distance)
             if np.isfinite(self.current_sdf_tip_signed_distance)
             else np.nan,
@@ -2297,19 +2345,18 @@ class MCREnv(SofaEnv):
         ).astype(np.float64)
 
     def _sim_points_to_asset_source(self, points_sim: np.ndarray) -> np.ndarray:
-        points = np.asarray(points_sim, dtype=np.float64).reshape((-1, 3))
-        transform = np.asarray(self.asset_T_env_sim, dtype=np.float64).reshape(7)
-        translation = transform[:3] + np.asarray(self.asset_offset_sim, dtype=np.float64).reshape(3)
-        scale = float(self.asset_source_to_sim_scale)
-        if not np.isfinite(scale) or scale <= 0.0:
-            raise ValueError(f"Invalid asset_source_to_sim_scale={scale}")
-        rotation = R.from_quat(transform[3:7])
-        return rotation.inv().apply(points - translation[None, :]) / scale
+        return sim_points_to_asset_source(
+            points_sim,
+            asset_T_env_sim=self.asset_T_env_sim,
+            asset_offset_sim=self.asset_offset_sim,
+            asset_source_to_sim_scale=self.asset_source_to_sim_scale,
+        )
 
     def _asset_vectors_to_sim(self, vectors_source: np.ndarray) -> np.ndarray:
-        vectors = np.asarray(vectors_source, dtype=np.float64).reshape((-1, 3))
-        transform = np.asarray(self.asset_T_env_sim, dtype=np.float64).reshape(7)
-        return R.from_quat(transform[3:7]).apply(vectors)
+        return asset_vectors_to_sim(
+            vectors_source,
+            asset_T_env_sim=self.asset_T_env_sim,
+        )
 
     def _update_sdf_safety_state(
         self,
@@ -2912,6 +2959,9 @@ class MCREnv(SofaEnv):
         super()._init_sim()
         self.mcr_controller_sofa: ControllerSofa = self.scene_creation_result["mcr_controller_sofa"]
         self.mcr_environment = self.scene_creation_result["mcr_environment"]
+        self.sdf_physics_wall_controller = self.scene_creation_result.get(
+            "sdf_physics_wall_controller", None
+        )
         self.chosen_model = self.scene_creation_result.get("chosen_model", "unknown")
         self.centerline_vtk = self.scene_creation_result.get("centerline_vtk", "unknown")
         self.task_id = self.scene_creation_result.get("task_id", str(self.chosen_model))

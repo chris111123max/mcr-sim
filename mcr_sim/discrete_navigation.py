@@ -33,7 +33,7 @@ def compile_points(route, branch_points=(), start=0.0, end=None):
         tight = bool(np.any((bends >= s-.004) & (bends <= s+.008)))
         s = min(s + (.002 if tight else .004), end)
         points.append(point(s)); lengths.append(s)
-        radii.append(.0008 if tight else .0012); kinds.append("bend_branch" if tight else "gentle")
+        radii.append(.0012 if tight else .0015); kinds.append("bend_branch" if tight else "gentle")
     radii[-1] = .003
     kinds[-1] = "final"
     return np.asarray(points), np.asarray(lengths), np.asarray(radii), kinds

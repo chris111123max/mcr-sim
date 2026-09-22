@@ -109,6 +109,7 @@ class Environment(Sofa.Core.Controller):
             'TriangleCollisionModel',
             moving=False,
             simulated=False,
+            bothSide=True,
             proximity=self.triangle_collision_proximity)
 
         # Optional only. For a static vessel surface these extra models usually add
