@@ -38,13 +38,57 @@ echo "[SDF_UNILATERAL_BUILD] SofaConstraint_DIR=$SOFA_CONSTRAINT_DIR"
 echo "[SDF_UNILATERAL_BUILD] compiler=$(command -v c++ || true)"
 echo "[SDF_UNILATERAL_BUILD] cmake=$(command -v cmake || true)"
 
+# SOFA 21.12's generated package config still calls FindBoost.  Reuse the
+# exact Boost headers recorded when this SOFA build was configured instead of
+# pulling a second Boost installation into the MCR environment.
+BOOST_INCLUDE_HINT=""
+for cache in \
+    "$SOFA_BUILD/CMakeCache.txt" \
+    "$WORKSPACE_ROOT/mcr_env/sofa/build/CMakeCache.txt" \
+    "$WORKSPACE_ROOT/mcr_env/sofa/build_plugins/CMakeCache.txt"; do
+    [[ -f "$cache" ]] || continue
+    candidate="$(sed -n 's/^Boost_INCLUDE_DIR:PATH=//p' "$cache" | head -n1)"
+    if [[ -z "$candidate" ]]; then
+        candidate="$(sed -n 's/^Boost_INCLUDE_DIR:STRING=//p' "$cache" | head -n1)"
+    fi
+    if [[ -n "$candidate" && -d "$candidate/boost" ]]; then
+        BOOST_INCLUDE_HINT="$candidate"
+        echo "[SDF_UNILATERAL_BUILD] Boost_INCLUDE_DIR=$BOOST_INCLUDE_HINT"
+        echo "[SDF_UNILATERAL_BUILD] Boost source cache=$cache"
+        break
+    fi
+done
+
+if [[ -z "$BOOST_INCLUDE_HINT" ]]; then
+    for candidate in \
+        "$CONDA_PREFIX/include" \
+        "/usr/include" \
+        "/usr/local/include"; do
+        if [[ -d "$candidate/boost" ]]; then
+            BOOST_INCLUDE_HINT="$candidate"
+            echo "[SDF_UNILATERAL_BUILD] Boost_INCLUDE_DIR=$BOOST_INCLUDE_HINT"
+            echo "[SDF_UNILATERAL_BUILD] Boost source=fallback"
+            break
+        fi
+    done
+fi
+
+if [[ -z "$BOOST_INCLUDE_HINT" ]]; then
+    echo "[ERROR] Boost headers were not found." >&2
+    echo "[INFO] SOFA's cached Boost include setting:" >&2
+    grep -Rhs '^Boost_INCLUDE_DIR:' "$SOFA_BUILD"/CMakeCache.txt "$WORKSPACE_ROOT/mcr_env/sofa"/*/CMakeCache.txt 2>/dev/null || true
+    echo "[INFO] Locate manually with: find '$WORKSPACE_ROOT/mcr_env/sofa' -path '*/boost/version.hpp' -print -quit" >&2
+    exit 4
+fi
+
 rm -rf "$BUILD_DIR"
 
 cmake -S "$PLUGIN_ROOT" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_PREFIX_PATH="$SOFA_BUILD;$SOFA_BUILD/lib/cmake" \
-    -DSofaConstraint_DIR="$SOFA_CONSTRAINT_DIR"
+    -DSofaConstraint_DIR="$SOFA_CONSTRAINT_DIR" \
+    -DBoost_INCLUDE_DIR="$BOOST_INCLUDE_HINT"
 
 cmake --build "$BUILD_DIR" -j2
 
