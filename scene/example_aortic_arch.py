@@ -1120,6 +1120,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         root_node=root_node,
         friction_coef=sim_friction_coef,
         verbose=scene_verbose,
+        intersection_method=kwargs.get("diagnostic_intersection_method", "local_min_distance"),
     )
     print("[SIM_FRICTION] friction_coef =", sim_friction_coef)
 

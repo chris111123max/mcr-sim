@@ -33,6 +33,7 @@ class Simulator(Sofa.Core.Controller):
             gravity=[0, 0, 0],
             friction_coef=FRICTION_COEFFICIENT,
             verbose=True,
+            intersection_method="local_min_distance",
             *args, **kwargs):
 
         # These are needed (and the normal way to override from a python class)
@@ -43,6 +44,9 @@ class Simulator(Sofa.Core.Controller):
         self.gravity = gravity
         self.friction_coef = friction_coef
         self.verbose = bool(verbose)
+        if intersection_method not in ("local_min_distance", "min_proximity"):
+            raise ValueError(f"Unsupported diagnostic intersection method: {intersection_method}")
+        self.intersection_method = intersection_method
 
         self.root_node.addObject(
             'RequiredPlugin',
@@ -167,12 +171,26 @@ class Simulator(Sofa.Core.Controller):
                 "alarmDistance=", lmd_alarm_distance,
                 "angleCone=", lmd_angle_cone,
             )
-        self.root_node.addObject(
-            'LocalMinDistance',
-            contactDistance=lmd_contact_distance,
-            alarmDistance=lmd_alarm_distance,
-            name='localmindistance',
-            angleCone=lmd_angle_cone)
+        if self.intersection_method == "min_proximity":
+            # Diagnostic replay only. Same distances; no LocalMinDistance filter.
+            # This SOFA version supports triangle-point but ignores triangle-line.
+            self.root_node.addObject(
+                'RequiredPlugin', name='ImportSofaGeneralMeshCollision',
+                pluginName='SofaGeneralMeshCollision')
+            self.root_node.addObject(
+                'MinProximityIntersection',
+                contactDistance=lmd_contact_distance,
+                alarmDistance=lmd_alarm_distance,
+                name='minproximityintersection')
+        else:
+            self.root_node.addObject(
+                'LocalMinDistance',
+                contactDistance=lmd_contact_distance,
+                alarmDistance=lmd_alarm_distance,
+                name='localmindistance',
+                angleCone=lmd_angle_cone)
+        if self.verbose:
+            print("[INTERSECTION_METHOD]", self.intersection_method)
 
         self.root_node.addObject(
             'CollisionResponse',

@@ -31,8 +31,11 @@ INSERT_ACTION_NEGATIVE_LIMIT = -1.0
 DISCRETE_INITIAL_SKIP_DISTANCE_M = 0.008
 
 # Environment/task defaults.
-SOFA_TIME_STEP_S = 0.01
-FRAME_SKIP = 1
+# V15.2-C: one 10 ms policy action drives two complete 5 ms SOFA steps.
+RL_CONTROL_PERIOD_S = 0.01
+PHYSICS_SUBSTEPS = 2
+SOFA_TIME_STEP_S = RL_CONTROL_PERIOD_S / PHYSICS_SUBSTEPS
+FRAME_SKIP = 1  # Legacy action-repeat setting; do not use for physics substeps.
 SETTLE_STEPS = 8
 TARGET_THRESHOLD_M = 0.003
 MAX_EPISODE_STEPS = 2048

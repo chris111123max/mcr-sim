@@ -248,6 +248,8 @@ class EpochExperimentCallback(BaseCallback):
             "sdf_body_clearance_min_m", "inserted_length_max_m",
             "sdf_wall_min_clearance_m", "sdf_wall_max_force_N",
             "sdf_wall_max_total_force_N", "sdf_wall_active_steps",
+            "episode_min_tip_clearance_m", "episode_min_body_clearance_m",
+            "episode_max_contact_free_penetration_m", "contact_active_substeps",
         ]
         self._failure_episode_fieldnames = [
             "global_episode", "epoch", "vessel_id", "target_route_id",
@@ -257,7 +259,10 @@ class EpochExperimentCallback(BaseCallback):
             "route_projection_segment", "route_projection_distance_m",
             "final_dist_to_goal_m", "min_dist_to_goal_m",
             "sdf_tip_clearance_min_m", "sdf_body_clearance_min_m",
-            "max_sdf_penetration_m", "centerline_safety_ratio_terminal",
+            "max_sdf_penetration_m",
+            "episode_min_tip_clearance_m", "episode_min_body_clearance_m",
+            "episode_max_contact_free_penetration_m", "contact_active_substeps",
+            "centerline_safety_ratio_terminal",
             "centerline_safety_ratio_max_episode",
             "centerline_safety_margin_terminal",
             "centerline_safety_margin_min_episode",
@@ -439,7 +444,7 @@ class EpochExperimentCallback(BaseCallback):
         infos = list(self.locals.get("infos", []))
         # Compact V13 event schema. Extra numeric diagnostics stay inside the
         # existing synchronized block, so they add no distributed collective.
-        events = np.zeros((len(dones), 66), dtype=np.float32)
+        events = np.zeros((len(dones), 70), dtype=np.float32)
         for index, done in enumerate(dones):
             if not done:
                 continue
@@ -592,6 +597,10 @@ class EpochExperimentCallback(BaseCallback):
                 float(info.get("sdf_wall_max_force_episode_N", 0.0)),
                 float(info.get("sdf_wall_max_total_force_episode_N", 0.0)),
                 float(info.get("sdf_wall_active_steps_episode", 0.0)),
+                float(info.get("episode_min_tip_clearance", np.nan)),
+                float(info.get("episode_min_body_clearance", np.nan)),
+                float(info.get("episode_max_contact_free_penetration", 0.0)),
+                float(info.get("contact_active_substeps", 0.0)),
             ]
         return events
 
@@ -693,6 +702,10 @@ class EpochExperimentCallback(BaseCallback):
                 "sdf_wall_max_force_N": float(event[63]),
                 "sdf_wall_max_total_force_N": float(event[64]),
                 "sdf_wall_active_steps": int(round(float(event[65]))),
+                "episode_min_tip_clearance_m": float(event[66]),
+                "episode_min_body_clearance_m": float(event[67]),
+                "episode_max_contact_free_penetration_m": float(event[68]),
+                "contact_active_substeps": int(round(float(event[69]))),
             }
             rows.append(row)
             if event[1] <= 0.5:
@@ -716,6 +729,12 @@ class EpochExperimentCallback(BaseCallback):
                     "sdf_tip_clearance_min_m": row["sdf_tip_clearance_min_m"],
                     "sdf_body_clearance_min_m": row["sdf_body_clearance_min_m"],
                     "max_sdf_penetration_m": row["max_sdf_penetration_m"],
+                    "episode_min_tip_clearance_m": row["episode_min_tip_clearance_m"],
+                    "episode_min_body_clearance_m": row["episode_min_body_clearance_m"],
+                    "episode_max_contact_free_penetration_m": row[
+                        "episode_max_contact_free_penetration_m"
+                    ],
+                    "contact_active_substeps": row["contact_active_substeps"],
                     "centerline_safety_ratio_terminal": float(event[47]),
                     "centerline_safety_ratio_max_episode": float(event[48]),
                     "centerline_safety_margin_terminal": float(event[49]),

@@ -29,6 +29,8 @@ from .training_config import (
     DISCRETE_INITIAL_SKIP_DISTANCE_M,
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
+    PHYSICS_SUBSTEPS,
+    RL_CONTROL_PERIOD_S,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
     INSERT_ACTION_NEGATIVE_LIMIT,
     LOCAL_FIELD_ACTION_ANGLE_RAD,
@@ -137,6 +139,7 @@ class MCREnv(SofaEnv):
         action_type: ActionType = ActionType.CONTINUOUS,
         time_step: float = SOFA_TIME_STEP_S,
         frame_skip: int = FRAME_SKIP,
+        physics_substeps: int = PHYSICS_SUBSTEPS,
         settle_steps: int = SETTLE_STEPS,
         render_mode: RenderMode = RenderMode.HUMAN,
         render_framework: RenderFramework = RenderFramework.PYGLET,
@@ -147,6 +150,16 @@ class MCREnv(SofaEnv):
         num_catheter_tracking_points: int = 4,
         max_episode_steps: int = MAX_EPISODE_STEPS,
     ):
+        self.physics_substeps = int(physics_substeps)
+        if self.physics_substeps < 1:
+            raise ValueError("physics_substeps must be positive")
+        if self.physics_substeps > 1 and int(frame_skip) != 1:
+            raise ValueError("frame_skip must be 1 when physics_substeps is enabled")
+        if self.physics_substeps > 1 and not np.isclose(
+            float(time_step) * self.physics_substeps, RL_CONTROL_PERIOD_S,
+            rtol=0.0, atol=1e-12,
+        ):
+            raise ValueError("physics dt times substeps must equal the 10 ms RL period")
         if not isinstance(create_scene_kwargs, dict):
             create_scene_kwargs = {}
         create_scene_kwargs["image_shape"] = image_shape
@@ -240,6 +253,10 @@ class MCREnv(SofaEnv):
         self._settle_steps = int(settle_steps)
 
         # Scales and safety parameters.
+        if self.internal_render_mode != RenderMode.NONE:
+            self.metadata["render_fps"] = 1.0 / (
+                float(self.time_step) * self.physics_substeps
+            )
         self.magnetic_field_observation_scale = float(create_scene_kwargs.get("magnetic_field_observation_scale", 0.10))
         self.radius_observation_scale = float(create_scene_kwargs.get("radius_observation_scale", RADIUS_OBSERVATION_SCALE_M))
         self.default_local_radius = float(create_scene_kwargs.get("default_local_radius", 0.005))
@@ -595,6 +612,10 @@ class MCREnv(SofaEnv):
         self.sdf_outside_confirmed = False
         self.min_sdf_surface_clearance_this_episode = np.inf
         self.min_sdf_body_surface_clearance_this_episode = np.inf
+        self.episode_min_tip_clearance = np.inf
+        self.episode_min_body_clearance = np.inf
+        self.episode_max_contact_free_penetration = 0.0
+        self.contact_active_substeps = 0
         self.max_sdf_signed_distance_this_episode = -np.inf
         self.sdf_wall_contact_steps_episode = 0
         self.sdf_tip_near_wall_counter = 0
@@ -1230,6 +1251,10 @@ class MCREnv(SofaEnv):
         self.sdf_outside_confirmed = False
         self.min_sdf_surface_clearance_this_episode = np.inf
         self.min_sdf_body_surface_clearance_this_episode = np.inf
+        self.episode_min_tip_clearance = np.inf
+        self.episode_min_body_clearance = np.inf
+        self.episode_max_contact_free_penetration = 0.0
+        self.contact_active_substeps = 0
         self.max_sdf_signed_distance_this_episode = -np.inf
         self.sdf_wall_contact_steps_episode = 0
         self.sdf_tip_near_wall_counter = 0
@@ -1336,6 +1361,29 @@ class MCREnv(SofaEnv):
     # ------------------------------------------------------------------
     # Step / observation / reward
     # ------------------------------------------------------------------
+    def _native_contact_active(self) -> bool:
+        collision_node = self.mcr_controller_sofa.instrument.InstrumentCombined.getChild(
+            "mcr_collis"
+        )
+        return any(obj.getClassName() == "FrictionContact" for obj in collision_node.objects)
+
+    def _accumulate_physics_diagnostics(self, contact_active: bool) -> None:
+        tip_clearance = float(self.current_sdf_surface_clearance)
+        body_clearance = float(self.current_sdf_body_min_surface_clearance)
+        if np.isfinite(tip_clearance):
+            self.episode_min_tip_clearance = min(
+                self.episode_min_tip_clearance, tip_clearance
+            )
+        if np.isfinite(body_clearance):
+            self.episode_min_body_clearance = min(
+                self.episode_min_body_clearance, body_clearance
+            )
+            if not contact_active:
+                self.episode_max_contact_free_penetration = max(
+                    self.episode_max_contact_free_penetration,
+                    max(0.0, -body_clearance),
+                )
+
     def step(self, action: Any) -> Tuple[Union[np.ndarray, dict], float, bool, bool, dict]:
         action_np = np.array(action, dtype=np.float32)
         action_np = np.nan_to_num(action_np, nan=0.0, posinf=1.0, neginf=-1.0)
@@ -1359,10 +1407,49 @@ class MCREnv(SofaEnv):
         self._prev_smoothed_action = previous_action
         self._last_smoothed_action = action_np.copy()
 
-        image_observation = super().step(action_np)
+        if self.physics_substeps == 1:
+            image_observation = super().step(action_np)
+            final_contact_active = self._native_contact_active()
+            self.contact_active_substeps += int(final_contact_active)
+        else:
+            root_dt = float(self._sofa_root_node.getDt())
+            if not np.isclose(root_dt, float(self.time_step), rtol=0.0, atol=1e-12):
+                raise RuntimeError("SOFA root dt differs from the configured physics dt")
+            # Apply the RL action once. Magnetic control then remains fixed while
+            # its single insertion request is consumed evenly by SOFA substeps.
+            self._do_action(action_np)
+            controller = self.mcr_controller_sofa
+            original_chunk = float(controller.insert_substep_max)
+            pending = float(controller.pending_insert_delta)
+            controller.insert_substep_max = (
+                abs(pending) / self.physics_substeps
+                if abs(pending) > 1e-12 else original_chunk
+            )
+            try:
+                for substep in range(self.physics_substeps):
+                    # Each animate call runs the full collision/constraint pipeline.
+                    self.sofa_simulation.animate(self._sofa_root_node, root_dt)
+                    contact_active = self._native_contact_active()
+                    self.contact_active_substeps += int(contact_active)
+                    if substep + 1 < self.physics_substeps:
+                        tip = np.asarray(
+                            controller.get_pos_quat_catheter_tip()[:3], dtype=np.float64
+                        ).copy()
+                        # Tip position alone cannot validate the body SDF cache.
+                        self._sdf_geometry_cache_step = -1
+                        self._update_sdf_safety_state(
+                            tip, advance_failure_counters=False
+                        )
+                        self._accumulate_physics_diagnostics(contact_active)
+                    else:
+                        final_contact_active = contact_active
+            finally:
+                controller.insert_substep_max = original_chunk
+            image_observation = self._maybe_update_rgb_buffer()
         self._elapsed_steps += 1
 
         reward = self._get_reward()
+        self._accumulate_physics_diagnostics(final_contact_active)
         observation = self._get_observation(image_observation)
 
         non_finite_failure = False
@@ -1946,6 +2033,16 @@ class MCREnv(SofaEnv):
             )
             if np.isfinite(self.min_sdf_surface_clearance_this_episode)
             else np.nan,
+            "episode_min_tip_clearance": float(self.episode_min_tip_clearance)
+            if np.isfinite(self.episode_min_tip_clearance) else np.nan,
+            "episode_min_body_clearance": float(self.episode_min_body_clearance)
+            if np.isfinite(self.episode_min_body_clearance) else np.nan,
+            "episode_max_contact_free_penetration": float(
+                self.episode_max_contact_free_penetration
+            ),
+            "contact_active_substeps": int(self.contact_active_substeps),
+            "physics_substeps": int(self.physics_substeps),
+            "physics_dt_s": float(self._sofa_root_node.getDt()),
             "sdf_body_surface_clearance_min_episode": float(
                 self.min_sdf_body_surface_clearance_this_episode
             )

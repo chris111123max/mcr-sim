@@ -32,6 +32,7 @@ from mcr_sim.rl_core.experiment import EpochExperimentCallback
 from mcr_sim.rl_core.run_logging import start_run_log_capture, write_run_config
 from mcr_sim.training_config import (
     FRAME_SKIP,
+    PHYSICS_SUBSTEPS,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
     MAX_EPISODE_STEPS,
     PPO_BATCH_SIZE,
@@ -121,6 +122,7 @@ def parse_args(configure_parser=None):
     parser.add_argument("--initial-action-std", type=float, default=PPO_INITIAL_ACTION_STD)
 
     parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
+    parser.add_argument("--physics-substeps", type=int, default=PHYSICS_SUBSTEPS)
     parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
     parser.add_argument("--settle-steps", type=int, default=SETTLE_STEPS)
     parser.add_argument("--target-threshold", type=float, default=TARGET_THRESHOLD_M)

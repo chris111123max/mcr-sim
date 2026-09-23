@@ -45,6 +45,7 @@ from mcr_sim.training_config import (
     ACTOR_HISTORY_STEPS,
     ENTRY_TANGENT_POINTS,
     FRAME_SKIP,
+    PHYSICS_SUBSTEPS,
     INITIAL_ORIENTATION_MAX_ANGLE_DEG,
     MAX_EPISODE_STEPS,
     RADIUS_OBSERVATION_SCALE_M,
@@ -245,6 +246,18 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             "sdf_body_surface_clearance_min_m": self._safe_float(
                 info.get("sdf_body_surface_clearance_min_episode", np.nan)
             ),
+            "episode_min_tip_clearance_m": self._safe_float(
+                info.get("episode_min_tip_clearance", np.nan)
+            ),
+            "episode_min_body_clearance_m": self._safe_float(
+                info.get("episode_min_body_clearance", np.nan)
+            ),
+            "episode_max_contact_free_penetration_m": self._safe_float(
+                info.get("episode_max_contact_free_penetration", 0.0)
+            ),
+            "contact_active_substeps": self._safe_float(
+                info.get("contact_active_substeps", 0.0)
+            ),
             "sdf_tip_near_wall_steps": self._safe_float(
                 info.get("sdf_tip_near_wall_steps_episode", 0.0)
             ),
@@ -360,6 +373,10 @@ class ExtraRolloutMetricsCallback(BaseCallback):
             self.logger.record(f"rollout_recent/vessel_scale_mean_w{self.window_size}", self._mean(ep["vessel_scale_factor"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_clearance_min_mm_w{self.window_size}", self._mean(ep["sdf_surface_clearance_min_m"] * 1000.0 for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_body_clearance_min_mm_w{self.window_size}", self._mean(ep["sdf_body_surface_clearance_min_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"physics/min_tip_clearance_mm_w{self.window_size}", self._mean(ep["episode_min_tip_clearance_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"physics/min_body_clearance_mm_w{self.window_size}", self._mean(ep["episode_min_body_clearance_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"physics/max_contact_free_penetration_mm_w{self.window_size}", self._mean(ep["episode_max_contact_free_penetration_m"] * 1000.0 for ep in recent), exclude="stdout")
+            self.logger.record(f"physics/contact_active_substeps_w{self.window_size}", self._mean(ep["contact_active_substeps"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_tip_near_wall_steps_w{self.window_size}", self._mean(ep["sdf_tip_near_wall_steps"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_tip_penetration_steps_w{self.window_size}", self._mean(ep["sdf_wall_contact_steps"] for ep in recent), exclude="stdout")
             self.logger.record(f"rollout_recent/sdf_penetration_max_mm_w{self.window_size}", self._mean(ep["sdf_penetration_depth_max_m"] * 1000.0 for ep in recent), exclude="stdout")
@@ -884,6 +901,7 @@ def parse_args():
     parser.add_argument("--gamma", type=float, default=SAC_GAMMA)
 
     parser.add_argument("--frame-skip", type=int, default=FRAME_SKIP)
+    parser.add_argument("--physics-substeps", type=int, default=PHYSICS_SUBSTEPS)
     parser.add_argument("--time-step", type=float, default=SOFA_TIME_STEP_S)
     parser.add_argument(
         "--settle-steps",
@@ -1196,6 +1214,7 @@ def build_env(args):
                 action_type=ActionType.CONTINUOUS,
                 time_step=args.time_step,
                 frame_skip=args.frame_skip,
+                physics_substeps=args.physics_substeps,
                 settle_steps=args.settle_steps,
                 render_mode=render_mode,
                 render_framework=RenderFramework.PYGLET,
