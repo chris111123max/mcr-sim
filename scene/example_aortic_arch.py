@@ -23,6 +23,7 @@ from mcr_sim import (
     mcr_magnet,
     mcr_simulator,
     sdf_physics_wall,
+    sdf_hard_constraint,
 )
 from mcr_sim.paths import DEFAULT_CALIBRATION_PATH, TEST_MESH_DIR, TRAIN_MESH_DIR
 from mcr_sim.training_config import (
@@ -1200,6 +1201,16 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         )
     ) or use_vessel_line_point_collision
 
+    # Diagnostic SDF hard-contact geometry is isolated from the previous vessel
+    # Point/Line experiment. When constructed, the original vessel Triangle and
+    # the virtual SDF triangles share one exclusion group so they cannot collide
+    # with each other. Catheter Line/Point models remain in their original group.
+    construct_sdf_hard_constraint = bool(
+        kwargs.get("sdf_hard_constraint_construct", False)
+        or kwargs.get("sdf_hard_constraint_enabled", False)
+    )
+    sdf_hard_collision_group = 2 if construct_sdf_hard_constraint else None
+
     print(
         "[VESSEL_COLLISION]",
         "task_id=", task_id,
@@ -1228,6 +1239,7 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         use_line_point_collision=use_vessel_line_point_collision,
         use_point_collision=use_vessel_point_collision,
         use_line_collision=use_vessel_line_collision,
+        collision_exclusion_group=sdf_hard_collision_group,
         verbose=scene_verbose,
     )
     
@@ -1596,10 +1608,41 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     )
     root_node.addObject(controller_sofa)
 
+    # Diagnostic-only SDF hard wall. It creates local SDF tangent triangles and
+    # lets the existing FrictionContactConstraint + LCP pipeline enforce them.
+    # It never enables vessel Point/Line collision models and never projects
+    # catheter positions directly.
+    sdf_hard_constraint_controller = None
+    if sdf_vti and construct_sdf_hard_constraint:
+        sdf_hard_constraint_controller = (
+            sdf_hard_constraint.SDFHardConstraintController(
+                name="SDFHardConstraintController",
+                root_node=root_node,
+                instrument=instrument,
+                sdf_vti=sdf_vti,
+                asset_T_env_sim=T_env_sim,
+                asset_offset_sim=centerline_offset_sim,
+                asset_source_to_sim_scale=centerline_scale,
+                catheter_radius_m=outer_diam / 2.0,
+                activation_clearance_m=kwargs.get(
+                    "sdf_hard_constraint_activation_clearance_m",
+                    SDF_WALL_ACTIVATION_CLEARANCE_M,
+                ),
+                collision_proximity_m=vessel_triangle_collision_proximity,
+                collision_exclusion_group=int(sdf_hard_collision_group),
+                enabled=bool(
+                    kwargs.get("sdf_hard_constraint_enabled", False)
+                ),
+                verbose=scene_verbose,
+            )
+        )
+        root_node.addObject(sdf_hard_constraint_controller)
+
     scene_creation_result = {
         "mcr_controller_sofa": controller_sofa,
         "mcr_environment": environment,
         "sdf_physics_wall_controller": sdf_wall_controller,
+        "sdf_hard_constraint_controller": sdf_hard_constraint_controller,
         "camera": camera,
         "target_position": target_point_sim,
         "centerline_points": centerline_data.points_sim if centerline_data is not None else None,
