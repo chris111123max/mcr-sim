@@ -61,8 +61,9 @@ void SDFUnilateralConstraint::init()
         this->getContext()->getMechanicalState());
 
     if (!this->mstate)
-        msg_error("SDFUnilateralConstraint")
-            << "Requires a Vec3 mechanical state in the same node.";
+        std::cerr
+            << "[SDFUnilateralConstraint] Requires a Vec3 mechanical state "
+            << "in the same node." << std::endl;
 }
 
 void SDFUnilateralConstraint::buildConstraintMatrix(
