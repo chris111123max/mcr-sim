@@ -47,11 +47,10 @@ public:
     using DataVecCoord = sofa::core::objectmodel::Data<VecCoord>;
     using DataVecDeriv = sofa::core::objectmodel::Data<VecDeriv>;
     using DataMatrixDeriv = sofa::core::objectmodel::Data<MatrixDeriv>;
-    using Real = DataTypes::Real;\n    using Vec3 = sofa::type::Vec<3, Real>;
+    using Real = typename Coord::value_type;
+    using Vec3 = sofa::type::Vec<3, Real>;
 
-    SOFA_CLASS(
-        SDFUnilateralConstraint,
-        SOFA_TEMPLATE(sofa::core::behavior::Constraint, sofa::defaulttype::Vec3Types));
+    SOFA_CLASS(SDFUnilateralConstraint, Inherit);
 
     explicit SDFUnilateralConstraint(MechanicalState* object = nullptr);
     ~SDFUnilateralConstraint() override = default;
@@ -90,4 +89,5 @@ private:
     sofa::type::vector<unsigned int> m_constraintIds;
 };
 
-} // namespace constraint\n} // namespace mcr
+} // namespace constraint
+} // namespace mcr
