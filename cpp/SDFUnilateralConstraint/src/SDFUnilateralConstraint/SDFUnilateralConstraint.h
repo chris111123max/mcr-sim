@@ -90,4 +90,4 @@ private:
     sofa::type::vector<unsigned int> m_constraintIds;
 };
 
-} // namespace mcr::constraint
+} // namespace constraint\n} // namespace mcr
