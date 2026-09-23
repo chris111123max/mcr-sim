@@ -1185,6 +1185,20 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
             in ("1", "true", "yes", "y", "on"),
         )
     )
+    use_vessel_point_collision = bool(
+        kwargs.get(
+            "use_vessel_point_collision",
+            str(os.environ.get("MCR_USE_VESSEL_POINT_COLLISION", "0")).lower()
+            in ("1", "true", "yes", "y", "on"),
+        )
+    ) or use_vessel_line_point_collision
+    use_vessel_line_collision = bool(
+        kwargs.get(
+            "use_vessel_line_collision",
+            str(os.environ.get("MCR_USE_VESSEL_LINE_COLLISION", "0")).lower()
+            in ("1", "true", "yes", "y", "on"),
+        )
+    ) or use_vessel_line_point_collision
 
     print(
         "[VESSEL_COLLISION]",
@@ -1194,6 +1208,8 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         "triangle_proximity=", vessel_triangle_collision_proximity,
         "line_point_proximity=", vessel_line_point_collision_proximity,
         "use_line_point_collision=", use_vessel_line_point_collision,
+        "use_point_collision=", use_vessel_point_collision,
+        "use_line_collision=", use_vessel_line_collision,
     )
 
     environment = mcr_environment.Environment(
@@ -1210,6 +1226,8 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         triangle_collision_proximity=vessel_triangle_collision_proximity,
         line_point_collision_proximity=vessel_line_point_collision_proximity,
         use_line_point_collision=use_vessel_line_point_collision,
+        use_point_collision=use_vessel_point_collision,
+        use_line_collision=use_vessel_line_collision,
         verbose=scene_verbose,
     )
     
