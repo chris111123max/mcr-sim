@@ -24,6 +24,7 @@ from mcr_sim import (
     mcr_simulator,
     sdf_physics_wall,
     sdf_hard_constraint,
+    sdf_unilateral_constraint,
 )
 from mcr_sim.paths import DEFAULT_CALIBRATION_PATH, TEST_MESH_DIR, TRAIN_MESH_DIR
 from mcr_sim.training_config import (
@@ -1212,6 +1213,23 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
     )
     sdf_hard_collision_group = 2 if construct_sdf_hard_constraint else None
 
+    construct_sdf_unilateral_constraint = bool(
+        kwargs.get("sdf_unilateral_constraint_construct", False)
+        or kwargs.get("sdf_unilateral_constraint_enabled", False)
+    )
+    if construct_sdf_unilateral_constraint and construct_sdf_hard_constraint:
+        raise ValueError(
+            "SDF unilateral constraint and tangent-triangle SDF hard contact "
+            "must not be enabled together."
+        )
+    if construct_sdf_unilateral_constraint and (
+        use_vessel_point_collision or use_vessel_line_collision
+    ):
+        raise ValueError(
+            "SDF unilateral constraint diagnostic requires the original "
+            "Triangle-only vessel collision (vessel Point/Line disabled)."
+        )
+
     print(
         "[VESSEL_COLLISION]",
         "task_id=", task_id,
@@ -1645,11 +1663,44 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
         )
         root_node.addObject(sdf_hard_constraint_controller)
 
+    # Diagnostic-only true unilateral SDF constraint. Python samples SDF
+    # geometry; the external C++ component contributes g(x)>=0 rows directly
+    # to the existing SOFA Lagrange solve on mapped CollisionDOFs.
+    sdf_unilateral_constraint_controller = None
+    if sdf_vti and construct_sdf_unilateral_constraint:
+        sdf_unilateral_constraint_controller = (
+            sdf_unilateral_constraint.SDFUnilateralConstraintController(
+                name="SDFUnilateralConstraintController",
+                instrument=instrument,
+                sdf_vti=sdf_vti,
+                asset_T_env_sim=T_env_sim,
+                asset_offset_sim=centerline_offset_sim,
+                asset_source_to_sim_scale=centerline_scale,
+                catheter_radius_m=outer_diam / 2.0,
+                activation_clearance_m=kwargs.get(
+                    "sdf_unilateral_constraint_activation_clearance_m",
+                    SDF_WALL_ACTIVATION_CLEARANCE_M,
+                ),
+                max_constraints=int(
+                    kwargs.get("sdf_unilateral_constraint_max_constraints", 24)
+                ),
+                min_sample_separation_m=kwargs.get(
+                    "sdf_unilateral_constraint_min_sample_separation_m", None
+                ),
+                enabled=bool(
+                    kwargs.get("sdf_unilateral_constraint_enabled", False)
+                ),
+                verbose=scene_verbose,
+            )
+        )
+        root_node.addObject(sdf_unilateral_constraint_controller)
+
     scene_creation_result = {
         "mcr_controller_sofa": controller_sofa,
         "mcr_environment": environment,
         "sdf_physics_wall_controller": sdf_wall_controller,
         "sdf_hard_constraint_controller": sdf_hard_constraint_controller,
+        "sdf_unilateral_constraint_controller": sdf_unilateral_constraint_controller,
         "camera": camera,
         "target_position": target_point_sim,
         "centerline_points": centerline_data.points_sim if centerline_data is not None else None,
