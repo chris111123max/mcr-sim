@@ -47,7 +47,7 @@ public:
     using DataVecCoord = sofa::core::objectmodel::Data<VecCoord>;
     using DataVecDeriv = sofa::core::objectmodel::Data<VecDeriv>;
     using DataMatrixDeriv = sofa::core::objectmodel::Data<MatrixDeriv>;
-    using Vec3 = sofa::type::Vec<3, sofa::SReal>;
+    using Real = DataTypes::Real;\n    using Vec3 = sofa::type::Vec<3, Real>;
 
     SOFA_CLASS(
         SDFUnilateralConstraint,
