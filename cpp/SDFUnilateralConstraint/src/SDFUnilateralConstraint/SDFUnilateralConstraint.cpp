@@ -100,7 +100,7 @@ void SDFUnilateralConstraint::buildConstraintMatrix(
             continue;
 
         Vec3 n = normals[slot];
-        const sofa::SReal norm = n.norm();
+        const Real norm = n.norm();
         if (!std::isfinite(static_cast<double>(norm)) || norm < 1e-12)
             continue;
         n /= norm;
@@ -114,17 +114,17 @@ void SDFUnilateralConstraint::buildConstraintMatrix(
         MatrixDerivRowIterator row = c.writeLine(cid);
 
         const Deriv d0(
-            static_cast<sofa::SReal>(w0) * n[0],
-            static_cast<sofa::SReal>(w0) * n[1],
-            static_cast<sofa::SReal>(w0) * n[2]);
+            static_cast<Real>(w0) * n[0],
+            static_cast<Real>(w0) * n[1],
+            static_cast<Real>(w0) * n[2]);
         row.addCol(i0, d0);
 
         if (i1 != i0 && std::abs(w1) > 1e-15)
         {
             const Deriv d1(
-                static_cast<sofa::SReal>(w1) * n[0],
-                static_cast<sofa::SReal>(w1) * n[1],
-                static_cast<sofa::SReal>(w1) * n[2]);
+                static_cast<Real>(w1) * n[0],
+                static_cast<Real>(w1) * n[1],
+                static_cast<Real>(w1) * n[2]);
             row.addCol(i1, d1);
         }
 
@@ -167,14 +167,14 @@ void SDFUnilateralConstraint::getConstraintViolation(
             continue;
 
         Vec3 n = normals[slot];
-        const sofa::SReal norm = n.norm();
+        const Real norm = n.norm();
         if (norm < 1e-12)
             continue;
         n /= norm;
 
         const Coord sample =
-            positions[i0] * static_cast<sofa::SReal>(weights0[slot])
-            + positions[i1] * static_cast<sofa::SReal>(weights1[slot]);
+            positions[i0] * static_cast<Real>(weights0[slot])
+            + positions[i1] * static_cast<Real>(weights1[slot]);
 
         // g(x) = dot(sample - anchor, inward_normal).
         // Positive means inside the admissible lumen-center half-space.
