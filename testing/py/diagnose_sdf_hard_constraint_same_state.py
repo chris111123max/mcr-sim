@@ -63,6 +63,25 @@ def _constraint_rows(dofs) -> int:
     return len([line for line in str(value).splitlines() if line.strip()])
 
 
+def _data_scalar(obj, name, default=None):
+    try:
+        value = getattr(obj, name)
+        if hasattr(value, "value"):
+            value = value.value
+        arr = np.asarray(value).reshape(-1)
+        if not arr.size:
+            return default
+        scalar = arr[0]
+        if isinstance(scalar, (np.integer, int)):
+            return int(scalar)
+        if isinstance(scalar, (np.floating, float)):
+            value = float(scalar)
+            return value if math.isfinite(value) else default
+        return str(scalar)
+    except Exception:
+        return default
+
+
 def _catheter_state_fingerprint(env: MCREnv) -> str:
     controller = env.mcr_controller_sofa
     instrument = controller.instrument.InstrumentCombined
@@ -102,6 +121,7 @@ def _collision_summary(env: MCREnv) -> dict:
         if hard is not None
         else []
     )
+    vessel_env = env.scene_creation_result["mcr_environment"]
     return {
         "vessel_classes": vessel,
         "catheter_classes": catheter,
@@ -112,6 +132,19 @@ def _collision_summary(env: MCREnv) -> dict:
         "catheter_point_count": catheter.count("PointCollisionModel"),
         "catheter_line_count": catheter.count("LineCollisionModel"),
         "hard_triangle_count": hard_classes.count("TriangleCollisionModel"),
+        "vessel_triangle_group": _data_scalar(
+            vessel_env.TriangleCollisionModel, "group"
+        ),
+        "hard_triangle_group": (
+            _data_scalar(hard.collision_model, "group")
+            if hard is not None
+            else None
+        ),
+        "hard_triangle_both_side": (
+            _data_scalar(hard.collision_model, "bothSide")
+            if hard is not None
+            else None
+        ),
     }
 
 
@@ -300,8 +333,27 @@ def _run_target_action(
             "substep_tip_clearance_mm": [
                 float(row["tip_surface_clearance_mm"]) for row in rows
             ],
+            "substep_hard_candidate_patches": [
+                int(row["hard_wall"].get("candidate_patches", 0)) for row in rows
+            ],
             "substep_hard_active_patches": [
                 int(row["hard_wall"].get("active_patches", 0)) for row in rows
+            ],
+            "substep_hard_dropped_patches": [
+                int(row["hard_wall"].get("dropped_patches", 0)) for row in rows
+            ],
+            "substep_hard_selected_indices": [
+                list(row["hard_wall"].get("selected_sample_indices", []))
+                for row in rows
+            ],
+            "substep_hard_selected_clearances_mm": [
+                [
+                    float(value) * 1000.0
+                    for value in row["hard_wall"].get(
+                        "selected_clearances_m", []
+                    )
+                ]
+                for row in rows
             ],
             "substep_hard_contact_count": [
                 row["hard_wall"].get("hard_wall_contact_count") for row in rows
@@ -512,7 +564,15 @@ def main():
             "B_substep_constraint_rows": b["substep_constraint_rows"],
             "A_body_clearance_mm": a["substep_body_clearance_mm"],
             "B_body_clearance_mm": b["substep_body_clearance_mm"],
+            "B_hard_candidate_patches": b[
+                "substep_hard_candidate_patches"
+            ],
             "B_hard_active_patches": b["substep_hard_active_patches"],
+            "B_hard_dropped_patches": b["substep_hard_dropped_patches"],
+            "B_hard_selected_indices": b["substep_hard_selected_indices"],
+            "B_hard_selected_clearances_mm": b[
+                "substep_hard_selected_clearances_mm"
+            ],
             "B_hard_contact_count": b["substep_hard_contact_count"],
             "A_max_body_penetration_mm": a["max_body_penetration_mm"],
             "B_max_body_penetration_mm": b["max_body_penetration_mm"],
