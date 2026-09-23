@@ -200,4 +200,4 @@ int SDFUnilateralConstraintClass =
         "SDF-driven unilateral g(x)>=0 constraint for mapped catheter samples.")
         .add<SDFUnilateralConstraint>();
 
-} // namespace mcr::constraint
+} // namespace constraint\n} // namespace mcr
