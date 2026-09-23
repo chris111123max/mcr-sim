@@ -1631,6 +1631,12 @@ def createScene(root_node, image_shape=None, debug_rendering=True, positioning_c
                 ),
                 collision_proximity_m=vessel_triangle_collision_proximity,
                 collision_exclusion_group=int(sdf_hard_collision_group),
+                max_active_patches=int(
+                    kwargs.get("sdf_hard_constraint_max_active_patches", 12)
+                ),
+                min_patch_separation_m=kwargs.get(
+                    "sdf_hard_constraint_min_patch_separation_m", None
+                ),
                 enabled=bool(
                     kwargs.get("sdf_hard_constraint_enabled", False)
                 ),
