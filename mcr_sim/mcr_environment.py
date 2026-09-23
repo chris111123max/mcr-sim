@@ -41,6 +41,7 @@ class Environment(Sofa.Core.Controller):
         use_line_point_collision=False,
         use_point_collision=False,
         use_line_collision=False,
+        collision_exclusion_group=None,
         verbose=True,
         *args, **kwargs):
 
@@ -76,6 +77,11 @@ class Environment(Sofa.Core.Controller):
         )
         self.use_line_collision = bool(
             use_line_collision or self.use_line_point_collision
+        )
+        self.collision_exclusion_group = (
+            None
+            if collision_exclusion_group is None
+            else int(collision_exclusion_group)
         )
         self.verbose = bool(verbose)
         if self.verbose:
@@ -118,12 +124,17 @@ class Environment(Sofa.Core.Controller):
             scale=1,
             name='DOFs1')
         #self.CollisionModel.addObject("RequiredPlugin", name="Sofa.Component.Collision.Geometry")
-        self.CollisionModel.addObject(
-            'TriangleCollisionModel',
+        triangle_collision_kwargs = dict(
             moving=False,
             simulated=False,
             bothSide=True,
-            proximity=self.triangle_collision_proximity)
+            proximity=self.triangle_collision_proximity,
+        )
+        if self.collision_exclusion_group is not None:
+            triangle_collision_kwargs["group"] = self.collision_exclusion_group
+        self.TriangleCollisionModel = self.CollisionModel.addObject(
+            'TriangleCollisionModel',
+            **triangle_collision_kwargs)
 
         # Optional only. Keep Point and Line independently controllable so
         # Point-only anti-penetration can be tested without multiplying the
