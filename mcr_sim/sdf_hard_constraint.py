@@ -135,6 +135,8 @@ class SDFHardConstraintController(Sofa.Core.Controller):
         activation_clearance_m: float = SDF_WALL_ACTIVATION_CLEARANCE_M,
         collision_proximity_m: float = 0.0,
         collision_exclusion_group: int = 2,
+        max_active_patches: int = 12,
+        min_patch_separation_m: Optional[float] = None,
         enabled: bool = False,
         verbose: bool = False,
         *args,
@@ -157,6 +159,12 @@ class SDFHardConstraintController(Sofa.Core.Controller):
         self.activation_clearance_m = float(activation_clearance_m)
         self.collision_proximity_m = float(collision_proximity_m)
         self.collision_exclusion_group = int(collision_exclusion_group)
+        self.max_active_patches = int(max_active_patches)
+        self.min_patch_separation_m = float(
+            2.0 * self.catheter_radius_m
+            if min_patch_separation_m is None
+            else min_patch_separation_m
+        )
         self.enabled = bool(enabled)
         self.verbose = bool(verbose)
 
@@ -166,6 +174,10 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             raise ValueError("catheter_radius_m must be positive")
         if self.activation_clearance_m <= 0.0:
             raise ValueError("activation_clearance_m must be positive")
+        if self.max_active_patches < 1:
+            raise ValueError("max_active_patches must be positive")
+        if self.min_patch_separation_m <= 0.0:
+            raise ValueError("min_patch_separation_m must be positive")
 
         collision_node = self.instrument.InstrumentCombined.getChild("mcr_collis")
         self.catheter_collision_dofs = collision_node.getObject("CollisionDOFs")
@@ -205,7 +217,11 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             name="SDFHardWallTriangles",
             moving=True,
             simulated=False,
-            bothSide=True,
+            # SDF supplies a trustworthy side: the triangle winding below is
+            # chosen so the front face points into the lumen.  A one-sided
+            # model avoids the "outside side pushes farther outside" ambiguity
+            # of a generic bothSide vessel triangle.
+            bothSide=False,
             proximity=self.collision_proximity_m,
             group=self.collision_exclusion_group,
         )
@@ -222,6 +238,8 @@ class SDFHardConstraintController(Sofa.Core.Controller):
                 "patch_circumradius_m=", self.patch_circumradius_m,
                 "collision_proximity_m=", self.collision_proximity_m,
                 "exclusion_group=", self.collision_exclusion_group,
+                "max_active_patches=", self.max_active_patches,
+                "min_patch_separation_m=", self.min_patch_separation_m,
             )
 
     def _write_vertices(self, vertices) -> None:
@@ -229,6 +247,13 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             (3 * self.max_samples, 3)
         )
         self.mechanical_object.position.value = arr.tolist()
+        # FreeMotion/Lagrange contact code may query free_position.  Keep the
+        # externally driven static obstacle coherent without projecting any
+        # catheter state.
+        try:
+            self.mechanical_object.free_position.value = arr.tolist()
+        except Exception:
+            pass
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = bool(enabled)
@@ -242,6 +267,10 @@ class SDFHardConstraintController(Sofa.Core.Controller):
         self.valid_samples = 0
         self.active_patches = 0
         self.invalid_samples = 0
+        self.candidate_patches = 0
+        self.dropped_patches = 0
+        self.selected_sample_indices = []
+        self.selected_clearances_m = []
         self.min_clearance_m = np.nan
         self.min_clearance_episode_m = np.inf
         self.max_penetration_episode_m = 0.0
@@ -259,6 +288,10 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             self.valid_samples = 0
             self.active_patches = 0
             self.invalid_samples = 0
+            self.candidate_patches = 0
+            self.dropped_patches = 0
+            self.selected_sample_indices = []
+            self.selected_clearances_m = []
             self.min_clearance_m = np.nan
             self._write_vertices(self._parked_vertices)
             return
@@ -286,18 +319,58 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             clearance <= self.activation_clearance_m
         )
 
-        active_indices = np.flatnonzero(active)
-        for idx in active_indices:
-            # Place the virtual triangle on the actual vessel surface. Catheter
-            # collision proximity remains the representation of catheter radius,
-            # just as in the original Triangle-vessel collision configuration.
+        candidate_indices = np.flatnonzero(active)
+        self.candidate_patches = int(len(candidate_indices))
+
+        # Dense CollisionDOFs are useful for sensing the wall, but creating one
+        # hard-contact triangle per sample would recreate the same constraint
+        # explosion observed with vessel PointCollisionModel.  Keep only the
+        # deepest spatially separated samples.  The separation is derived from
+        # catheter diameter (2r), not from LCP tuning.
+        candidate_surface_centers = {}
+        for idx in candidate_indices:
             surface_distance = float(clearance[idx] + self.catheter_radius_m)
-            surface_center = positions[idx] + outward[idx] * surface_distance
+            candidate_surface_centers[int(idx)] = (
+                positions[idx] + outward[idx] * surface_distance
+            )
+
+        selected_indices = []
+        selected_centers = []
+        ordered = sorted(
+            (int(i) for i in candidate_indices),
+            key=lambda i: float(clearance[i]),
+        )
+        for idx in ordered:
+            center = candidate_surface_centers[idx]
+            if selected_centers:
+                nearest = min(
+                    float(np.linalg.norm(center - existing))
+                    for existing in selected_centers
+                )
+                if nearest < self.min_patch_separation_m:
+                    continue
+            selected_indices.append(idx)
+            selected_centers.append(center)
+            if len(selected_indices) >= self.max_active_patches:
+                break
+
+        for idx, surface_center in zip(selected_indices, selected_centers):
+            # _tangent_triangle's winding follows the supplied normal.
+            # Use inward (-outward) so the one-sided front face sees catheter
+            # samples approaching from inside the lumen.
             vertices[3 * idx : 3 * idx + 3] = _tangent_triangle(
                 surface_center,
-                outward[idx],
+                -outward[idx],
                 self.patch_circumradius_m,
             )
+
+        self.selected_sample_indices = [int(i) for i in selected_indices]
+        self.selected_clearances_m = [
+            float(clearance[i]) for i in selected_indices
+        ]
+        self.dropped_patches = int(
+            self.candidate_patches - len(selected_indices)
+        )
 
         self._write_vertices(vertices)
 
@@ -305,7 +378,7 @@ class SDFHardConstraintController(Sofa.Core.Controller):
         self.sample_count = int(len(positions))
         self.valid_samples = int(np.count_nonzero(valid))
         self.invalid_samples = int(np.count_nonzero(~valid))
-        self.active_patches = int(len(active_indices))
+        self.active_patches = int(len(selected_indices))
         self.min_clearance_m = (
             float(np.min(finite_clearance)) if len(finite_clearance) else np.nan
         )
@@ -336,7 +409,11 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             "sample_count": int(self.sample_count),
             "valid_samples": int(self.valid_samples),
             "invalid_samples": int(self.invalid_samples),
+            "candidate_patches": int(self.candidate_patches),
             "active_patches": int(self.active_patches),
+            "dropped_patches": int(self.dropped_patches),
+            "selected_sample_indices": list(self.selected_sample_indices),
+            "selected_clearances_m": list(self.selected_clearances_m),
             "max_active_patches_episode": int(self.max_active_patches_episode),
             "min_clearance_m": float(self.min_clearance_m),
             "min_clearance_episode_m": (
@@ -352,4 +429,6 @@ class SDFHardConstraintController(Sofa.Core.Controller):
             "patch_circumradius_m": float(self.patch_circumradius_m),
             "collision_proximity_m": float(self.collision_proximity_m),
             "collision_exclusion_group": int(self.collision_exclusion_group),
+            "max_active_patches": int(self.max_active_patches),
+            "min_patch_separation_m": float(self.min_patch_separation_m),
         }
