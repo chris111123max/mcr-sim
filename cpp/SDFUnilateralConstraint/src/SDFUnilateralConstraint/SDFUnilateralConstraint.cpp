@@ -5,7 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>\n#include <iostream>
+#include <limits>
+#include <iostream>
 
 namespace mcr::constraint
 {
@@ -200,4 +201,5 @@ int SDFUnilateralConstraintClass =
         "SDF-driven unilateral g(x)>=0 constraint for mapped catheter samples.")
         .add<SDFUnilateralConstraint>();
 
-} // namespace constraint\n} // namespace mcr
+} // namespace constraint
+} // namespace mcr
