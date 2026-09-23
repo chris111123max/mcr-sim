@@ -31,7 +31,10 @@ fi
 
 echo "[SDF_UNILATERAL_BUILD] workspace=$WORKSPACE_ROOT"
 echo "[SDF_UNILATERAL_BUILD] sofa_build=$SOFA_BUILD"
+SOFA_CONSTRAINT_DIR="$(dirname "$CONFIG_PATH")"
+
 echo "[SDF_UNILATERAL_BUILD] SofaConstraintConfig=$CONFIG_PATH"
+echo "[SDF_UNILATERAL_BUILD] SofaConstraint_DIR=$SOFA_CONSTRAINT_DIR"
 echo "[SDF_UNILATERAL_BUILD] compiler=$(command -v c++ || true)"
 echo "[SDF_UNILATERAL_BUILD] cmake=$(command -v cmake || true)"
 
@@ -40,7 +43,8 @@ rm -rf "$BUILD_DIR"
 cmake -S "$PLUGIN_ROOT" -B "$BUILD_DIR" \
     -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_PREFIX_PATH="$SOFA_BUILD"
+    -DCMAKE_PREFIX_PATH="$SOFA_BUILD;$SOFA_BUILD/lib/cmake" \
+    -DSofaConstraint_DIR="$SOFA_CONSTRAINT_DIR"
 
 cmake --build "$BUILD_DIR" -j2
 
