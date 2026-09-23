@@ -39,6 +39,8 @@ class Environment(Sofa.Core.Controller):
         triangle_collision_proximity=None,
         line_point_collision_proximity=None,
         use_line_point_collision=False,
+        use_point_collision=False,
+        use_line_collision=False,
         verbose=True,
         *args, **kwargs):
 
@@ -65,7 +67,16 @@ class Environment(Sofa.Core.Controller):
             if line_point_collision_proximity is None
             else float(line_point_collision_proximity)
         )
+        # Backward compatibility: the legacy combined switch still enables
+        # both extra vessel primitives. New diagnostic/integration tests can
+        # enable Point and Line independently.
         self.use_line_point_collision = bool(use_line_point_collision)
+        self.use_point_collision = bool(
+            use_point_collision or self.use_line_point_collision
+        )
+        self.use_line_collision = bool(
+            use_line_collision or self.use_line_point_collision
+        )
         self.verbose = bool(verbose)
         if self.verbose:
             print(
@@ -74,6 +85,8 @@ class Environment(Sofa.Core.Controller):
                 "triangle_proximity=", self.triangle_collision_proximity,
                 "line_point_proximity=", self.line_point_collision_proximity,
                 "use_line_point_collision=", self.use_line_point_collision,
+                "use_point_collision=", self.use_point_collision,
+                "use_line_collision=", self.use_line_collision,
             )
 
         self.T_env_sim = T_env_sim
@@ -112,14 +125,16 @@ class Environment(Sofa.Core.Controller):
             bothSide=True,
             proximity=self.triangle_collision_proximity)
 
-        # Optional only. For a static vessel surface these extra models usually add
-        # many contacts while contributing little to wall collision quality.
-        if self.use_line_point_collision:
+        # Optional only. Keep Point and Line independently controllable so
+        # Point-only anti-penetration can be tested without multiplying the
+        # line-triangle contact set on a dense vessel mesh.
+        if self.use_line_collision:
             self.CollisionModel.addObject(
                 'LineCollisionModel',
                 moving=False,
                 simulated=False,
                 proximity=self.line_point_collision_proximity)
+        if self.use_point_collision:
             self.CollisionModel.addObject(
                 'PointCollisionModel',
                 moving=False,
