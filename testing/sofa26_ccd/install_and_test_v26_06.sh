@@ -29,7 +29,26 @@ echo "[SOFA26] env=$ENV_PREFIX"
 echo "[SOFA26] jobs=$JOBS"
 
 if [[ ! -x "$ENV_PREFIX/bin/python" ]]; then
-    "$CONDA_BIN" create -y -p "$ENV_PREFIX" -c conda-forge         python=3.12         cmake>=3.22         ninja         git         c-compiler         cxx-compiler         ccache         pybind11=2.12         numpy         scipy         eigen         boost-cpp         tinyxml2         cxxopts         nlohmann_json         zlib         metis
+    packages=(
+        "python=3.12"
+        "cmake>=3.22"
+        ninja
+        git
+        c-compiler
+        cxx-compiler
+        ccache
+        "pybind11=2.12"
+        numpy
+        scipy
+        eigen
+        boost-cpp
+        tinyxml2
+        cxxopts
+        nlohmann_json
+        zlib
+        metis
+    )
+    "$CONDA_BIN" create -y -p "$ENV_PREFIX" -c conda-forge "${packages[@]}"
 fi
 
 # shellcheck disable=SC1091
@@ -72,13 +91,34 @@ mkdir -p "$BUILD_ROOT" "$INSTALL_ROOT"
 EXTERNAL_DIRS="$SRC_ROOT/SofaPython3;$SRC_ROOT/BeamAdapter"
 
 echo "[SOFA26] configure"
-cmake -S "$SRC_ROOT/sofa" -B "$BUILD_ROOT" -G Ninja     -DCMAKE_BUILD_TYPE=Release     -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT"     -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"     -DCMAKE_C_COMPILER="$CC"     -DCMAKE_CXX_COMPILER="$CXX"     -DSOFA_ALLOW_FETCH_DEPENDENCIES=ON     -DSOFA_BUILD_TESTS=OFF     -DSP3_BUILD_TEST=OFF     -DBEAMADAPTER_BUILD_TESTS=OFF     -DAPPLICATION_RUNSOFA=OFF     -DLIBRARY_SOFA_GUI=OFF     -DSOFA_BUILD_RELEASE_PACKAGE=OFF     -DSOFA_INSTALL_RESOURCES_FILES=OFF     -DSOFA_USE_CCACHE=ON     -DSP3_LINK_TO_USER_SITE=OFF     -DPython_EXECUTABLE="$ENV_PREFIX/bin/python"     -DPython_ROOT_DIR="$ENV_PREFIX"     -DSOFA_EXTERNAL_DIRECTORIES="$EXTERNAL_DIRS"     2>&1 | tee "$LOG_ROOT/configure.log"
+cmake -S "$SRC_ROOT/sofa" -B "$BUILD_ROOT" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
+    -DCMAKE_PREFIX_PATH="$CONDA_PREFIX" \
+    -DCMAKE_C_COMPILER="$CC_BIN" \
+    -DCMAKE_CXX_COMPILER="$CXX_BIN" \
+    -DSOFA_ALLOW_FETCH_DEPENDENCIES=ON \
+    -DSOFA_BUILD_TESTS=OFF \
+    -DSP3_BUILD_TEST=OFF \
+    -DBEAMADAPTER_BUILD_TESTS=OFF \
+    -DAPPLICATION_RUNSOFA=OFF \
+    -DLIBRARY_SOFA_GUI=OFF \
+    -DSOFA_BUILD_RELEASE_PACKAGE=OFF \
+    -DSOFA_INSTALL_RESOURCES_FILES=OFF \
+    -DSOFA_USE_CCACHE=ON \
+    -DSP3_LINK_TO_USER_SITE=OFF \
+    -DPython_EXECUTABLE="$ENV_PREFIX/bin/python" \
+    -DPython_ROOT_DIR="$ENV_PREFIX" \
+    -DSOFA_EXTERNAL_DIRECTORIES="$EXTERNAL_DIRS" \
+    2>&1 | tee "$LOG_ROOT/configure.log"
 
 echo "[SOFA26] build"
-cmake --build "$BUILD_ROOT" --parallel "$JOBS"     2>&1 | tee "$LOG_ROOT/build.log"
+cmake --build "$BUILD_ROOT" --parallel "$JOBS" \
+    2>&1 | tee "$LOG_ROOT/build.log"
 
 echo "[SOFA26] install into test runtime only"
-cmake --install "$BUILD_ROOT"     2>&1 | tee "$LOG_ROOT/install.log"
+cmake --install "$BUILD_ROOT" \
+    2>&1 | tee "$LOG_ROOT/install.log"
 
 cat > "$RUNTIME/build_manifest.txt" <<EOF
 date=$(date -Iseconds)
