@@ -14,3 +14,4 @@ Current diagnostics:
 
 - `sdf_unilateral_full_ab.py`: full-horizon GenericConstraintSolver A/B for the SDF unilateral constraint using an identical replayed raw-action sequence.
 - `sdf_unilateral_targeted_step776.py`: targeted step 775-776 replay that compares the actual unilateral rows/tangent planes with the dense post-solve SDF worst point.
+- `sdf_dense_adaptive_sampling.py`: test-only voxel-derived dense edge sampler used to prototype denser unilateral constraints without changing training behavior.
