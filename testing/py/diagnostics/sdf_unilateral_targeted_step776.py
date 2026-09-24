@@ -576,21 +576,63 @@ def _run_targeted_b(
             if obj.getClassName() == "FrictionContact"
         ]
 
-        sampling_snapshot = (
-            safety_aligned_snapshot(unilateral)
-            if safety_aligned
-            else (
-                dense_sampler_snapshot(
-                    unilateral,
-                    positions=collision_pos,
-                )
-                if dense_adaptive
-                else {
-                    "installed": False,
-                    "config": None,
-                }
+        if safety_aligned:
+            # Refresh the safety-aligned geometry on the post-solve state.
+            # This is diagnostic only; _build_samples does not write rows.
+            unilateral._build_samples(collision_pos)
+            sampling_snapshot = safety_aligned_snapshot(unilateral)
+        elif dense_adaptive:
+            sampling_snapshot = dense_sampler_snapshot(
+                unilateral,
+                positions=collision_pos,
             )
-        )
+        else:
+            sampling_snapshot = {
+                "installed": False,
+                "config": None,
+            }
+
+        safety_worst_alignment = None
+        latest_alignment = sampling_snapshot.get("latest")
+        if safety_aligned and latest_alignment:
+            source_points = np.asarray(
+                latest_alignment.get("safety_points_m", []),
+                dtype=np.float64,
+            ).reshape((-1, 3))
+            represented_points = np.asarray(
+                latest_alignment.get("represented_points_m", []),
+                dtype=np.float64,
+            ).reshape((-1, 3))
+            if len(source_points) and len(source_points) == len(represented_points):
+                distances = np.linalg.norm(
+                    source_points - dense_worst_point.reshape(1, 3),
+                    axis=1,
+                )
+                source_index = int(np.argmin(distances))
+                safety_worst_alignment = {
+                    "source_index": source_index,
+                    "dense_worst_to_source_sample_mm": float(
+                        distances[source_index] * 1000.0
+                    ),
+                    "source_to_represented_error_mm": float(
+                        np.linalg.norm(
+                            represented_points[source_index]
+                            - source_points[source_index]
+                        )
+                        * 1000.0
+                    ),
+                    "source_sample_m": source_points[source_index].tolist(),
+                    "represented_sample_m": represented_points[
+                        source_index
+                    ].tolist(),
+                    "dense_worst_to_represented_mm": float(
+                        np.linalg.norm(
+                            represented_points[source_index]
+                            - dense_worst_point
+                        )
+                        * 1000.0
+                    ),
+                }
 
         captures.append(
             {
@@ -623,6 +665,7 @@ def _run_targeted_b(
                 "beam_max_correction_mm": beam_correction_mm,
                 "solver": _solver_snapshot(solver),
                 "sampling_snapshot": sampling_snapshot,
+                "safety_worst_alignment": safety_worst_alignment,
                 "unilateral": row_snapshot,
             }
         )
@@ -783,8 +826,7 @@ def _summarize(captures):
                 ],
                 "safety_aligned_representation_error_max_mm": (
                     (
-                        item.get("sampling_snapshot", {})
-                        .get("latest", {})
+                        (item.get("sampling_snapshot", {}).get("latest") or {})
                         .get("representation_error_max_mm")
                     )
                     if item.get("sampling_snapshot", {}).get("installed")
@@ -792,12 +834,21 @@ def _summarize(captures):
                 ),
                 "safety_aligned_representation_error_p95_mm": (
                     (
-                        item.get("sampling_snapshot", {})
-                        .get("latest", {})
+                        (item.get("sampling_snapshot", {}).get("latest") or {})
                         .get("representation_error_p95_mm")
                     )
                     if item.get("sampling_snapshot", {}).get("installed")
                     else None
+                ),
+                "dense_worst_source_to_repr_error_mm": (
+                    (item.get("safety_worst_alignment") or {}).get(
+                        "source_to_represented_error_mm"
+                    )
+                ),
+                "dense_worst_to_repr_sample_mm": (
+                    (item.get("safety_worst_alignment") or {}).get(
+                        "dense_worst_to_represented_mm"
+                    )
                 ),
             }
         )
