@@ -213,9 +213,6 @@ def _collect_reference_actions(
     max_step: int,
     wall_stiffness: float,
     progress_every: int,
-    dense_adaptive: bool = False,
-    dense_max_constraints: int = 128,
-    dense_min_separation_fraction: float = 0.25,
 ):
     env = _create_env(
         unilateral_enabled=False,
@@ -426,6 +423,10 @@ def _active_row_snapshot(
         "python_active_count": int(
             diagnostics.get("active_constraints", -1)
         ),
+        "sample_count": int(diagnostics.get("sample_count", -1)),
+        "valid_sample_count": int(
+            diagnostics.get("valid_samples", -1)
+        ),
         "candidate_count": int(
             diagnostics.get("candidate_constraints", -1)
         ),
@@ -617,6 +618,17 @@ def _run_targeted_b(
     finally:
         env.sofa_simulation.animate = original_animate
         solver_final = _solver_snapshot(solver)
+        sampler_state = (
+            dense_sampler_snapshot(
+                unilateral,
+                positions=_as_array(collision_dofs.position)[:, :3],
+            )
+            if dense_adaptive
+            else {
+                "installed": False,
+                "config": None,
+            }
+        )
         try:
             env.close()
         except Exception:
@@ -633,18 +645,6 @@ def _run_targeted_b(
             "B replay action hash differs from A reference prefix: "
             f"A={reference_sha256}, B={replay_sha256}"
         )
-
-    sampler_state = dense_sampler_snapshot(
-        unilateral,
-        positions=(
-            _as_array(collision_dofs.position)[:, :3]
-            if dense_adaptive
-            else None
-        ),
-    ) if dense_adaptive else {
-        "installed": False,
-        "config": None,
-    }
 
     return {
         "solver": solver_final,
@@ -686,6 +686,8 @@ def _summarize(captures):
                 ],
                 "python_active": u["python_active_count"],
                 "cpp_active": u["cpp_active_count"],
+                "sample_count": u["sample_count"],
+                "valid_sample_count": u["valid_sample_count"],
                 "candidate": u["candidate_count"],
                 "dropped": u["dropped_count"],
                 "nearest_active_distance_mm": u[
