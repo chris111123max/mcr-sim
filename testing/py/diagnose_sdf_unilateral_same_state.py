@@ -188,7 +188,12 @@ def _switch_to_generic_solver(env: MCREnv, expected_fingerprint: str) -> dict:
     if animation_loop is None:
         raise RuntimeError("FreeMotionAnimationLoop not found")
 
+    # Detach the old solver from every ConstraintCorrection before removing
+    # it from the graph.  LCPConstraintSolver::cleanup() explicitly performs
+    # this deregistration in SOFA 21.12.
+    old_solver.cleanup()
     root.removeObject(old_solver)
+
     generic = root.addObject(
         "GenericConstraintSolver",
         tolerance=str(tolerance),
@@ -196,9 +201,14 @@ def _switch_to_generic_solver(env: MCREnv, expected_fingerprint: str) -> dict:
         printLog="false",
     )
 
+    # addObject() on an already initialized scene does not initialize the new
+    # solver.  GenericConstraintSolver::init() allocates its private lambda/dx
+    # MultiVec IDs; without this call FreeMotionAnimationLoop receives null
+    # V_DERIV IDs and GenericConstraintSolver::buildSystem() can segfault.
+    generic.init()
+
     # FreeMotionAnimationLoop caches a ConstraintSolver* during init().  Refresh
-    # that pointer after replacing the solver; otherwise it may still reference
-    # the removed LCPConstraintSolver.
+    # that pointer only after GenericConstraintSolver itself is fully initialized.
     animation_loop.init()
 
     new_summary = _solver_summary(env)
@@ -452,6 +462,29 @@ def _run_target(
     }
 
 
+def _load_child_result(path: Path, branch: str, status: int) -> dict:
+    if not path.is_file():
+        return {
+            "error": (
+                f"{branch} child exited with status={status} before writing "
+                f"its JSON result"
+            ),
+            "child_status": int(status),
+            "result_file_missing": True,
+        }
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return {
+            "error": (
+                f"{branch} result file exists but could not be parsed:\n"
+                f"{traceback.format_exc()}"
+            ),
+            "child_status": int(status),
+            "result_file_missing": False,
+        }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True)
@@ -549,6 +582,13 @@ def main():
     raw_action, _ = model.predict(observation, deterministic=True)
     raw_action = np.asarray(raw_action, dtype=np.float32).reshape(3)
 
+    # Never consume stale child JSON from an earlier failed run.
+    for stale_path in (output_b, output_c):
+        try:
+            stale_path.unlink()
+        except FileNotFoundError:
+            pass
+
     child_specs = [
         (
             "B_generic_baseline",
@@ -606,8 +646,16 @@ def main():
         _, status = os.waitpid(child_pid, 0)
         child_statuses[branch] = int(status)
 
-    result_b = json.loads(output_b.read_text())
-    result_c = json.loads(output_c.read_text())
+    result_b = _load_child_result(
+        output_b,
+        "B_generic_baseline",
+        child_statuses["B_generic_baseline"],
+    )
+    result_c = _load_child_result(
+        output_c,
+        "C_generic_unilateral",
+        child_statuses["C_generic_unilateral"],
+    )
 
     comparison = None
     children_ok = (
