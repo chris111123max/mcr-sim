@@ -59,6 +59,10 @@ from mcr_sim.distributed import DistributedPPO
 from mcr_sim.mcr_rl_env import EnvType, MCREnv
 from mcr_sim.rl_core.base import RenderMode
 from mcr_sim.sdf_hard_constraint import sample_sdf_clearance_and_outward
+from sdf_dense_adaptive_sampling import (
+    dense_sampler_snapshot,
+    install_dense_adaptive_sampling,
+)
 
 
 def _as_array(data, dtype=np.float64):
@@ -209,6 +213,9 @@ def _collect_reference_actions(
     max_step: int,
     wall_stiffness: float,
     progress_every: int,
+    dense_adaptive: bool = False,
+    dense_max_constraints: int = 128,
+    dense_min_separation_fraction: float = 0.25,
 ):
     env = _create_env(
         unilateral_enabled=False,
@@ -440,6 +447,9 @@ def _run_targeted_b(
     capture_end: int,
     wall_stiffness: float,
     progress_every: int,
+    dense_adaptive: bool = False,
+    dense_max_constraints: int = 128,
+    dense_min_separation_fraction: float = 0.25,
 ):
     env = _create_env(
         unilateral_enabled=True,
@@ -448,6 +458,17 @@ def _run_targeted_b(
     )
     observation, _ = env.reset(seed=int(seed))
     solver, unilateral = _validate_env(env, expected_unilateral=True)
+
+    dense_config = None
+    if dense_adaptive:
+        dense_config = install_dense_adaptive_sampling(
+            unilateral,
+            sample_step_fraction=float(env.sdf_sample_step_fraction),
+            max_constraints=int(dense_max_constraints),
+            min_separation_fraction_of_step=float(
+                dense_min_separation_fraction
+            ),
+        )
 
     controller = env.mcr_controller_sofa
     instrument = controller.instrument.InstrumentCombined
@@ -613,9 +634,28 @@ def _run_targeted_b(
             f"A={reference_sha256}, B={replay_sha256}"
         )
 
+    sampler_state = dense_sampler_snapshot(
+        unilateral,
+        positions=(
+            _as_array(collision_dofs.position)[:, :3]
+            if dense_adaptive
+            else None
+        ),
+    ) if dense_adaptive else {
+        "installed": False,
+        "config": None,
+    }
+
     return {
         "solver": solver_final,
         "action_sha256": replay_sha256,
+        "sampling_mode": (
+            "dense_adaptive" if dense_adaptive else "node_plus_midpoint"
+        ),
+        "dense_sampling": (
+            dense_config.to_dict() if dense_config is not None else None
+        ),
+        "dense_sampler_state": sampler_state,
         "captured_substeps": captures,
         "capture_count": len(captures),
         "terminal_reason": terminal_reason,
@@ -692,6 +732,29 @@ def main():
     parser.add_argument("--capture-end", type=int, default=776)
     parser.add_argument("--wall-stiffness", type=float, default=10.0)
     parser.add_argument("--progress-every", type=int, default=100)
+    parser.add_argument(
+        "--dense-adaptive",
+        action="store_true",
+        help=(
+            "Diagnostic-only: replace node+midpoint unilateral sampling with "
+            "voxel-derived dense edge sampling."
+        ),
+    )
+    parser.add_argument(
+        "--dense-max-constraints",
+        type=int,
+        default=128,
+        help="Diagnostic-only active-row cap for dense sampling.",
+    )
+    parser.add_argument(
+        "--dense-min-separation-fraction",
+        type=float,
+        default=0.25,
+        help=(
+            "Diagnostic-only active-row spatial dedup distance as a fraction "
+            "of the dense max sample step."
+        ),
+    )
     args = parser.parse_args()
 
     checkpoint = Path(args.checkpoint).expanduser().resolve()
@@ -710,7 +773,8 @@ def main():
             / "diagnostics"
             / (
                 "v15_2c_sdf_unilateral_targeted_"
-                f"step{args.capture_start}_{args.capture_end}_seed{args.seed}.json"
+                + ("dense_" if args.dense_adaptive else "")
+                + f"step{args.capture_start}_{args.capture_end}_seed{args.seed}.json"
             )
         ).resolve()
     )
@@ -745,6 +809,11 @@ def main():
         capture_end=args.capture_end,
         wall_stiffness=args.wall_stiffness,
         progress_every=args.progress_every,
+        dense_adaptive=bool(args.dense_adaptive),
+        dense_max_constraints=int(args.dense_max_constraints),
+        dense_min_separation_fraction=float(
+            args.dense_min_separation_fraction
+        ),
     )
 
     combined = {
@@ -762,6 +831,8 @@ def main():
         "physics_substeps": 2,
         "rl_control_period_s": 0.01,
         "wall_stiffness_n_per_m": float(args.wall_stiffness),
+        "sampling_mode": result_b["sampling_mode"],
+        "dense_sampling": result_b["dense_sampling"],
         "A_reference": {
             "solver": reference["solver"],
             "action_count": len(reference["actions"]),
