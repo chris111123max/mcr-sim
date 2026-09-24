@@ -10,10 +10,14 @@ Shared prefix:
   C++ SDF unilateral component constructed but disabled
 
 Fork after step 1185:
-  A: unilateral stays disabled
-  B: enable unilateral rows only
+  A: LCPConstraintSolver + unilateral OFF (historical baseline)
+  B: GenericConstraintSolver + unilateral OFF (solver-only control)
+  C: GenericConstraintSolver + unilateral ON  (unilateral causal branch)
 
-Both execute the same step-1186 policy action with 2 x 5 ms physics.
+All three inherit the exact same forked catheter state and execute the same
+step-1186 policy action with 2 x 5 ms physics.  Generic branches replace the
+solver only after fork, then re-init FreeMotionAnimationLoop and verify the
+catheter state fingerprint is unchanged before applying the action.
 """
 
 from __future__ import annotations
@@ -37,6 +41,10 @@ if str(PYTHON_ROOT) not in sys.path:
 from mcr_sim.distributed import DistributedPPO
 from mcr_sim.mcr_rl_env import EnvType, MCREnv
 from mcr_sim.rl_core.base import RenderMode
+from mcr_sim.training_config import (
+    CONSTRAINT_MAX_ITERATIONS,
+    CONSTRAINT_TOLERANCE,
+)
 
 
 KNOWN_BASELINE = {
@@ -85,6 +93,133 @@ def _state_fingerprint(env: MCREnv) -> str:
         ]
     )
     return hashlib.sha256(payload).hexdigest()
+
+
+def _data_scalar(obj, name, default):
+    try:
+        data = getattr(obj, name)
+        value = data.value
+        if isinstance(value, (list, tuple, np.ndarray)):
+            value = np.asarray(value).reshape(-1)[0]
+        return value
+    except Exception:
+        return default
+
+
+def _root_object_by_class(env: MCREnv, class_names):
+    wanted = set(class_names)
+    for obj in env._sofa_root_node.objects:
+        if obj.getClassName() in wanted:
+            return obj
+    return None
+
+
+def _solver_object(env: MCREnv):
+    return _root_object_by_class(
+        env, ("LCPConstraintSolver", "GenericConstraintSolver")
+    )
+
+
+def _solver_summary(env: MCREnv) -> dict:
+    solver = _solver_object(env)
+    if solver is None:
+        return {"class": None}
+    class_name = solver.getClassName()
+    summary = {"class": class_name}
+    if class_name == "LCPConstraintSolver":
+        summary.update(
+            {
+                "tolerance": float(
+                    _data_scalar(
+                        solver, "tolerance", CONSTRAINT_TOLERANCE
+                    )
+                ),
+                "max_iterations": int(
+                    _data_scalar(
+                        solver, "maxIt", CONSTRAINT_MAX_ITERATIONS
+                    )
+                ),
+                "build_lcp": bool(
+                    _data_scalar(solver, "build_lcp", False)
+                ),
+            }
+        )
+    elif class_name == "GenericConstraintSolver":
+        summary.update(
+            {
+                "tolerance": float(
+                    _data_scalar(
+                        solver, "tolerance", CONSTRAINT_TOLERANCE
+                    )
+                ),
+                "max_iterations": int(
+                    _data_scalar(
+                        solver, "maxIterations", CONSTRAINT_MAX_ITERATIONS
+                    )
+                ),
+            }
+        )
+    return summary
+
+
+def _switch_to_generic_solver(env: MCREnv, expected_fingerprint: str) -> dict:
+    before_fingerprint = _state_fingerprint(env)
+    if before_fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            "Solver switch requested from a state different from the fork"
+        )
+
+    root = env._sofa_root_node
+    old_solver = _solver_object(env)
+    if old_solver is None:
+        raise RuntimeError("No constraint solver found before Generic switch")
+
+    old_summary = _solver_summary(env)
+    tolerance = float(
+        old_summary.get("tolerance", CONSTRAINT_TOLERANCE)
+    )
+    max_iterations = int(
+        old_summary.get("max_iterations", CONSTRAINT_MAX_ITERATIONS)
+    )
+
+    animation_loop = _root_object_by_class(
+        env, ("FreeMotionAnimationLoop",)
+    )
+    if animation_loop is None:
+        raise RuntimeError("FreeMotionAnimationLoop not found")
+
+    root.removeObject(old_solver)
+    generic = root.addObject(
+        "GenericConstraintSolver",
+        tolerance=str(tolerance),
+        maxIterations=str(max_iterations),
+        printLog="false",
+    )
+
+    # FreeMotionAnimationLoop caches a ConstraintSolver* during init().  Refresh
+    # that pointer after replacing the solver; otherwise it may still reference
+    # the removed LCPConstraintSolver.
+    animation_loop.init()
+
+    new_summary = _solver_summary(env)
+    if new_summary.get("class") != "GenericConstraintSolver":
+        raise RuntimeError(
+            f"Generic solver replacement failed: {new_summary}"
+        )
+
+    after_fingerprint = _state_fingerprint(env)
+    if after_fingerprint != expected_fingerprint:
+        raise RuntimeError(
+            "Replacing/reinitializing the constraint solver changed the "
+            "catheter state before the target action"
+        )
+
+    return {
+        "old": old_summary,
+        "new": new_summary,
+        "state_unchanged": True,
+        "generic_object_class": generic.getClassName(),
+    }
 
 
 def _collision_summary(env: MCREnv) -> dict:
@@ -159,6 +294,7 @@ def _capture(env: MCREnv, label: str) -> dict:
         "label": label,
         "root_time_s": float(env._sofa_root_node.getTime()),
         "state_fingerprint_sha256": _state_fingerprint(env),
+        "solver": _solver_summary(env),
         "tip_mm": (tip * 1000.0).tolist(),
         "body_clearance_mm": body_clearance_mm,
         "tip_clearance_mm": tip_clearance_mm,
@@ -205,18 +341,31 @@ def _prepare_action(env, raw_action):
     return smoothed
 
 
-def _run_target(env, raw_action, branch, enabled, fingerprint):
+def _run_target(
+    env,
+    raw_action,
+    branch,
+    enabled,
+    fingerprint,
+    solver_mode="lcp",
+):
     unilateral = env.scene_creation_result["sdf_unilateral_constraint_controller"]
     controller = env.mcr_controller_sofa
 
     if _state_fingerprint(env) != fingerprint:
         raise RuntimeError(f"{branch}: fork state changed before branch")
 
+    solver_switch = None
+    if solver_mode == "generic":
+        solver_switch = _switch_to_generic_solver(env, fingerprint)
+    elif solver_mode != "lcp":
+        raise ValueError(f"Unsupported solver_mode={solver_mode}")
+
     unilateral.set_enabled(enabled)
 
     if _state_fingerprint(env) != fingerprint:
         raise RuntimeError(
-            f"{branch}: toggling unilateral constraint changed catheter state"
+            f"{branch}: solver/unilateral toggle changed catheter state"
         )
 
     before = _capture(env, "before_step_1186")
@@ -243,6 +392,9 @@ def _run_target(env, raw_action, branch, enabled, fingerprint):
 
     return {
         "branch": branch,
+        "solver_mode": solver_mode,
+        "solver_switch": solver_switch,
+        "solver_before_action": _solver_summary(env),
         "unilateral_enabled": bool(enabled),
         "fork_fingerprint_sha256": fingerprint,
         "raw_action": np.asarray(raw_action, dtype=np.float32).tolist(),
@@ -251,6 +403,7 @@ def _run_target(env, raw_action, branch, enabled, fingerprint):
         "before": before,
         "substeps": rows,
         "summary": {
+            "solver_class": _solver_summary(env).get("class"),
             "substep_friction_contacts": [
                 int(r["friction_contact_count"]) for r in rows
             ],
@@ -321,8 +474,9 @@ def main():
         ).resolve()
     )
     output.parent.mkdir(parents=True, exist_ok=True)
-    output_a = output.with_name(output.stem + "_A_baseline.json")
-    output_b = output.with_name(output.stem + "_B_unilateral.json")
+    output_a = output.with_name(output.stem + "_A_lcp_baseline.json")
+    output_b = output.with_name(output.stem + "_B_generic_baseline.json")
+    output_c = output.with_name(output.stem + "_C_generic_unilateral.json")
 
     os.environ["MCR_SOFA_DT"] = "0.005"
 
@@ -395,77 +549,166 @@ def main():
     raw_action, _ = model.predict(observation, deterministic=True)
     raw_action = np.asarray(raw_action, dtype=np.float32).reshape(3)
 
-    child_pid = os.fork()
-    if child_pid == 0:
-        try:
-            result_b = _run_target(
-                env, raw_action, "B_sdf_unilateral", True, fingerprint
-            )
-            output_b.write_text(json.dumps(result_b, indent=2, sort_keys=True) + "\n")
-            os._exit(0)
-        except BaseException:
-            output_b.write_text(
-                json.dumps({"error": traceback.format_exc()}, indent=2) + "\n"
-            )
-            os._exit(1)
+    child_specs = [
+        (
+            "B_generic_baseline",
+            False,
+            "generic",
+            output_b,
+        ),
+        (
+            "C_generic_unilateral",
+            True,
+            "generic",
+            output_c,
+        ),
+    ]
+    child_pids = {}
+    for branch, enabled, solver_mode, child_output in child_specs:
+        child_pid = os.fork()
+        if child_pid == 0:
+            try:
+                child_result = _run_target(
+                    env,
+                    raw_action,
+                    branch,
+                    enabled,
+                    fingerprint,
+                    solver_mode=solver_mode,
+                )
+                child_output.write_text(
+                    json.dumps(child_result, indent=2, sort_keys=True) + "\n"
+                )
+                os._exit(0)
+            except BaseException:
+                child_output.write_text(
+                    json.dumps(
+                        {"error": traceback.format_exc()},
+                        indent=2,
+                    )
+                    + "\n"
+                )
+                os._exit(1)
+        child_pids[branch] = child_pid
 
     result_a = _run_target(
-        env, raw_action, "A_baseline", False, fingerprint
+        env,
+        raw_action,
+        "A_lcp_baseline",
+        False,
+        fingerprint,
+        solver_mode="lcp",
     )
     output_a.write_text(json.dumps(result_a, indent=2, sort_keys=True) + "\n")
 
-    _, child_status = os.waitpid(child_pid, 0)
+    child_statuses = {}
+    for branch, child_pid in child_pids.items():
+        _, status = os.waitpid(child_pid, 0)
+        child_statuses[branch] = int(status)
+
     result_b = json.loads(output_b.read_text())
+    result_c = json.loads(output_c.read_text())
 
     comparison = None
-    if child_status == 0 and "error" not in result_b:
+    children_ok = (
+        all(status == 0 for status in child_statuses.values())
+        and "error" not in result_b
+        and "error" not in result_c
+    )
+    if children_ok:
         a = result_a["summary"]
         b = result_b["summary"]
+        cc = result_c["summary"]
         comparison = {
-            "same_fork_fingerprint": (
+            "same_fork_fingerprint_all": (
                 result_a["fork_fingerprint_sha256"]
                 == result_b["fork_fingerprint_sha256"]
+                == result_c["fork_fingerprint_sha256"]
                 == fingerprint
             ),
-            "same_raw_action": np.array_equal(
-                np.asarray(result_a["raw_action"], dtype=np.float32),
-                np.asarray(result_b["raw_action"], dtype=np.float32),
+            "same_raw_action_all": (
+                np.array_equal(
+                    np.asarray(result_a["raw_action"], dtype=np.float32),
+                    np.asarray(result_b["raw_action"], dtype=np.float32),
+                )
+                and np.array_equal(
+                    np.asarray(result_a["raw_action"], dtype=np.float32),
+                    np.asarray(result_c["raw_action"], dtype=np.float32),
+                )
             ),
-            "same_smoothed_action": np.array_equal(
-                np.asarray(result_a["smoothed_action"], dtype=np.float32),
-                np.asarray(result_b["smoothed_action"], dtype=np.float32),
+            "same_smoothed_action_all": (
+                np.array_equal(
+                    np.asarray(result_a["smoothed_action"], dtype=np.float32),
+                    np.asarray(result_b["smoothed_action"], dtype=np.float32),
+                )
+                and np.array_equal(
+                    np.asarray(result_a["smoothed_action"], dtype=np.float32),
+                    np.asarray(result_c["smoothed_action"], dtype=np.float32),
+                )
             ),
-            "same_requested_insert": math.isclose(
-                float(result_a["requested_insert_m"]),
-                float(result_b["requested_insert_m"]),
-                rel_tol=0.0,
-                abs_tol=1e-15,
+            "same_requested_insert_all": (
+                math.isclose(
+                    float(result_a["requested_insert_m"]),
+                    float(result_b["requested_insert_m"]),
+                    rel_tol=0.0,
+                    abs_tol=1e-15,
+                )
+                and math.isclose(
+                    float(result_a["requested_insert_m"]),
+                    float(result_c["requested_insert_m"]),
+                    rel_tol=0.0,
+                    abs_tol=1e-15,
+                )
             ),
+            "A_solver": a["solver_class"],
+            "B_solver": b["solver_class"],
+            "C_solver": cc["solver_class"],
             "A_friction_contacts": a["substep_friction_contacts"],
             "B_friction_contacts": b["substep_friction_contacts"],
+            "C_friction_contacts": cc["substep_friction_contacts"],
             "A_constraint_rows": a["substep_constraint_rows"],
             "B_constraint_rows": b["substep_constraint_rows"],
+            "C_constraint_rows": cc["substep_constraint_rows"],
             "A_body_clearance_mm": a["substep_body_clearance_mm"],
             "B_body_clearance_mm": b["substep_body_clearance_mm"],
-            "B_unilateral_python_active": b["unilateral_python_active"],
-            "B_unilateral_cpp_active": b["unilateral_cpp_active"],
-            "B_unilateral_sample_kinds": b["unilateral_sample_kinds"],
+            "C_body_clearance_mm": cc["substep_body_clearance_mm"],
+            "C_unilateral_python_active": cc["unilateral_python_active"],
+            "C_unilateral_cpp_active": cc["unilateral_cpp_active"],
+            "C_unilateral_sample_kinds": cc["unilateral_sample_kinds"],
             "A_max_penetration_mm": a["max_body_penetration_mm"],
             "B_max_penetration_mm": b["max_body_penetration_mm"],
-            "penetration_reduction_mm": (
-                a["max_body_penetration_mm"] - b["max_body_penetration_mm"]
+            "C_max_penetration_mm": cc["max_body_penetration_mm"],
+            "generic_unilateral_penetration_reduction_mm": (
+                b["max_body_penetration_mm"]
+                - cc["max_body_penetration_mm"]
             ),
             "A_max_beam_correction_mm": a["max_beam_correction_mm"],
             "B_max_beam_correction_mm": b["max_beam_correction_mm"],
-            "both_finite": bool(a["finite"] and b["finite"]),
+            "C_max_beam_correction_mm": cc["max_beam_correction_mm"],
+            "all_finite": bool(
+                a["finite"] and b["finite"] and cc["finite"]
+            ),
             "A_first_clearance_error_vs_known_mm": (
                 a["substep_body_clearance_mm"][0]
                 - KNOWN_BASELINE["first_substep_body_clearance_mm"]
             ),
+            "B_solver_switch_state_unchanged": bool(
+                result_b.get("solver_switch", {}).get(
+                    "state_unchanged", False
+                )
+            ),
+            "C_solver_switch_state_unchanged": bool(
+                result_c.get("solver_switch", {}).get(
+                    "state_unchanged", False
+                )
+            ),
         }
 
     combined = {
-        "test": "V15.2-C true SDF unilateral same-state causal fork",
+        "test": (
+            "V15.2-C same-state solver compatibility + "
+            "true SDF unilateral causal fork"
+        ),
         "diagnostic_only": True,
         "training_started": False,
         "checkpoint": str(checkpoint),
@@ -473,15 +716,17 @@ def main():
         "target_step": int(args.target_step),
         "collision_models": models,
         "fork_capture": fork_capture,
-        "A": result_a,
-        "B": result_b,
+        "A_lcp_baseline": result_a,
+        "B_generic_baseline": result_b,
+        "C_generic_unilateral": result_c,
         "comparison": comparison,
-        "child_status": int(child_status),
+        "child_statuses": child_statuses,
         "runtime_s": float(time.perf_counter() - started),
         "files": {
             "combined": str(output),
-            "A": str(output_a),
-            "B": str(output_b),
+            "A_lcp_baseline": str(output_a),
+            "B_generic_baseline": str(output_b),
+            "C_generic_unilateral": str(output_c),
         },
     }
     output.write_text(json.dumps(combined, indent=2, sort_keys=True) + "\n")
@@ -492,8 +737,10 @@ def main():
     except Exception:
         pass
 
-    if child_status != 0 or "error" in result_b:
-        raise RuntimeError("B unilateral branch failed; inspect B JSON")
+    if not children_ok:
+        raise RuntimeError(
+            "Generic diagnostic branch failed; inspect B/C JSON"
+        )
 
     os._exit(0)
 
