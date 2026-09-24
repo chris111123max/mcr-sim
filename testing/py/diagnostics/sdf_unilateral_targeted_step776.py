@@ -13,10 +13,14 @@ Protocol:
 
 The diagnostic compares the *actual unilateral rows used by the solver* with
 the dense post-solve SDF worst point.  By default it preserves the production
-node+midpoint sampler.  With --dense-adaptive it installs a test-only
-voxel-derived edge sampler and a matching finer active-row dedup scale; reward,
-observation, action, substep count, and production/training defaults remain
-unchanged.
+node+midpoint sampler.  Two test-only modes are available:
+
+- --dense-adaptive: voxel-derived CollisionDOF-edge sampling;
+- --safety-aligned: reuse the exact production body-safety sample arclengths
+  and represent those locations on the CollisionDOF chain.
+
+Reward, observation, action, substep count, and production/training defaults
+remain unchanged.
 
 For every active row it records:
 - indices/weights/sample kind;
@@ -65,6 +69,10 @@ from mcr_sim.sdf_hard_constraint import sample_sdf_clearance_and_outward
 from sdf_dense_adaptive_sampling import (
     dense_sampler_snapshot,
     install_dense_adaptive_sampling,
+)
+from sdf_safety_aligned_sampling import (
+    install_safety_aligned_sampling,
+    safety_aligned_snapshot,
 )
 
 
@@ -454,6 +462,9 @@ def _run_targeted_b(
     dense_adaptive: bool = False,
     dense_max_constraints: int = 128,
     dense_min_separation_fraction: float = 0.25,
+    safety_aligned: bool = False,
+    safety_aligned_max_constraints: int = 256,
+    safety_aligned_min_separation_m: float = 1e-6,
 ):
     env = _create_env(
         unilateral_enabled=True,
@@ -463,8 +474,23 @@ def _run_targeted_b(
     observation, _ = env.reset(seed=int(seed))
     solver, unilateral = _validate_env(env, expected_unilateral=True)
 
+    if dense_adaptive and safety_aligned:
+        raise ValueError(
+            "dense_adaptive and safety_aligned are mutually exclusive"
+        )
+
     dense_config = None
-    if dense_adaptive:
+    safety_aligned_config = None
+    if safety_aligned:
+        safety_aligned_config = install_safety_aligned_sampling(
+            unilateral,
+            env,
+            max_constraints=int(safety_aligned_max_constraints),
+            min_active_separation_m=float(
+                safety_aligned_min_separation_m
+            ),
+        )
+    elif dense_adaptive:
         dense_config = install_dense_adaptive_sampling(
             unilateral,
             sample_step_fraction=float(env.sdf_sample_step_fraction),
@@ -550,6 +576,22 @@ def _run_targeted_b(
             if obj.getClassName() == "FrictionContact"
         ]
 
+        sampling_snapshot = (
+            safety_aligned_snapshot(unilateral)
+            if safety_aligned
+            else (
+                dense_sampler_snapshot(
+                    unilateral,
+                    positions=collision_pos,
+                )
+                if dense_adaptive
+                else {
+                    "installed": False,
+                    "config": None,
+                }
+            )
+        )
+
         captures.append(
             {
                 "rl_step": int(current_rl_step),
@@ -580,6 +622,7 @@ def _run_targeted_b(
                 "collision_max_correction_mm": collision_correction_mm,
                 "beam_max_correction_mm": beam_correction_mm,
                 "solver": _solver_snapshot(solver),
+                "sampling_snapshot": sampling_snapshot,
                 "unilateral": row_snapshot,
             }
         )
@@ -622,15 +665,19 @@ def _run_targeted_b(
         env.sofa_simulation.animate = original_animate
         solver_final = _solver_snapshot(solver)
         sampler_state = (
-            dense_sampler_snapshot(
-                unilateral,
-                positions=_as_array(collision_dofs.position)[:, :3],
+            safety_aligned_snapshot(unilateral)
+            if safety_aligned
+            else (
+                dense_sampler_snapshot(
+                    unilateral,
+                    positions=_as_array(collision_dofs.position)[:, :3],
+                )
+                if dense_adaptive
+                else {
+                    "installed": False,
+                    "config": None,
+                }
             )
-            if dense_adaptive
-            else {
-                "installed": False,
-                "config": None,
-            }
         )
         try:
             env.close()
@@ -653,12 +700,23 @@ def _run_targeted_b(
         "solver": solver_final,
         "action_sha256": replay_sha256,
         "sampling_mode": (
-            "dense_adaptive" if dense_adaptive else "node_plus_midpoint"
+            "safety_aligned"
+            if safety_aligned
+            else (
+                "dense_adaptive"
+                if dense_adaptive
+                else "node_plus_midpoint"
+            )
         ),
         "dense_sampling": (
             dense_config.to_dict() if dense_config is not None else None
         ),
-        "dense_sampler_state": sampler_state,
+        "safety_aligned_sampling": (
+            safety_aligned_config.to_dict()
+            if safety_aligned_config is not None
+            else None
+        ),
+        "sampler_state": sampler_state,
         "captured_substeps": captures,
         "capture_count": len(captures),
         "terminal_reason": terminal_reason,
@@ -723,6 +781,24 @@ def _summarize(captures):
                 "collision_max_correction_mm": item[
                     "collision_max_correction_mm"
                 ],
+                "safety_aligned_representation_error_max_mm": (
+                    (
+                        item.get("sampling_snapshot", {})
+                        .get("latest", {})
+                        .get("representation_error_max_mm")
+                    )
+                    if item.get("sampling_snapshot", {}).get("installed")
+                    else None
+                ),
+                "safety_aligned_representation_error_p95_mm": (
+                    (
+                        item.get("sampling_snapshot", {})
+                        .get("latest", {})
+                        .get("representation_error_p95_mm")
+                    )
+                    if item.get("sampling_snapshot", {}).get("installed")
+                    else None
+                ),
             }
         )
     return summary
@@ -760,6 +836,28 @@ def main():
             "of the dense max sample step."
         ),
     )
+    parser.add_argument(
+        "--safety-aligned",
+        action="store_true",
+        help=(
+            "Diagnostic-only: use the exact production body-safety sample "
+            "arclengths and represent them on the CollisionDOF chain."
+        ),
+    )
+    parser.add_argument(
+        "--safety-aligned-max-constraints",
+        type=int,
+        default=256,
+        help="Diagnostic-only active-row cap for safety-aligned sampling.",
+    )
+    parser.add_argument(
+        "--safety-aligned-min-separation-m",
+        type=float,
+        default=1e-6,
+        help=(
+            "Diagnostic-only spatial dedup distance for safety-aligned rows."
+        ),
+    )
     args = parser.parse_args()
 
     checkpoint = Path(args.checkpoint).expanduser().resolve()
@@ -769,6 +867,10 @@ def main():
         raise ValueError("--capture-start must be >= 1")
     if args.capture_end < args.capture_start:
         raise ValueError("--capture-end must be >= --capture-start")
+    if args.dense_adaptive and args.safety_aligned:
+        raise ValueError(
+            "--dense-adaptive and --safety-aligned are mutually exclusive"
+        )
 
     output = (
         Path(args.output).expanduser().resolve()
@@ -778,7 +880,11 @@ def main():
             / "diagnostics"
             / (
                 "v15_2c_sdf_unilateral_targeted_"
-                + ("dense_" if args.dense_adaptive else "")
+                + (
+                    "safety_aligned_"
+                    if args.safety_aligned
+                    else ("dense_" if args.dense_adaptive else "")
+                )
                 + f"step{args.capture_start}_{args.capture_end}_seed{args.seed}.json"
             )
         ).resolve()
@@ -819,6 +925,13 @@ def main():
         dense_min_separation_fraction=float(
             args.dense_min_separation_fraction
         ),
+        safety_aligned=bool(args.safety_aligned),
+        safety_aligned_max_constraints=int(
+            args.safety_aligned_max_constraints
+        ),
+        safety_aligned_min_separation_m=float(
+            args.safety_aligned_min_separation_m
+        ),
     )
 
     combined = {
@@ -838,6 +951,9 @@ def main():
         "wall_stiffness_n_per_m": float(args.wall_stiffness),
         "sampling_mode": result_b["sampling_mode"],
         "dense_sampling": result_b["dense_sampling"],
+        "safety_aligned_sampling": result_b[
+            "safety_aligned_sampling"
+        ],
         "A_reference": {
             "solver": reference["solver"],
             "action_count": len(reference["actions"]),
