@@ -36,6 +36,19 @@ fi
 source "$("$CONDA_BIN" info --base)/etc/profile.d/conda.sh"
 conda activate "$ENV_PREFIX"
 
+CC_BIN="${CC:-}"
+CXX_BIN="${CXX:-}"
+if [[ -z "$CC_BIN" ]]; then
+    CC_BIN="$(find "$ENV_PREFIX/bin" -maxdepth 1 -type f -name '*-cc' | head -n1 || true)"
+fi
+if [[ -z "$CXX_BIN" ]]; then
+    CXX_BIN="$(find "$ENV_PREFIX/bin" -maxdepth 1 -type f \( -name '*-c++' -o -name '*-g++' \) | head -n1 || true)"
+fi
+if [[ -z "$CC_BIN" || -z "$CXX_BIN" || ! -x "$CC_BIN" || ! -x "$CXX_BIN" ]]; then
+    echo "[ERROR] conda C/C++ compiler not found"
+    exit 3
+fi
+
 clone_tagged() {
     local url="$1"
     local dir="$2"
@@ -75,7 +88,7 @@ sofapython3=$(git -C "$SRC_ROOT/SofaPython3" rev-parse HEAD)
 beamadapter=$(git -C "$SRC_ROOT/BeamAdapter" rev-parse HEAD)
 python=$("$ENV_PREFIX/bin/python" -V 2>&1)
 cmake=$(cmake --version | head -n1)
-compiler=$("$CXX" --version | head -n1)
+compiler=$("$CXX_BIN" --version | head -n1)
 EOF
 
 echo "[SOFA26] run CCD preflight"
