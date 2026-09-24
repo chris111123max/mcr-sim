@@ -69,11 +69,21 @@ def _load_plugins() -> dict:
 
     loaded = {}
     for plugin in CORE_PLUGINS:
-        loaded[plugin] = bool(SofaRuntime.importPlugin(plugin))
+        try:
+            SofaRuntime.importPlugin(plugin)
+            loaded[plugin] = True
+        except Exception as exc:
+            loaded[plugin] = False
+            print(f"[PLUGIN_LOAD_ERROR] {plugin}: {exc}")
 
     # BeamAdapter is not needed for the particle wall-crossing itself. Loading
     # it here verifies the exact plugin needed by the catheter migration.
-    loaded["BeamAdapter"] = bool(SofaRuntime.importPlugin("BeamAdapter"))
+    try:
+        SofaRuntime.importPlugin("BeamAdapter")
+        loaded["BeamAdapter"] = True
+    except Exception as exc:
+        loaded["BeamAdapter"] = False
+        print(f"[PLUGIN_LOAD_ERROR] BeamAdapter: {exc}")
     return loaded
 
 
