@@ -243,6 +243,7 @@ def _collect_reference_actions(
                 )
                 break
     finally:
+        solver_final = _solver_snapshot(solver)
         try:
             env.close()
         except Exception:
@@ -257,7 +258,7 @@ def _collect_reference_actions(
     return {
         "actions": actions,
         "sha256": _sha256_actions(actions),
-        "solver": _solver_snapshot(solver),
+        "solver": solver_final,
         "wall_s": float(time.perf_counter() - started),
     }
 
@@ -594,6 +595,7 @@ def _run_targeted_b(
                 break
     finally:
         env.sofa_simulation.animate = original_animate
+        solver_final = _solver_snapshot(solver)
         try:
             env.close()
         except Exception:
@@ -612,7 +614,7 @@ def _run_targeted_b(
         )
 
     return {
-        "solver": _solver_snapshot(solver),
+        "solver": solver_final,
         "action_sha256": replay_sha256,
         "captured_substeps": captures,
         "capture_count": len(captures),
