@@ -12,8 +12,11 @@ Protocol:
        5 ms physics substeps.
 
 The diagnostic compares the *actual unilateral rows used by the solver* with
-the dense post-solve SDF worst point.  It does not change the physics model,
-constraint parameters, reward, observation, action, or substep count.
+the dense post-solve SDF worst point.  By default it preserves the production
+node+midpoint sampler.  With --dense-adaptive it installs a test-only
+voxel-derived edge sampler and a matching finer active-row dedup scale; reward,
+observation, action, substep count, and production/training defaults remain
+unchanged.
 
 For every active row it records:
 - indices/weights/sample kind;
@@ -821,7 +824,7 @@ def main():
     combined = {
         "test": (
             "SDF unilateral targeted residual-penetration diagnostic: "
-            "active rows vs dense SDF worst point"
+            f"{result_b['sampling_mode']} active rows vs dense SDF worst point"
         ),
         "diagnostic_only": True,
         "training_started": False,
