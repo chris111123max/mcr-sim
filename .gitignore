@@ -36,3 +36,6 @@ events.out.tfevents.*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local C/C++ build artifacts
+cpp/SDFUnilateralConstraint/build/
