@@ -51,7 +51,8 @@ public:
               "Accepted offline Rigid3 Beam free-position candidate"))
         , d_dt(initData(&d_dt, 0.005, "dt", "Physics substep dt"))
         , d_armed(initData(&d_armed, false, "armed", "Execute once on the next CollisionBeginEvent"))
-        , d_fired(initData(&d_fired, false, "fired", "True after the target event was handled"))
+        , d_fired(initData(&d_fired, false, "fired", "True after at least one armed event was handled"))
+        , d_fireCount(initData(&d_fireCount, 0, "fireCount", "Number of armed CollisionBeginEvent injections completed"))
         , d_propagated(initData(&d_propagated, false, "propagated", "True after native mechanical mapping propagation"))
         , d_velocityCorrected(initData(&d_velocityCorrected, false, "velocityCorrected", "True after coherent freeVelocity correction"))
         , d_mappedChildMaxChangeMm(initData(
@@ -90,11 +91,17 @@ public:
     {
         if (!sofa::simulation::CollisionBeginEvent::checkEventType(event))
             return;
-        if (!d_armed.getValue() || d_fired.getValue())
+        if (!d_armed.getValue())
             return;
 
         d_fired.setValue(true);
+        d_fireCount.setValue(d_fireCount.getValue() + 1);
         d_armed.setValue(false);
+        d_propagated.setValue(false);
+        d_velocityCorrected.setValue(false);
+        d_mappedChildMaxChangeMm.setValue(0.0);
+        d_parentWriteMaxErrorMm.setValue(0.0);
+        d_status.setValue("ARMED_EVENT_RUNNING");
 
         auto* beam = l_beamState.get();
         auto* collision = l_collisionState.get();
@@ -241,6 +248,7 @@ public:
     sofa::core::objectmodel::Data<double> d_dt;
     sofa::core::objectmodel::Data<bool> d_armed;
     sofa::core::objectmodel::Data<bool> d_fired;
+    sofa::core::objectmodel::Data<int> d_fireCount;
     sofa::core::objectmodel::Data<bool> d_propagated;
     sofa::core::objectmodel::Data<bool> d_velocityCorrected;
     sofa::core::objectmodel::Data<double> d_mappedChildMaxChangeMm;
@@ -252,7 +260,7 @@ public:
 int BeamFeasibleNativePrecommitHookClass =
     sofa::core::RegisterObject(
         "Test-only CollisionBeginEvent hook: replace a Rigid3 Beam free state "
-        "with a precomputed feasible candidate and re-propagate free vectors "
+        "with a supplied feasible candidate and re-propagate free vectors "
         "through native SOFA mechanical mappings before collision detection.")
         .add<BeamFeasibleNativePrecommitHook>();
 
