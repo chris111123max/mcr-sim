@@ -8,8 +8,6 @@ set(SOFA_SOURCE_ROOT "$ENV{SOFA_SRC}/sofa" CACHE PATH "SOFA source tree")
 
 foreach(_required
     "${SOFA_PREFIX}/lib/libSofa.Core.so"
-    "${SOFA_SOURCE_ROOT}/SofaKernel/modules/SofaCore/src/sofa/core/behavior/Constraint.h"
-    "${SOFA_SOURCE_ROOT}/SofaKernel/modules/SofaCore/src/sofa/defaulttype/RigidTypes.h"
     "${SOFA_PREFIX}/include/Sofa.Config/sofa/config.h")
     if(NOT EXISTS "${_required}")
         message(FATAL_ERROR "Required SOFA 21.12 development file is unavailable: ${_required}")
