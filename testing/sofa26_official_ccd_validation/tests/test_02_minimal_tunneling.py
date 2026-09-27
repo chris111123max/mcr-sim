@@ -74,6 +74,7 @@ PLUGINS = [
     "Sofa.Component.ODESolver.Backward",
     "Sofa.Component.StateContainer",
     "Sofa.Component.Topology.Container.Constant",
+    "Sofa.Component.Topology.Container.Dynamic",
 ]
 
 
@@ -177,8 +178,10 @@ def _add_dynamic_point(root: Any) -> Any:
         name="ldl",
         template="CompressedRowSparseMatrixMat3x3",
     )
+    # A standalone point needs a point topology; MeshTopology without any
+    # elements drops the isolated vertex during initialization in SOFA 26.06.
     node.addObject(
-        "MeshTopology",
+        "PointSetTopologyContainer",
         name="topology",
         position=POINT_START.tolist(),
     )

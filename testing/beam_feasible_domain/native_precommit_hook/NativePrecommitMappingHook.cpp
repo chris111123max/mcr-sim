@@ -124,17 +124,17 @@ public:
 
         {
             sofa::helper::ReadAccessor<sofa::core::objectmodel::Data<RigidVecCoord>> xfree =
-                *beam->read(sofa::core::vec_id::read_access::freePosition);
+                *beam->read(sofa::core::ConstVecCoordId::freePosition());
             freeBefore.assign(xfree.begin(), xfree.end());
         }
         {
             sofa::helper::ReadAccessor<sofa::core::objectmodel::Data<RigidVecDeriv>> vfree =
-                *beam->read(sofa::core::vec_id::read_access::freeVelocity);
+                *beam->read(sofa::core::ConstVecDerivId::freeVelocity());
             velocityBefore.assign(vfree.begin(), vfree.end());
         }
         {
             sofa::helper::ReadAccessor<sofa::core::objectmodel::Data<Vec3VecCoord>> child =
-                *collision->read(sofa::core::vec_id::read_access::freePosition);
+                *collision->read(sofa::core::ConstVecCoordId::freePosition());
             collisionBefore.assign(child.begin(), child.end());
         }
 
@@ -166,7 +166,7 @@ public:
 
         {
             sofa::helper::WriteAccessor<sofa::core::objectmodel::Data<RigidVecCoord>> xfree =
-                *beam->write(sofa::core::vec_id::write_access::freePosition);
+                *beam->write(sofa::core::VecCoordId::freePosition());
             if (xfree.size() != candidate.size())
                 xfree.resize(candidate.size());
             for (std::size_t i = 0; i < candidate.size(); ++i)
@@ -175,7 +175,7 @@ public:
 
         {
             sofa::helper::WriteAccessor<sofa::core::objectmodel::Data<RigidVecDeriv>> vfree =
-                *beam->write(sofa::core::vec_id::write_access::freeVelocity);
+                *beam->write(sofa::core::VecDerivId::freeVelocity());
             if (vfree.size() != correctedVelocity.size())
                 vfree.resize(correctedVelocity.size());
             for (std::size_t i = 0; i < correctedVelocity.size(); ++i)
@@ -186,7 +186,7 @@ public:
         double maxWriteErrorM = 0.0;
         {
             sofa::helper::ReadAccessor<sofa::core::objectmodel::Data<RigidVecCoord>> written =
-                *beam->read(sofa::core::vec_id::read_access::freePosition);
+                *beam->read(sofa::core::ConstVecCoordId::freePosition());
             if (written.size() != candidate.size())
             {
                 d_status.setValue("PARENT_WRITE_SIZE_MISMATCH");
@@ -206,15 +206,15 @@ public:
         sofa::simulation::mechanicalvisitor::MechanicalPropagateOnlyPositionAndVelocityVisitor visitor(
             sofa::core::mechanicalparams::defaultInstance(),
             this->getContext()->getTime(),
-            sofa::core::vec_id::write_access::freePosition,
-            sofa::core::vec_id::write_access::freeVelocity);
+            sofa::core::VecCoordId::freePosition(),
+            sofa::core::VecDerivId::freeVelocity());
         visitor.execute(this->getContext());
         d_propagated.setValue(true);
 
         Vec3VecCoord collisionAfter;
         {
             sofa::helper::ReadAccessor<sofa::core::objectmodel::Data<Vec3VecCoord>> child =
-                *collision->read(sofa::core::vec_id::read_access::freePosition);
+                *collision->read(sofa::core::ConstVecCoordId::freePosition());
             collisionAfter.assign(child.begin(), child.end());
         }
 

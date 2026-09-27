@@ -60,9 +60,10 @@ def split(c):
 def cert(q):
     # For a plane, g(z)=z-R. Bernstein convex hull gives a rigorous lower bound.
     subdivisions=0; unresolved=0; min_bound=np.inf; min_sample=np.inf; worst_unresolved_length=0.
-    all_samples=[]
+    max_depth_reached=0; all_samples=[]
     def rec(c,depth):
-        nonlocal subdivisions,unresolved,min_bound,min_sample,worst_unresolved_length
+        nonlocal subdivisions,unresolved,min_bound,min_sample,worst_unresolved_length,max_depth_reached
+        max_depth_reached=max(max_depth_reached,depth)
         g=c[:,2]-R
         lo=float(np.min(g)); hi=float(np.max(g))
         min_sample=min(min_sample,float(min(g[0],g[-1],bezier(c,.5)[2]-R)))
@@ -86,17 +87,36 @@ def cert(q):
                 min_sampled_clearance_m=float(min_sample),
                 subdivisions=subdivisions,unresolved_segments=unresolved,
                 max_unresolved_segment_m=worst_unresolved_length,
+                max_subdivision_depth=max_depth_reached,
+                segments_checked=2,
                 samples=all_samples,feasible=bool(unresolved==0 and min_bound>=-TOL))
 def sample_g(base,u,knots):
     q=poses(base,u)
     return np.array([bezier(controls(q,k),t)[2]-R for k,t in knots])
-def solve_step(base,prev):
+def _phase_start(profile,name):
+    if profile is None: return None
+    profile['_active_phase']=name
+    return time.perf_counter_ns()
+def _phase_end(profile,name,t0):
+    if profile is None: return
+    elapsed=time.perf_counter_ns()-t0
+    bucket=profile.setdefault('_phase_raw_ns',{})
+    bucket[name]=bucket.get(name,0)+elapsed
+
+def solve_step(base,prev,free_delta=None,profile=None):
     # Incremental constrained update. q_free is an uncommitted inertial prediction.
-    target=prev.copy(); target[8]+=DRIVE*DT
+    phase_t=_phase_start(profile,'proposal')
+    if free_delta is None:
+        target=prev.copy(); target[8]+=DRIVE*DT
+    else:
+        delta=np.asarray(free_delta,dtype=float).reshape(12)
+        target=prev+delta
     free_q=poses(base,target); free_cert=cert(free_q)
-    x=prev.copy(); trace=[]; reductions=0
+    _phase_end(profile,'proposal',phase_t)
+    x=prev.copy(); trace=[]; reductions=0; line_search_trace=[]
     weights=np.array([1,1,1,1e-6,1e-6,1e-6]*2,float)
     for it in range(12):
+        phase_t=_phase_start(profile,'active_set')
         q=poses(base,x); state=cert(q)
         knots=[(k,float(t)) for k in range(2) for t in np.linspace(0,1,17)]
         g=sample_g(base,x,knots)
@@ -104,11 +124,15 @@ def solve_step(base,prev):
         if len(active)==0: active=np.array([int(np.argmin(g))])
         use=[knots[i] for i in active]
         ga=g[active]
+        _phase_end(profile,'active_set',phase_t)
+        phase_t=_phase_start(profile,'jacobian')
         J=np.zeros((len(use),len(x)))
         for j in range(len(x)):
             h=1e-7 if j%6<3 else 1e-5
             xp=x.copy(); xm=x.copy(); xp[j]+=h; xm[j]-=h
             J[:,j]=(sample_g(base,xp,use)-sample_g(base,xm,use))/(2*h)
+        _phase_end(profile,'jacobian',phase_t)
+        phase_t=_phase_start(profile,'optimizer')
         def objective(d):
             v=x+d-target
             return .5*float(np.dot(weights*v,v))
@@ -118,32 +142,56 @@ def solve_step(base,prev):
                                   "jac":lambda d:J},
                      options={"ftol":1e-14,"maxiter":100})
         if not opt.success: raise RuntimeError("linearized QP failed: "+str(opt.message))
+        _phase_end(profile,'optimizer',phase_t)
+        phase_t=_phase_start(profile,'iteration_diagnostics')
+        active_positions=[bezier(controls(q,k),t).tolist() for k,t in use]
+        jacobian_row_norms=np.linalg.norm(J,axis=1).tolist()
+        _phase_end(profile,'iteration_diagnostics',phase_t)
+        phase_t=_phase_start(profile,'line_search')
         direction=opt.x
         alpha=1.
-        for _ in range(30):
+        for ls_index in range(30):
             trial=cert(poses(base,x+alpha*direction))
+            line_search_trace.append(dict(iteration=it+1,candidate_index=ls_index+1,
+                                          alpha=float(alpha),
+                                          min_clearance_m=float(trial["min_sampled_clearance_m"]),
+                                          min_certified_clearance_m=float(trial["min_certified_clearance_m"]),
+                                          accepted=bool(trial["feasible"])))
             if trial["feasible"]: break
             alpha*=.5; reductions+=1
         else:
             if np.linalg.norm(direction)>1e-10:
                 raise RuntimeError("feasible line search failed")
             alpha=0.
+        _phase_end(profile,'line_search',phase_t)
+        phase_t=_phase_start(profile,'commit_diagnostics')
         x=x+alpha*direction
         done=cert(poses(base,x))
         trace.append(dict(iteration=it+1,min_clearance_m=done["min_sampled_clearance_m"],
                           min_certified_clearance_m=done["min_certified_clearance_m"],
-                          active_constraints=len(active),max_violation_m=max(0,-done["min_sampled_clearance_m"]),
+                          active_constraints=len(active),active_sample_indices=active.tolist(),
+                          active_sample_knots=[list(v) for v in use],
+                          active_sample_positions_m=active_positions,
+                          normals=[[0.0,0.0,1.0] for _ in use],
+                          jacobian_row_norms=jacobian_row_norms,
+                          jacobian_frobenius_norm=float(np.linalg.norm(J)),
+                          max_violation_m=max(0,-done["min_sampled_clearance_m"]),
                           line_search_alpha=alpha,qp_iterations=int(opt.nit),
                           qp_success=bool(opt.success),
                           solver_residual=float(nnls(J.T,jac(direction))[1]),
                           max_linearized_violation_m=float(max(0,np.max(1e-7-ga-J@direction))),
                           subdivisions=done["subdivisions"],unresolved_segments=done["unresolved_segments"]))
+        _phase_end(profile,'commit_diagnostics',phase_t)
         if np.linalg.norm(alpha*direction)<1e-8 and done["feasible"]: break
+    phase_t=_phase_start(profile,'finalize')
     accepted=cert(poses(base,x))
+    _phase_end(profile,'finalize',phase_t)
     return x,dict(free_proposal=free_cert,accepted=accepted,nonlinear_iterations=len(trace),
                   line_search_alpha_min=min(t["line_search_alpha"] for t in trace),
                   reductions=reductions,active_constraints_max=max(t["active_constraints"] for t in trace),
-                  trace=trace,correction_m=float(np.linalg.norm((x-target).reshape(2,6)[:,:3],axis=1).max()),
+                  trace=trace,line_search_trace=line_search_trace,
+                  relinearization_count=max(0,len(trace)-1),
+                  correction_m=float(np.linalg.norm((x-target).reshape(2,6)[:,:3],axis=1).max()),
                   finite=bool(np.isfinite(x).all()),runtime_s=None)
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--steps",type=int,default=1); a=ap.parse_args()

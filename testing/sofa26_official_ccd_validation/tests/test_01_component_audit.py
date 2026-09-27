@@ -65,6 +65,7 @@ OFFICIAL_V26_06_TIGHT_INCLUSION_SUPPORT = {
 
 def _runtime_version(Sofa: Any) -> str:
     candidates = [
+        getattr(Sofa, "GetVersion", None),
         getattr(Sofa, "__version__", None),
         getattr(Sofa, "version", None),
     ]

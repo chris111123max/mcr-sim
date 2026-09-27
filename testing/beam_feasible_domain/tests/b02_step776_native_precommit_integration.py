@@ -121,6 +121,36 @@ def _native_payload(obj: Any) -> dict[str, Any]:
     }
 
 
+def _measure_at_captured_interval(
+    adapter: AdapterCompat, state: np.ndarray, spacing_m: float
+) -> dict[str, Any]:
+    raw_adapter = adapter.adapter
+    inserted_length = float(raw_adapter.reference_insert)
+    points = raw_adapter.sample_state(
+        np.asarray(state, dtype=np.float64),
+        inserted_length=inserted_length,
+        spacing_m=float(spacing_m),
+    )
+    points = np.asarray(points, dtype=np.float64).reshape((-1, 3))
+    clearance = adapter.query(points)
+    valid = np.isfinite(clearance)
+    if len(points) != len(clearance) or not np.any(valid):
+        raise RuntimeError("Captured-interval dense SDF measurement is invalid")
+    valid_ids = np.flatnonzero(valid)
+    idx = int(valid_ids[int(np.argmin(clearance[valid]))])
+    minimum = float(clearance[idx])
+    return {
+        "sample_count": int(len(points)),
+        "valid_count": int(np.sum(valid)),
+        "min_clearance_m": minimum,
+        "min_clearance_mm": minimum * 1000.0,
+        "min_sample_index": idx,
+        "spacing_m": float(spacing_m),
+        "inserted_length_m": inserted_length,
+        "measurement_interval": "prior accepted artifact captured interval",
+    }
+
+
 def _write_report(payload: dict[str, Any], path: Path) -> None:
     native = payload.get("native_hook", {})
     final = payload.get("final_committed", {})
@@ -255,7 +285,9 @@ def main() -> None:
         return
 
     q_acc = np.asarray(candidate["accepted"], dtype=np.float64)
-    accepted_dense = adapter.measure(q_acc, spacing_m=0.00001)
+    accepted_dense = _measure_at_captured_interval(
+        adapter, q_acc, spacing_m=0.00001
+    )
     if accepted_dense["min_clearance_m"] < -NUM_TOL_M:
         _write_and_exit(
             {

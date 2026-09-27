@@ -51,6 +51,10 @@ TARGET_SUBSTEP = 1
 DT = 0.005
 NUM_TOL_M = 1e-6
 
+class _StopAfterTargetSubstep(Exception):
+    """Test harness sentinel: prevent env.step from advancing to target substep 2."""
+    pass
+
 
 def _as_array(data: Any, dtype=np.float64) -> np.ndarray:
     try:
@@ -401,7 +405,11 @@ class PrecommitHook(Sofa.Core.Controller):
         before = _as_array(self.collision_dofs.free_position)
         errors = []
         for name in ("apply", "update"):
-            fn = getattr(self.collis_map, name, None)
+            try:
+                fn = getattr(self.collis_map, name, None)
+            except (AttributeError, KeyError) as exc:
+                errors.append(f"{name}: not Python-bound ({type(exc).__name__})")
+                continue
             if not callable(fn):
                 continue
             try:
@@ -502,35 +510,36 @@ def _write_report(payload: dict[str, Any], output: Path) -> None:
     hook = payload.get("hook", {})
     final = payload.get("final_committed", {})
     dense = payload.get("final_independent_dense", {})
+    accepted = hook.get("accepted_offline", {})
+    free = hook.get("free_before", {})
+    delta = payload.get("final_vs_offline_accepted", {})
     lines = [
         "B02 STEP776 PRE-COMMIT SOFA INTEGRATION",
         "=======================================",
         "",
         f"Action prefix: {payload.get('action_prefix_status')}",
         f"SHA256: {payload.get('action_sha256')}",
-        "",
-        f"CollisionBegin pre-commit stage seen: {hook.get('stage_seen')}",
-        f"Safe candidate injected: {hook.get('injected')}",
+        f"CollisionBeginEvent seen: {hook.get('stage_seen')}",
+        f"Injection attempted (free_position write): {hook.get('free_position_written_at_precommit')}",
+        f"Candidate injection completed: {hook.get('injected')}",
         f"Mapping refresh method: {hook.get('mapping_refresh_method')}",
-        (
-            "CollisionDOFs used as feasible constraint source: "
-            f"{hook.get('uses_collision_dofs_as_constraint_source')}"
-        ),
-        (
-            "Native post-contact state used as solver input: "
-            f"{hook.get('uses_native_post_contact_state_as_solver_input')}"
-        ),
-        "",
-        f"Final committed clearance: {final.get('min_clearance_mm')} mm",
-        f"Independent dense clearance: {dense.get('min_clearance_mm')} mm",
+        f"Mapping refresh error/reason: {hook.get('mapping_refresh_error') or hook.get('reason')}",
+        f"Mapped CollisionDOF free-state change: {hook.get('mapped_collision_free_change_mm')} mm (diagnostic only)",
+        f"Free-state clearance before injection: {free.get('min_clearance_mm')} mm",
+        f"Accepted offline candidate clearance: {accepted.get('min_clearance_mm')} mm",
+        f"Final committed real-beam clearance: {final.get('min_clearance_mm')} mm",
+        f"Final independent dense clearance: {dense.get('min_clearance_mm')} mm",
+        f"Final vs accepted max translation difference: {delta.get('translation_max_mm')} mm",
+        f"Final vs accepted max rotation difference: {delta.get('rotation_max_deg')} deg",
+        f"Final state kind: {payload.get('final_state_kind')}",
         f"NaN/Inf: {payload.get('non_finite')}",
         "",
-        f"FINAL DECISION: {payload.get('decision')}",
+        f"FINAL: {payload.get('decision')}",
         f"Reason: {payload.get('reason')}",
         "",
-        "Interpretation:",
-        "This validates only step776/substep1 pre-commit writeback.",
-        "It does not establish multi-step invariance or training readiness.",
+        "Q1. Hook stage: CollisionBeginEvent callback, after the free-motion state is available and before native collision/constraint completion.",
+        "Q2. Safe candidate through production mapping and committed: " + ("YES" if hook.get("injected") and payload.get("decision") == "PASS" else "NO / NOT PROVEN"),
+        "Q3. Long-horizon nonpenetration: NO; this test is limited to one target substep.",
         "",
     ]
     output.write_text("\n".join(lines) + "\n")
@@ -601,7 +610,10 @@ def main() -> None:
         substep_counts[current_step] = sub
         hook.current_rl_step = int(current_step)
         hook.current_substep = int(sub)
-        return original_animate(root, dt)
+        result = original_animate(root, dt)
+        if current_step == TARGET_STEP and sub == TARGET_SUBSTEP:
+            raise _StopAfterTargetSubstep("target physics substep completed; stop before next substep")
+        return result
 
     env.sofa_simulation.animate = traced_animate
     actions: list[np.ndarray] = []
@@ -634,7 +646,11 @@ def main() -> None:
                     return
                 hook.enabled = True
 
-            observation, _, terminated, truncated, info = env.step(raw_action)
+            try:
+                observation, _, terminated, truncated, info = env.step(raw_action)
+            except _StopAfterTargetSubstep:
+                target_finished = True
+                break
 
             if args.progress_every > 0 and (
                 step == 1
@@ -685,7 +701,7 @@ def main() -> None:
     reason = "TARGET_NOT_REACHED"
     non_finite = False
 
-    if target_finished and hook_result.get("injected"):
+    if target_finished:
         q_final = _as_array(beam_dofs.position)
         q_final_free = _as_array(beam_dofs.free_position)
         payload["final_committed"] = adapter.measure(q_final, spacing_m=0.00025)
@@ -697,27 +713,29 @@ def main() -> None:
         )
         payload["final_free_vs_committed"] = _state_delta(q_final_free, q_final)
         non_finite = not (_finite(q_final) and _finite(q_final_free))
-
-        c_main = payload["final_committed"]["min_clearance_m"]
-        c_dense = payload["final_independent_dense"]["min_clearance_m"]
-        if non_finite:
-            decision, reason = "FAIL", "NON_FINITE_FINAL_STATE"
-        elif c_main < -0.00005 or c_dense < -0.00005:
-            decision, reason = "FAIL", "MEANINGFUL_POST_COMMIT_PENETRATION"
-        elif c_main >= -NUM_TOL_M and c_dense >= -NUM_TOL_M:
-            decision = "PASS"
-            reason = "SAFE_CANDIDATE_SURVIVED_REAL_PRECOMMIT_AND_NATIVE_SOLVE"
+        if hook_result.get("injected"):
+            payload["final_state_kind"] = "committed after accepted precommit injection and native solve"
+            c_main = payload["final_committed"]["min_clearance_m"]
+            c_dense = payload["final_independent_dense"]["min_clearance_m"]
+            if non_finite:
+                decision, reason = "FAIL", "NON_FINITE_FINAL_STATE"
+            elif c_main < -0.00005 or c_dense < -0.00005:
+                decision, reason = "FAIL", "MEANINGFUL_POST_COMMIT_PENETRATION"
+            elif c_main >= -NUM_TOL_M and c_dense >= -NUM_TOL_M:
+                decision = "PASS"
+                reason = "SAFE_CANDIDATE_SURVIVED_REAL_PRECOMMIT_AND_NATIVE_SOLVE"
+            else:
+                decision = "PARTIAL"
+                reason = "SMALL_RESIDUAL_OR_NUMERICAL_VIOLATION"
         else:
-            decision = "PARTIAL"
-            reason = "SMALL_RESIDUAL_OR_NUMERICAL_VIOLATION"
-    else:
+            payload["final_state_kind"] = "ordinary native completion after candidate was not mapped/injected; baseline only"
+    if not target_finished or not hook_result.get("injected"):
         if hook_result.get("status") == "INCONCLUSIVE":
             reason = hook_result.get("reason", "PRECOMMIT_HOOK_INCONCLUSIVE")
         elif not hook_result.get("stage_seen"):
             reason = "COLLISION_BEGIN_EVENT_NOT_EXPOSED_TO_SOFAPYTHON"
         elif not hook_result.get("injected"):
             decision, reason = "FAIL", "SAFE_CANDIDATE_NOT_INJECTED"
-
     payload["non_finite"] = bool(non_finite)
     payload["decision"] = decision
     payload["reason"] = reason
