@@ -231,7 +231,17 @@ The prior two-substep run reported the existing PASS solver source around:
 b02_step776_feasible_solve
 ~~~
 
-Use the current server-local bridge/wrapper compatibility that made that PASS possible.
+For this full-episode acceptance, the online callable MUST explicitly accept the current-frame state, e.g.:
+
+~~~python
+solve_feasible_state(q_prev, q_free, adapter, context)
+~~~
+
+The runner enables strict bridge mode and rejects a zero-argument/monolithic main() entry point for online multi-frame use. If the previous PASS implementation is monolithic, add only a thin test-only wrapper that explicitly consumes the supplied q_prev and q_free and calls the same validated solver mathematics.
+
+Do not return a saved step776 candidate on later frames. Do not retune or redesign the solver.
+
+Use the current server-local bridge/wrapper compatibility that made the prior PASS possible.
 
 Do not silently fall back to:
 
