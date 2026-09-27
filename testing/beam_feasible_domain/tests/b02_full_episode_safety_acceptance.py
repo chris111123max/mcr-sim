@@ -359,6 +359,8 @@ def _new_stats() -> dict[str, Any]:
         "solver_failure_count": 0,
         "native_injection_count": 0,
         "native_failure_count": 0,
+        "mapping_propagation_failure_count": 0,
+        "velocity_correction_failure_count": 0,
         "committed_violation_count": 0,
         "non_finite_count": 0,
         "forbidden_fallback_count": 0,
@@ -373,6 +375,8 @@ def _new_stats() -> dict[str, Any]:
         "solver_runtime_count": 0,
         "first_unsafe_free": None,
         "last_unsafe_free": None,
+        "worst_free": None,
+        "worst_committed": None,
         "first_committed_violation": None,
     }
 
@@ -394,6 +398,16 @@ def _update_stats(stats: dict[str, Any], rec: dict[str, Any]) -> None:
         stats["max_free_penetration_m"] = max(
             stats["max_free_penetration_m"], _penetration_m(free_c)
         )
+        if (
+            stats["worst_free"] is None
+            or free_c < float(stats["worst_free"]["clearance_m"])
+        ):
+            stats["worst_free"] = {
+                "rl_step": rec.get("rl_step"),
+                "substep": rec.get("substep"),
+                "clearance_m": free_c,
+                "clearance_mm": _mm(free_c),
+            }
     if np.isfinite(accepted_c):
         stats["min_accepted_clearance_m"] = min(
             stats["min_accepted_clearance_m"], accepted_c
@@ -405,6 +419,16 @@ def _update_stats(stats: dict[str, Any], rec: dict[str, Any]) -> None:
         stats["max_committed_penetration_m"] = max(
             stats["max_committed_penetration_m"], _penetration_m(committed_c)
         )
+        if (
+            stats["worst_committed"] is None
+            or committed_c < float(stats["worst_committed"]["clearance_m"])
+        ):
+            stats["worst_committed"] = {
+                "rl_step": rec.get("rl_step"),
+                "substep": rec.get("substep"),
+                "clearance_m": committed_c,
+                "clearance_mm": _mm(committed_c),
+            }
 
     if rec.get("solver_required"):
         stats["unsafe_free_count"] += 1
@@ -442,6 +466,18 @@ def _update_stats(stats: dict[str, Any], rec: dict[str, Any]) -> None:
 
     if rec.get("native_failure"):
         stats["native_failure_count"] += 1
+    if (
+        rec.get("solver_required")
+        and int(rec.get("native_fire_delta", 0)) == 1
+        and not rec.get("native_propagated", False)
+    ):
+        stats["mapping_propagation_failure_count"] += 1
+    if (
+        rec.get("solver_required")
+        and int(rec.get("native_fire_delta", 0)) == 1
+        and not rec.get("native_velocity_corrected", False)
+    ):
+        stats["velocity_correction_failure_count"] += 1
 
     if rec.get("committed_violation"):
         stats["committed_violation_count"] += 1
@@ -521,14 +557,19 @@ def _write_summary(
         f"Solver failures: {stats.get('solver_failure_count')}",
         f"Native injections: {stats.get('native_injection_count')}",
         f"Native failures: {stats.get('native_failure_count')}",
+        f"Mapping propagation failures: {stats.get('mapping_propagation_failure_count')}",
+        f"Velocity correction failures: {stats.get('velocity_correction_failure_count')}",
+        f"Final native fireCount: {safe.get('native_fire_count_final')}",
         f"Forbidden fallback count: {stats.get('forbidden_fallback_count')}",
         f"NaN/Inf count: {stats.get('non_finite_count')}",
         "",
         f"Min free clearance: {stats.get('min_free_clearance_mm')} mm",
         f"Max free penetration: {stats.get('max_free_penetration_mm')} mm",
+        f"Worst free state: {stats.get('worst_free')}",
         f"Min accepted clearance: {stats.get('min_accepted_clearance_mm')} mm",
         f"Min committed clearance: {stats.get('min_committed_clearance_mm')} mm",
         f"Max committed penetration: {stats.get('max_committed_penetration_mm')} mm",
+        f"Worst committed state: {stats.get('worst_committed')}",
         f"Acceptance limit: {ACCEPT_MAX_PENETRATION_M * 1000.0} mm",
         "",
         f"Solver total runtime: {stats.get('solver_runtime_total_s')} s",
@@ -596,6 +637,8 @@ def main() -> None:
         "native_post_contact_solver_input": False,
         "rollback_used": False,
         "projection_used": False,
+        "action_shielding_used": False,
+        "direct_committed_position_repair_used": False,
     }
 
     if plugin is None:
@@ -1031,6 +1074,7 @@ def main() -> None:
         "terminal_reason": terminal_reason,
         "terminal_info": terminal_info,
         "stats": final_stats,
+        "native_fire_count_final": _as_int(native.fireCount),
         "trace_file": str(trace_path),
         "wall_s": elapsed,
         "decision": decision,
