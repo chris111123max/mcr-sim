@@ -281,6 +281,7 @@ class FullEpisodeFeasibleController(Sofa.Core.Controller):
                 q_free=q_free,
                 adapter=self.adapter,
                 context=context,
+                require_explicit_state_inputs=True,
             )
         except ValidatedSolverBridgeUnavailable as exc:
             rec["solver_runtime_s"] = float(time.perf_counter() - started)
