@@ -216,14 +216,29 @@ def _extract(result: Any, source: str) -> NormalizedSolveResult:
     return NormalizedSolveResult(accepted=accepted, metadata=metadata, source=source)
 
 
+def _has_explicit_state_inputs(fn: Callable[..., Any]) -> bool:
+    """Require online solvers to bind the current q_prev and q_free explicitly."""
+    try:
+        names = {name.lower() for name in inspect.signature(fn).parameters}
+    except Exception:
+        return False
+    return bool(names & _PREV_NAMES) and bool(names & _FREE_NAMES)
+
+
 def solve_validated_feasible_state(
     *,
     q_prev: np.ndarray,
     q_free: np.ndarray,
     adapter: Any,
     context: dict[str, Any],
+    require_explicit_state_inputs: bool = False,
 ) -> NormalizedSolveResult:
-    """Call the existing validated real-Beam solver without changing its logic."""
+    """Call the existing validated real-Beam solver without changing its logic.
+
+    When require_explicit_state_inputs=True, zero-argument/monolithic entry
+    points are rejected. This is required for multi-frame online validation so
+    every unsafe frame is solved from that frame's actual q_prev and q_free.
+    """
 
     q_prev = np.asarray(q_prev, dtype=np.float64)
     q_free = np.asarray(q_free, dtype=np.float64)
@@ -233,6 +248,12 @@ def solve_validated_feasible_state(
         for fn_name in _FUNCTION_HINTS:
             fn = getattr(module, fn_name, None)
             if not callable(fn):
+                continue
+            if require_explicit_state_inputs and not _has_explicit_state_inputs(fn):
+                diagnostics.append(
+                    f"{module_source}:{fn_name}: rejected for online validation; "
+                    "callable does not explicitly bind both q_prev and q_free"
+                )
                 continue
             kwargs = _build_kwargs(
                 fn,
@@ -258,5 +279,7 @@ def solve_validated_feasible_state(
         "Validated solver module(s) were found, but no callable completed through "
         "the standard bridge. Add only a thin wrapper named solve_feasible_state("
         "q_prev, q_free, adapter, context) around the existing PASSed solver. "
+        "For multi-frame online validation the wrapper must explicitly consume "
+        "the supplied q_prev and q_free for the current frame. "
         "Do not change solver logic. Diagnostics: " + " | ".join(diagnostics[-16:])
     )
