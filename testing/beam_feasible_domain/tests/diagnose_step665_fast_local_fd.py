@@ -96,6 +96,20 @@ class _StopAfterTarget(Exception):
     pass
 
 
+def _json_safe(value):
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return _json_safe(value.tolist())
+    if isinstance(value, np.generic):
+        return _json_safe(value.item())
+    if isinstance(value, float) and not np.isfinite(value):
+        return str(value)
+    return value
+
+
 def _find_beam_plugin() -> Path | None:
     for build_dir in DEFAULT_BEAM_BUILD_DIRS:
         plugin = find_beam_plugin(build_dir)
@@ -601,10 +615,10 @@ def main() -> None:
             "target_native_candidate_injection_used": False,
             "target_collision_dofs_constraint_source": False,
             "wall_s": float(time.perf_counter() - started),
-            "reset_info": reset_info,
+            "reset_info": _json_safe(reset_info),
         }
         output.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n"
+            json.dumps(_json_safe(payload), indent=2, sort_keys=True) + "\n"
         )
 
         print(
