@@ -41,7 +41,11 @@ from fast_fd_32env_worker import (
     INFO_KEY,
     make_fast_fd_benchmark_env,
 )
-from mcr_sim.distributed import DistributedPPO
+from mcr_sim.distributed import (
+    DistributedPPO,
+    configure_npu_execution,
+    resolve_device,
+)
 
 
 N_ENVS = 32
@@ -467,6 +471,28 @@ def main() -> None:
 
     cpu_info = _read_cpu_quota()
 
+    # Match the production PPO device path.  resolve_device imports torch_npu
+    # when requested, validates torch.npu availability, activates device 0,
+    # and returns the concrete SB3/PyTorch device string (normally "npu:0").
+    device_selection = resolve_device(
+        requested=str(args.device),
+        distributed=False,
+        local_rank=0,
+    )
+    npu_execution = configure_npu_execution(
+        device_selection.accelerator,
+        enabled=True,
+    )
+    resolved_device = str(device_selection.resolved)
+
+    print(
+        "[FAST_FD_32ENV][DEVICE] "
+        f"requested={args.device} resolved={resolved_device} "
+        f"accelerator={device_selection.accelerator} "
+        f"npu_execution={npu_execution}",
+        flush=True,
+    )
+
     try:
         vec_env = SubprocVecEnv(
             env_fns,
@@ -477,7 +503,7 @@ def main() -> None:
 
         model = DistributedPPO.load(
             str(checkpoint),
-            device=str(args.device),
+            device=resolved_device,
         )
         model.policy.set_training_mode(False)
 
@@ -700,7 +726,10 @@ def main() -> None:
             "physics_substeps_per_env_step": (
                 PHYSICS_SUBSTEPS_PER_ENV_STEP
             ),
-            "policy_device": str(args.device),
+            "policy_device_requested": str(args.device),
+            "policy_device": resolved_device,
+            "policy_accelerator": str(device_selection.accelerator),
+            "npu_execution": _json_safe(npu_execution),
             "checkpoint": str(checkpoint),
             "plugin": str(plugin),
             "start_method": "spawn",
