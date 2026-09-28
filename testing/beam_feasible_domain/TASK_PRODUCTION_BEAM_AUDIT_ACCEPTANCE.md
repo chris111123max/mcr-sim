@@ -74,7 +74,7 @@ and make only the minimum compile fix. Do not change constraint semantics.
 
 source /usr/local/Ascend/driver/bin/setenv.bash || true
 source /data/home/3220251075/mcr_sim/mcr_env/cann/ascend-toolkit/set_env.sh
-export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:\${LD_LIBRARY_PATH:-}
+export LD_LIBRARY_PATH=/usr/local/Ascend/driver/lib64/driver:${LD_LIBRARY_PATH:-}
 
 Then:
 
