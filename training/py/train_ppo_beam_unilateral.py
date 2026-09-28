@@ -28,9 +28,42 @@ from mcr_sim.beam_sdf_unilateral_fast import (
     MARGIN_M,
     resolve_plugin_path,
 )
+from mcr_sim.rl_core.beam_safety_metrics import BeamSafetyMetricsCollector
 
 
 _BASE_PARSE_ARGS = baseline.parse_args
+_BASE_ROLLOUT_METRICS_CALLBACK = baseline.ExtraRolloutMetricsCallback
+
+
+class BeamSafetyRolloutMetricsCallback(_BASE_ROLLOUT_METRICS_CALLBACK):
+    """Legacy PPO rollout metrics plus read-only Beam safety telemetry."""
+
+    def __init__(
+        self,
+        window_size: int = 50,
+        success_label: str = "target",
+        verbose: int = 0,
+    ):
+        super().__init__(
+            window_size=window_size,
+            success_label=success_label,
+            verbose=verbose,
+        )
+        self._beam_metrics = BeamSafetyMetricsCollector(
+            episode_window=window_size
+        )
+
+    def _on_step(self) -> bool:
+        keep_training = super()._on_step()
+        self._beam_metrics.observe(
+            self.locals.get("infos"),
+            self.locals.get("dones"),
+        )
+        return bool(keep_training)
+
+    def _on_rollout_end(self) -> None:
+        super()._on_rollout_end()
+        self._beam_metrics.log_rollout(self.logger)
 
 
 def _configure_beam_parser(parser) -> None:
@@ -206,8 +239,12 @@ def main() -> None:
 
     # Reuse the established PPO implementation without editing the legacy
     # baseline. Its validation closure also resolves this patched build_env.
+    # Only the Beam-specific entry point swaps in a telemetry-extended rollout
+    # callback; observation/reward/action/done and PPO optimization remain the
+    # legacy baseline implementation.
     baseline.parse_args = parse_args
     baseline.build_env = build_env
+    baseline.ExtraRolloutMetricsCallback = BeamSafetyRolloutMetricsCallback
     baseline.main()
 
 
