@@ -279,6 +279,14 @@ class FastFDVectorBenchmarkEnv(gym.Wrapper):
                     for r in row_records
                 )
             ),
+            "row_build_runtimes_s": [
+                float(r.get("row_build_runtime_s", 0.0))
+                for r in row_records
+            ],
+            "row_counts": [
+                int(r.get("row_count", 0))
+                for r in row_records
+            ],
             "row_count_total": int(
                 sum(int(r.get("row_count", 0)) for r in row_records)
             ),
