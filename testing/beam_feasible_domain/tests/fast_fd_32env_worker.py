@@ -380,7 +380,25 @@ class FastFDVectorBenchmarkEnv(gym.Wrapper):
         if seed is None:
             seed = self.base_seed + self.worker_rank
 
-        observation, info = self.env.reset(seed=int(seed), options=options)
+        # MCREnv intentionally unloads/rebuilds its SOFA scene on reset.
+        # Restore the module animate function before that reload, then attach
+        # fresh constraint/controller objects to the newly created scene.
+        if self._attached and self._original_animate is not None:
+            try:
+                self.env.sofa_simulation.animate = self._original_animate
+            except Exception:
+                pass
+        self._attached = False
+        self._original_animate = None
+        self._planner = None
+        self._constraint = None
+        self._adapter = None
+        self._beam_dofs = None
+
+        observation, info = self.env.reset(
+            seed=int(seed),
+            options=options,
+        )
         self._attach_after_reset()
 
         self._episode_rl_step = 0
