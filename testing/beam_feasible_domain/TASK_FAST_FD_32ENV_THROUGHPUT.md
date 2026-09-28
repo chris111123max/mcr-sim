@@ -144,7 +144,33 @@ benchmark files, make the minimum fix there, show the diff, and continue.
 Do not change the validated Fast FD scientific files unless compilation proves
 an unavoidable import-only issue. Do not change physics or thresholds.
 
-## 4. Plugin
+## 4. NPU device preflight
+
+Use the SAME project-side device resolver as production training:
+
+```bash
+python - <<'PY'
+from mcr_sim.distributed import resolve_device
+d = resolve_device("npu", distributed=False, local_rank=0)
+print("requested =", d.requested)
+print("resolved =", d.resolved)
+print("accelerator =", d.accelerator)
+PY
+```
+
+Expected:
+
+```text
+resolved = npu:0
+accelerator = npu
+```
+
+Do not substitute direct `torch.device("npu")`.
+
+If this preflight fails, stop and report INCONCLUSIVE. Do not start 32 SOFA
+workers.
+
+## 5. Plugin
 
 Find the already validated component:
 
@@ -158,7 +184,7 @@ Reuse it.
 If absent, rebuild the existing test-only plugin only. Do not alter its
 algorithm.
 
-## 5. Checkpoint
+## 6. Checkpoint
 
 Use the same epoch74 checkpoint used by the full-episode acceptance.
 
@@ -166,7 +192,7 @@ The benchmark runner has the known checkpoint path as its default.
 
 Before starting, verify that it exists.
 
-## 6. Output protection
+## 7. Output protection
 
 Runtime directory:
 
@@ -178,7 +204,7 @@ Confirm there is no old completed benchmark result from a previous attempt.
 
 Do not delete unrelated runtime data.
 
-## 7. Execute exactly one 32-env benchmark
+## 8. Execute exactly one 32-env benchmark
 
 Create directories:
 
@@ -204,7 +230,7 @@ Run ONE copy only.
 Do not use nohup unless the current shell/session requires it. If you do use
 nohup, still run only one copy and record the PID.
 
-## 8. Fail behavior
+## 9. Fail behavior
 
 The parent benchmark checks all worker telemetry after every vector step.
 
@@ -222,7 +248,7 @@ the benchmark must stop after that vector step.
 
 Do not tune or rerun.
 
-## 9. Performance statistics
+## 10. Performance statistics
 
 The first 100 vector steps are warm-up.
 
@@ -287,7 +313,7 @@ one batched SDF call per row-build substep
 zero post-selection full-Beam profiles
 ```
 
-## 10. Concurrency
+## 11. Concurrency
 
 For each measured vector step, the parent counts how many of 32 workers
 triggered at least one row-build.
@@ -313,7 +339,7 @@ max envs simultaneously building rows
 Because all 32 copies follow the same fixed deterministic trajectory, a large
 32-worker synchronized peak is expected and is useful as a stress condition.
 
-## 11. Safety statistics
+## 12. Safety statistics
 
 Safety is checked across ALL 1024 vector steps, including warm-up.
 
@@ -338,7 +364,7 @@ first failure
 The purpose is primarily performance, but do not accept performance numbers
 from a physically invalid run.
 
-## 12. Important interpretation
+## 13. Important interpretation
 
 This benchmark includes:
 
@@ -360,7 +386,7 @@ training epoch throughput.
 
 Do not claim it is identical to end-to-end PPO training speed.
 
-## 13. Results
+## 14. Results
 
 Primary JSON:
 
@@ -403,7 +429,8 @@ n_envs = 32
 vector steps = 1024
 warm-up = 100
 measured steps = 924
-policy device = npu
+policy device requested = npu
+policy device resolved = npu:0
 SubprocVecEnv = spawn
 physics = 2 x 5 ms
 production modified = NO
