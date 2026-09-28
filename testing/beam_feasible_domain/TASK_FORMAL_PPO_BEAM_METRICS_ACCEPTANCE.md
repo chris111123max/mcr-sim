@@ -122,8 +122,8 @@ Use:
 - device npu
 - 32 env
 - epochs 1
-- episodes-per-epoch 1
-- n_steps 64
+- episodes-per-epoch 32
+- n_steps 32
 - batch-size 1024
 - PPO n_epochs 1
 - max_episode_steps 64
@@ -133,17 +133,37 @@ Use:
 - audit interval 16
 - near threshold 0.300 mm
 
+Why this exact smoke shape matters:
+
+- 32 env x 32 n_steps = one complete 1024-transition PPO rollout.
+- max_episode_steps=64 means the first rollout completes before any timeout.
+- PPO train() therefore runs after the first rollout.
+- the second 32-step block reaches the 64-step episode timeout for all 32 envs.
+- the epoch episode budget is 32, so the epoch callback stops only after those
+  terminal infos exist.
+- the Beam callback flushes the final partial-rollout/terminal telemetry from
+  _on_training_end, so terminal Beam metrics and the already-produced PPO train
+  scalars must be present in TensorBoard.
+
+Do NOT revert to episodes-per-epoch=1 with n_steps=64. That configuration stops
+inside the first rollout and cannot test optimizer or TensorBoard correctly.
+
 The reduced max_episode_steps and PPO n_epochs are smoke-only runtime controls.
 They do not change Beam safety mathematics.
+
+If the shell lacks the SOFA 21.12 runtime/library path, restore the same
+session-level SOFA environment used by the previously passing Beam acceptance.
+Do not modify source code or install/rebuild SOFA merely to fix shell paths.
 
 Require:
 
 - NPU npu:0
 - 32 workers start
-- real rollout runs
+- first 32-step rollout completes
 - at least one optimizer update
 - no NaN/Inf
 - no Beam safety exception
+- all 32 short smoke episodes terminate/reset at step 64
 - final checkpoint/log created
 
 ## 5. Verify TensorBoard Beam namespaces
