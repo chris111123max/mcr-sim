@@ -74,6 +74,9 @@ FLOAT_TOL_M = 1.0e-12
 BASELINE_ACTION_SHA256 = (
     "e6854f5496eb2d43eb913d1116238d831666f7589ada051325bfdf14d294900e"
 )
+BASELINE_ROW_BUILD_SUBSTEPS = 1436
+BASELINE_ROW_BUILD_TOTAL_S = 1410.52
+BASELINE_ROW_BUILD_MEAN_S = 0.9823
 
 RUNTIME = (
     BEAM_ROOT
@@ -198,11 +201,8 @@ def _write_report(payload: dict[str, Any], report: Path) -> None:
     stats = payload["stats"]
     baseline_total_s = float(payload["baseline_row_build_total_s"])
     fast_total_s = float(stats["row_build_runtime_total_s"])
-    measured_speedup = (
-        baseline_total_s / fast_total_s
-        if fast_total_s > 0.0
-        else None
-    )
+    measured_speedup = payload["full_episode_row_build_speedup_vs_baseline"]
+    mean_speedup = payload["row_build_mean_speedup_vs_baseline"]
 
     lines = [
         "B02 FAST LOCAL-POINT FD BEAM UNILATERAL + GENERIC FULL-EPISODE ACCEPTANCE",
@@ -250,6 +250,7 @@ def _write_report(payload: dict[str, Any], report: Path) -> None:
         f"{stats['row_build_runtime_max_s']} s",
         f"Baseline validated row-build total: {baseline_total_s} s",
         f"Full-episode row-build speedup vs baseline: {measured_speedup}",
+        f"Mean row-build speedup vs baseline: {mean_speedup}",
         f"Batched FD points total: {stats['batched_fd_point_total']}",
         f"Batched FD SDF calls total: {stats['batched_fd_sdf_query_total']}",
         f"Post-selection full-Beam profiles: {stats['post_selection_full_beam_profile_total']}",
@@ -688,11 +689,17 @@ def main() -> None:
         decision = "PASS"
         reason = "FAST_FD_FULL_EPISODE_COMMITTED_SAFETY_HELD"
 
-    baseline_row_build_total_s = 1410.52
+    baseline_row_build_total_s = BASELINE_ROW_BUILD_TOTAL_S
     full_episode_row_build_speedup = (
         baseline_row_build_total_s
         / float(final_stats["row_build_runtime_total_s"])
         if float(final_stats["row_build_runtime_total_s"]) > 0.0
+        else None
+    )
+    row_build_mean_speedup = (
+        BASELINE_ROW_BUILD_MEAN_S
+        / float(final_stats["row_build_runtime_mean_s"])
+        if float(final_stats["row_build_runtime_mean_s"]) > 0.0
         else None
     )
 
@@ -736,10 +743,13 @@ def main() -> None:
         "terminal_info": terminal_info,
         "first_failure": first_failure,
         "stats": final_stats,
+        "baseline_row_build_substeps": BASELINE_ROW_BUILD_SUBSTEPS,
         "baseline_row_build_total_s": baseline_row_build_total_s,
+        "baseline_row_build_mean_s": BASELINE_ROW_BUILD_MEAN_S,
         "full_episode_row_build_speedup_vs_baseline": (
             full_episode_row_build_speedup
         ),
+        "row_build_mean_speedup_vs_baseline": row_build_mean_speedup,
         "trace_file": str(trace_path),
         "wall_s": float(time.perf_counter() - started),
         "production_files_modified": False,
@@ -808,6 +818,9 @@ def main() -> None:
                 ],
                 "full_episode_row_build_speedup_vs_baseline": (
                     full_episode_row_build_speedup
+                ),
+                "row_build_mean_speedup_vs_baseline": (
+                    row_build_mean_speedup
                 ),
                 "support_mode_counts": final_stats[
                     "support_mode_counts"
