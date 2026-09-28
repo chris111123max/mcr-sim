@@ -65,6 +65,16 @@ class BeamSafetyRolloutMetricsCallback(_BASE_ROLLOUT_METRICS_CALLBACK):
         super()._on_rollout_end()
         self._beam_metrics.log_rollout(self.logger)
 
+    def _on_training_end(self) -> None:
+        # EpochExperimentCallback may intentionally stop training on the exact
+        # vector step that reaches the requested episode budget. In that case
+        # SB3 does not call on_rollout_end for the partial final rollout.
+        # Flush read-only rollout/episode telemetry here so TensorBoard keeps
+        # the terminal evidence and any already-produced PPO train scalars.
+        super()._on_rollout_end()
+        self._beam_metrics.log_rollout(self.logger)
+        self.logger.dump(step=int(self.num_timesteps))
+
 
 def _configure_beam_parser(parser) -> None:
     parser.add_argument(
