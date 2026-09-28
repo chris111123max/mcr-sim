@@ -99,8 +99,12 @@ class BeamSafetyMCREnv(MCREnv):
         self._beam_physics_index = 0
         self._beam_audit_count = 0
         self._beam_audit_skip_count = 0
+        self._beam_safe_free_substeps = 0
         self._beam_active_substeps = 0
         self._beam_near_substeps = 0
+        self._beam_unilateral_rows_built = 0
+        self._beam_q_free_penetration_substeps = 0
+        self._beam_worst_free_clearance_m = float("inf")
         self._beam_worst_audited_clearance_m = float("inf")
         self._beam_last_substep_record: dict[str, Any] | None = None
         self._beam_last_substep_audited = False
@@ -262,8 +266,18 @@ class BeamSafetyMCREnv(MCREnv):
             )
         if rows_required:
             self._beam_active_substeps += 1
+            self._beam_unilateral_rows_built += expected_rows
+        else:
+            self._beam_safe_free_substeps += 1
 
         free_clearance = float(record.get("q_free_clearance_m", np.nan))
+        if np.isfinite(free_clearance):
+            self._beam_worst_free_clearance_m = min(
+                self._beam_worst_free_clearance_m,
+                free_clearance,
+            )
+            if free_clearance < 0.0:
+                self._beam_q_free_penetration_substeps += 1
         if (
             np.isfinite(free_clearance)
             and free_clearance
@@ -306,8 +320,18 @@ class BeamSafetyMCREnv(MCREnv):
                 self._beam_validation.committed_penetration_limit_m
             ),
             "physics_substeps_seen": int(self._beam_physics_index),
+            "safe_free_substeps": int(self._beam_safe_free_substeps),
             "active_substeps": int(self._beam_active_substeps),
             "near_wall_substeps": int(self._beam_near_substeps),
+            "unilateral_rows_built": int(self._beam_unilateral_rows_built),
+            "q_free_penetration_substeps": int(
+                self._beam_q_free_penetration_substeps
+            ),
+            "worst_free_clearance_m": (
+                float(self._beam_worst_free_clearance_m)
+                if np.isfinite(self._beam_worst_free_clearance_m)
+                else None
+            ),
             "committed_audits": int(self._beam_audit_count),
             "committed_audit_skips": int(self._beam_audit_skip_count),
             "worst_audited_committed_clearance_m": (
@@ -328,8 +352,12 @@ class BeamSafetyMCREnv(MCREnv):
         self._beam_physics_index = 0
         self._beam_audit_count = 0
         self._beam_audit_skip_count = 0
+        self._beam_safe_free_substeps = 0
         self._beam_active_substeps = 0
         self._beam_near_substeps = 0
+        self._beam_unilateral_rows_built = 0
+        self._beam_q_free_penetration_substeps = 0
+        self._beam_worst_free_clearance_m = float("inf")
         self._beam_worst_audited_clearance_m = float("inf")
         self._beam_last_substep_record = None
         self._beam_last_substep_audited = False
