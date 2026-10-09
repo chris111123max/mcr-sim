@@ -296,9 +296,19 @@ def compare_native(base, variant, kind, *, state_tolerance_m=1e-10):
             + repr(worst_pos) + " quaternion=" + repr(worst_quat)
         )
     for key in ("row_offsets", "dof_indices", "selected_dense_indices",
-                "linear_jacobian", "free_violations"):
+                "linear_jacobian", "free_violations",
+                "q_free_dense_clearance"):
         if not np.array_equal(base[key], variant[key]):
             raise ValueError("AB_CONFOUNDED_CHANGED:" + key)
+    for meta_key in (
+        "vessel", "target", "seed", "episode", "rl_step", "substep",
+        "geometry_sha256", "sdf_sha256", "action_prefix_sha256",
+    ):
+        base_meta = base["metadata"]
+        variant_meta = variant["metadata"]
+        if meta_key in base_meta and meta_key in variant_meta:
+            if base_meta[meta_key] != variant_meta[meta_key]:
+                raise ValueError("AB_METADATA_MISMATCH:" + meta_key)
     if kind == "solver_tight" and not np.array_equal(
         base["angular_jacobian"], variant["angular_jacobian"]
     ):
