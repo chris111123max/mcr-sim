@@ -65,7 +65,7 @@ def main():
         log_path=arm_dir/"native_runner.log"
         with log_path.open("w",encoding="utf-8") as log:
             completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,
-                                     cwd=TESTING.parent,timeout=args.max_seconds_per_arm,
+                                     cwd=Path.cwd(),timeout=args.max_seconds_per_arm,
                                      check=False)
         if completed.returncode:
             print(f"INCONCLUSIVE: {arm} native runner exit {completed.returncode}; {log_path}",
@@ -107,7 +107,7 @@ def main():
     verify=HERE/"verify_joint_ab.py"
     cmd=[str(args.python),str(verify),"--manifest",str(path),
          "--output",str(output/"joint_ab_report.json")]
-    process=subprocess.run(cmd,cwd=TESTING.parent,check=False)
+    process=subprocess.run(cmd,cwd=Path.cwd(),check=False)
     if process.returncode==0:
         print("PASS_MARGIN_NUMERIC — native logs require manual audit")
     elif process.returncode==1:
