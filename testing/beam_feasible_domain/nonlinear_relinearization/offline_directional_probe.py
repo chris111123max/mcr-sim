@@ -307,6 +307,15 @@ def main():
         bundle = json.loads(args.geometry.read_text(encoding="utf-8"))
         if not isinstance(bundle, dict):
             raise ValueError("Geometry JSON must contain a dict")
+        if (
+            bundle.get("vessel") != "B02"
+            or bundle.get("target") != "target_04"
+            or bundle.get("rl_step") != 2009
+            or bundle.get("substep") != 1
+        ):
+            raise ValueError("FRAME_PROVENANCE_MISMATCH_OR_MISSING: expected B02/target_04 step2009/substep1")
+        if abs(args.margin_mm - 0.100) > 1e-12:
+            raise ValueError("SCIENTIFIC_MARGIN_CHANGE_NOT_ALLOWED: required 0.100mm")
         arrays, qf, qc = _read_capture(args.snapshot)
         oracle = GeometryOracle(bundle)
         result = probe(
@@ -315,6 +324,11 @@ def main():
             match_tolerance_m=args.capture_tolerance_m,
             max_newton_rounds=args.max_rounds,
         )
+        if abs(result["baseline_clearance_mm"] - 0.082681) > 1e-5:
+            raise ValueError(
+                "KNOWN_BASELINE_MISMATCH: expected +0.082681mm, observed "
+                + str(result["baseline_clearance_mm"]) + "mm"
+            )
         result["snapshot"] = str(args.snapshot.resolve())
         result["geometry"] = str(args.geometry.resolve())
         result["vessel"] = bundle.get("vessel", "UNKNOWN")
