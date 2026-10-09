@@ -167,8 +167,14 @@ def analyze(manifest: Path, d: dict) -> dict:
                 "solver_error_above_requested_tolerance":solver_error>target_tol,
                 "committed_min_clearance_mm":mm,
                 "margin_shortfall_mm":max(0.0,MARGIN_MM-mm),
-                "nonlinear_max_prediction_error_raw_mm":
-                    last_sdf["max_abs_nonlinear_mismatch_original_mm"],
+                "nonlinear_max_prediction_error_raw_mm":(
+                    last_sdf["max_abs_nonlinear_mismatch_original_mm"]
+                    if number == 1 else None),
+                "nonlinear_prediction_error_evidence":(
+                    "COMPUTED_FROM_ORIGINAL_Q_FREE"
+                    if number == 1 else "INCONCLUSIVE_WITHOUT_STAGE_LOCAL_LINEARIZATION_STATE"),
+                "native_reported_nonlinear_error_mm":
+                    item.get("native_nonlinear_max_prediction_error_mm"),
                 "worst_dense_index":last_sdf["committed_worst_index"],
                 "worst_point_selected":last_sdf["committed_worst_selected"],
                 "reported_linear_gap_mm":item.get("native_linear_row_gap_min_mm"),
