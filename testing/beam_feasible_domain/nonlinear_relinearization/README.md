@@ -42,6 +42,8 @@ A second JSON is required with EXACT frame-specific captured geometry:
     {
       "vessel": "B02",
       "target": "target_04",
+      "rl_step": 2009,
+      "substep": 1,
       "sdf_vti": "/REAL/ABSOLUTE/PATH/vessel_sdf.vti",
       "asset_T_env_sim": [TX, TY, TZ, QX, QY, QZ, QW],
       "asset_offset_sim": [OX, OY, OZ],
@@ -56,6 +58,10 @@ The symbolic fields above are a format illustration, NOT known measurements.
 The real geometry must be extracted from this same B02 episode's live
 WireBeamInterpolation edgeList/lengthList and mesh topology, SDF VTI,
 asset transform, offset, scale and catheter radius including DR.
+
+The executable enforces B02/target_04 step2009/substep1, exactly the 0.100mm
+margin, and the saved baseline +0.082681mm (within 0.00001mm). Missing
+provenance is INCONCLUSIVE, not a successful numeric test.
 
 If the real active topology or asset transform was not saved, do not guess,
 borrow geometry from initial/reset state or another episode. Report
