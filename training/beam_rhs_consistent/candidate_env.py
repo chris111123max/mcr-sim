@@ -7,11 +7,14 @@ from mcr_sim.beam_safety_env import BeamSafetyMCREnv
 from mcr_sim import beam_sdf_unilateral_fast as fast
 from world_rows import convert_rows
 from dense_geometry import dense_check, query_clearance_only
+from fast_guard import coarse_beam_clearance_guard
 HERE=Path(__file__).resolve().parent
 EXP=Path(os.environ['MCR_CANDIDATE_RUN_DIR'])
 PENETRATION_REPORT_THRESHOLD_MM=0.100
 NATIVE_AUDIT_NEAR_MM=0.150
 TRACE_INTERVAL_SUBSTEPS=16
+COARSE_SPACING_M=1.0e-4
+COARSE_SWITCH_MARGIN_M=2.5e-4
 PLUGIN=Path(os.environ.get('MCR_RHS_PLUGIN',str(HERE/'native/_build/lib/libMCRContactReferenceConsistency.so')))
 ORIGINAL_INIT=Sofa.Simulation.init
 RAW_BUILDER=fast.build_rows_fast_local_fd
@@ -52,6 +55,16 @@ class StageController(Sofa.Core.Controller):
   if not name.startswith(prefix):return
   e=self.env;s=e.native;n=int(name[len(prefix):])
   try:
+   # A certified far-wall coarse pass has no Beam rows.  Ack the native
+   # single-solve stage without copying all DOFs and Jacobian records.
+   if e.frame is not None and e.frame.get('coarse_safe',False):
+    if n!=1 or int(e._beam_constraint.activeCount.value)!=0:
+     raise RuntimeError('COARSE_FAST_PATH_NATIVE_ROWS_MISMATCH')
+    if not np.isfinite(float(s.currentError.value)):
+     raise RuntimeError('CANDIDATE_NATIVE_NON_FINITE')
+    s.requestedPasses.value=1
+    s.stageEventStatus.value='CAPTURED_STAGE_1'
+    return
    q=fast._as_array(e._beam_dofs.position).copy()
    pts=cl=None
    if n==1:
@@ -127,7 +140,7 @@ class CandidateEnv(BeamSafetyMCREnv):
   self.fd=create_memfd();self.frame=None;self.stages=[];self.rows=None;self.native_error=None
   self.last_status_wall=0.0
   self.actions=[];self.episode_index=0;self.seed_value=None;self.completed_episodes=0
-  self.totals={'physics_substeps':0,'free_negative':0,'committed_negative':0,'committed_over_0p100_mm':0,'single_solves':0,'double_solves':0,'audited_substeps':0,'skipped_substeps':0,'post_first_risk_triggers':0,'tip_negative':0,'body_negative':0,'min_committed_mm':None,'min_free_mm':None,'invalid_sdf_substeps':0,'invalid_sdf_episodes':0,'severe_penetration_episodes':0}
+  self.totals={'physics_substeps':0,'free_negative':0,'committed_negative':0,'committed_over_0p100_mm':0,'single_solves':0,'double_solves':0,'audited_substeps':0,'skipped_substeps':0,'post_first_risk_triggers':0,'tip_negative':0,'body_negative':0,'min_committed_mm':None,'min_free_mm':None,'invalid_sdf_substeps':0,'invalid_sdf_episodes':0,'severe_penetration_episodes':0,'coarse_safe_substeps':0,'fine_fallback_substeps':0,'coarse_invalid_substeps':0}
   self.trace=(self.worker_dir/'substeps.jsonl').open('a',buffering=65536)
   kw['beam_safety_validation_mode']='audit'
   kw['beam_safety_committed_penetration_limit_m']=PENETRATION_REPORT_THRESHOLD_MM/1000
@@ -146,9 +159,32 @@ class CandidateEnv(BeamSafetyMCREnv):
   self.native.auditPath.value=f'/proc/self/fd/{self.fd}'
   original=self._beam_planner._collision_begin
   def hook(source):
+   # SOFA may dispatch the same collision-begin event through two Python
+   # listener interfaces; never run the coarse planner twice per substep.
+   key=(int(self._beam_planner.current_rl_step),int(self._beam_planner.current_substep))
+   if key==self._beam_planner._last_key:
+    return
    os.ftruncate(self.fd,0);self.stages=[];self.native_error=None
-   self.frame={'q_prev':fast._as_array(self._beam_dofs.position).copy(),'q_free':fast._as_array(self._beam_dofs.free_position).copy()}
-   original(source)
+   self.frame={'q_prev':fast._as_array(self._beam_dofs.position),
+    'q_free':fast._as_array(self._beam_dofs.free_position)}
+   probe=coarse_beam_clearance_guard(
+    self._beam_adapter,self.frame['q_free'],
+    spacing_m=COARSE_SPACING_M,switch_margin_m=COARSE_SWITCH_MARGIN_M)
+   self.frame['coarse_safe']=bool(probe['safe'])
+   self.frame['coarse']=probe
+   if probe['safe']:
+    self._beam_planner._last_key=key
+    self._beam_constraint.enabled.value=False
+    self._beam_planner._record={
+     'rl_step':key[0],'substep':key[1], 'event_source':source,
+     'planning_status':'SAFE_FREE_NO_ROWS','reason':'COARSE_GUARD_FAR_WALL',
+     'rows_required':False,'rows_armed':False,'row_count':0,
+     'q_free_clearance_m':float(probe['minimum_clearance_m']),
+     'q_free_worst_index':int(probe['worst_index']),
+     'dense_sample_count':0,'coarse_sample_count':int(probe['sample_count']),
+     'total_q_free_full_profile_count':0}
+   else:
+    original(source)
    rec=self._beam_planner._record
    # An out-of-grid free state cannot be linearized from the SDF.  Leave
    # native Contact active, disarm the Beam rows, and terminate this episode
@@ -169,23 +205,32 @@ class CandidateEnv(BeamSafetyMCREnv):
    value=float(rec['q_free_clearance_m'])
    self.frame['free']={'clearance_mm':value*1000 if np.isfinite(value) else None,
     'sdf_out_of_grid':bool(self.step_invalid_sdf),
-    'source':'existing production 10um free profile; nonfinite explicitly flagged'}
+    'coarse_sample_count':int(probe['sample_count']),
+    'coarse_lower_bound_mm':probe['lower_bound_m']*1000 if probe['lower_bound_m'] is not None else None,
+    'source':'conservative 100um coarse safe bound' if probe['safe'] else
+    'production 10um fine Beam profile'}
    self.native.auditPath.value=f'/proc/self/fd/{self.fd}' if (
     self.step_invalid_sdf or (self.frame['free']['clearance_mm'] is not None and
     self.frame['free']['clearance_mm']<=NATIVE_AUDIT_NEAR_MM)) else ''
    self.native.requestedPasses.value=1
    self.last_independent=None
    t=self.totals;free=self.frame['free']['clearance_mm'];t['physics_substeps']+=1
+   t['coarse_safe_substeps' if probe['safe'] else 'fine_fallback_substeps']+=1
+   t['coarse_invalid_substeps']+=int(probe['invalid_sdf'])
    if free is not None:
     t['free_negative']+=int(free<0)
     t['min_free_mm']=free if t['min_free_mm'] is None else min(t['min_free_mm'],free)
-   self.linearization=self.frame['q_free'].copy();self.rows=read_rows(self._beam_constraint)
-   self.frame['initial_rows']={k:v.copy() for k,v in self.rows.items()}
+   self.linearization=None if probe['safe'] else self.frame['q_free'].copy()
+   self.rows=read_rows(self._beam_constraint)
+   if not probe['safe']:
+    self.frame['initial_rows']={k:v.copy() for k,v in self.rows.items()}
   self._beam_planner._collision_begin=hook
   self.write_status('READY')
   print('CANDIDATE_WORKER_ENABLED',json.dumps({'pid':os.getpid(),'worker_dir':str(self.worker_dir),'solver':self.native.getClassName(),
    'world_rotation_J':True,'consistent_contact_reference':bool(self.native.consistentContactReference.value),
-   'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'passes':int(self.native.requestedPasses.value),'dt':float(self._sofa_root_node.dt.value),'independent_check':'near-wall and periodic audit; skipped frames unknown'}),flush=True)
+   'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'coarse_guard_um':COARSE_SPACING_M*1e6,
+   'coarse_switch_margin_mm':COARSE_SWITCH_MARGIN_M*1000,
+   'passes':int(self.native.requestedPasses.value),'dt':float(self._sofa_root_node.dt.value),'independent_check':'near-wall and periodic audit; skipped frames unknown'}),flush=True)
  def reset(self,*a,**kw):
   self.episode_index+=1;self.actions=[];self.frame=None;self.step_invalid_sdf=False;self.safety_failure_reason=None
   if kw.get('seed') is not None:self.seed_value=int(kw['seed'])
@@ -327,6 +372,7 @@ class CandidateEnv(BeamSafetyMCREnv):
    if checked and cl is not None:
     t['min_committed_mm']=cl if t['min_committed_mm'] is None else min(t['min_committed_mm'],cl)
    row={'context':self.context(),'free':self.frame['free'],'committed':self.last_independent,
+    'coarse_safe':bool(self.frame.get('coarse_safe',False)),
     'contact_rows':[n*3 for n in contacts],'beam_rows':[len(s['rows']['freeViolations']) for s in self.stages],
     'activeCounts':[s['activeCount'] for s in self.stages],'native_solve_calls':calls,'committed_audited':checked,'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','max_penetration_mm':max(0.0,-cl) if cl is not None else None,'reference_consistency_error_m':referr,
     'native_solve_ms':float(self.native.nativeSolveTotalWallMs.value),
