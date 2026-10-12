@@ -6,7 +6,8 @@ cd "$ROOT"
 N_ENVS=${N_ENVS:-64}
 case "$N_ENVS" in 32|64) ;; *) echo "N_ENVS must be 32 or 64" >&2; exit 2 ;; esac
 PYTHON=${PYTHON:-python}
-PLUGIN=${MCR_RHS_PLUGIN:-$SCRIPT_DIR/native/_build/lib/libMCRContactReferenceConsistency.so}
+BUILD_DIR=${MCR_RHS_BUILD_DIR:-$SCRIPT_DIR/native/_build_cpp_v3}
+PLUGIN=${MCR_RHS_PLUGIN:-$BUILD_DIR/lib/libMCRContactReferenceConsistency.so}
 BEAM_PLUGIN=$ROOT/mcr_sim/native/beam_unilateral/_build/lib/libMCRBeamLinearizedUnilateral.so
 test -f "$PLUGIN"
 test -f "$BEAM_PLUGIN"
