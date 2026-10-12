@@ -57,7 +57,7 @@ class StageController(Sofa.Core.Controller):
   try:
    # A certified far-wall coarse pass has no Beam rows.  Ack the native
    # single-solve stage without copying all DOFs and Jacobian records.
-   if e.frame is not None and e.frame.get('coarse_safe',False):
+   if e.frame is not None and e.frame.get('coarse_safe',False) and int(s.currentNumConstraints.value)==0:
     if n!=1 or int(e._beam_constraint.activeCount.value)!=0:
      raise RuntimeError('COARSE_FAST_PATH_NATIVE_ROWS_MISMATCH')
     if not np.isfinite(float(s.currentError.value)):
@@ -179,7 +179,7 @@ class CandidateEnv(BeamSafetyMCREnv):
      'rl_step':key[0],'substep':key[1], 'event_source':source,
      'planning_status':'SAFE_FREE_NO_ROWS','reason':'COARSE_GUARD_FAR_WALL',
      'rows_required':False,'rows_armed':False,'row_count':0,
-     'q_free_clearance_m':float(probe['minimum_clearance_m']),
+     'q_free_clearance_m':float(probe['lower_bound_m']),
      'q_free_worst_index':int(probe['worst_index']),
      'dense_sample_count':0,'coarse_sample_count':int(probe['sample_count']),
      'total_q_free_full_profile_count':0}
@@ -206,6 +206,7 @@ class CandidateEnv(BeamSafetyMCREnv):
    self.frame['free']={'clearance_mm':value*1000 if np.isfinite(value) else None,
     'sdf_out_of_grid':bool(self.step_invalid_sdf),
     'coarse_sample_count':int(probe['sample_count']),
+    'coarse_measured_min_mm':probe['minimum_clearance_m']*1000 if probe['minimum_clearance_m'] is not None else None,
     'coarse_lower_bound_mm':probe['lower_bound_m']*1000 if probe['lower_bound_m'] is not None else None,
     'source':'conservative 100um coarse safe bound' if probe['safe'] else
     'production 10um fine Beam profile'}
@@ -220,7 +221,7 @@ class CandidateEnv(BeamSafetyMCREnv):
    if free is not None:
     t['free_negative']+=int(free<0)
     t['min_free_mm']=free if t['min_free_mm'] is None else min(t['min_free_mm'],free)
-   self.linearization=None if probe['safe'] else self.frame['q_free'].copy()
+   self.linearization=self.frame['q_free'].copy()
    self.rows=read_rows(self._beam_constraint)
    if not probe['safe']:
     self.frame['initial_rows']={k:v.copy() for k,v in self.rows.items()}
