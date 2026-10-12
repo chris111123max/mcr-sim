@@ -28,7 +28,8 @@ and native mapping propagation. The candidate margin remains 0.100 mm.
 
 Near-wall/active/two-pass states are audited independently; far-wall states are
 audited every 16 substeps. Skipped committed frames are null/unknown. Negative
-committed clearances are counted; original environment done/reward are retained.
+committed clearances are counted; severe >0.100 mm penetration or invalid SDF
+terminates the *current episode* with the baseline out-of-vessel penalty.
 This is not a nonpenetration guarantee. In the historical 64-env run, large
 penetration caused SDF samples to leave the finite grid; existing invalid-profile
 checks stopped that experiment. Packaging does not repair that known failure.
