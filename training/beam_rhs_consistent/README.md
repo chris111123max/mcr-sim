@@ -70,3 +70,44 @@ packaging. Rebuild the candidate native plugin before use, and verify one PPO
 update plus severe-penetration episode reset before a long training run.
 
 Finite-grid limitation: a local-FD perturbation that exits the SDF grid is also treated as a per-episode invalid-SDF failure. Unexpected native errors still stop the experiment.
+
+## Candidate coarse-to-fine Beam free-state gate (V2)
+
+This change is isolated to training/beam_rhs_consistent and does not alter the
+production Beam/Contact solver, PPO observation, reward coefficients, action,
+curriculum, 2 x 5 ms physics substeps, or the independent fine auditor.
+
+Every physics substep first reconstructs the deployed Beam centerline at
+approximately 100 um **spatial** spacing and queries signed clearance only.
+Per-Beam spatial spacing is bounded from the cubic Bezier derivative, rather
+than assuming rest-length t steps always represent 100 um of arc length.
+
+A free Beam is considered safely far from the wall ONLY when:
+- every coarse SDF value is finite; and
+- coarse minimum minus (2 x half the maximum inter-sample arc upper bound)
+  minus an extra 50 um grid/interpolation cushion is >= 0.25 mm.
+
+These are conservative empirical sampling allowances, not a proof of SDF
+Lipschitz regularity or mathematical nonpenetration. Every ambiguous or
+possibly near-wall free state still runs the unchanged production 10 um full
+profile and world-frame finite-difference Beam unilateral row builder.
+The original native Contact is always enabled. A first-pass Contact correction
+with active native constraints still runs the existing post-solve movement risk
+check; if needed it executes the second real native same-substep solve with
+RHS reference consistency and mapping refresh.
+
+Independent committed 10 um audits still execute for near-wall, active,
+two-pass or periodic states. Unchecked committed states remain **unknown**.
+Episode termination for independently observed penetration deeper than
+0.100 mm (or out-of-grid states) is unchanged. Coarse-only free clearance in
+the status stream is marked as a *conservative lower bound*, not an exact
+10 um measurement. Three cumulative per-worker counters distinguish
+coarse_safe_substeps, fine_fallback_substeps and coarse_invalid_substeps.
+
+N_ENVS=64 bash training/beam_rhs_consistent/launch.sh
+
+For a throughput comparison under the same code, launch a separate 32-env
+run using N_ENVS=32 and a distinct EXP_NAME. Old processes do not reload
+Python code after git pull. This patch needs no native-plugin rebuild because
+it edits only Python and README/launch files; the launcher still checks its
+previous native plugin binary for staleness.
