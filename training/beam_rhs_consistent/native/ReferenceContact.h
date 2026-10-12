@@ -12,6 +12,7 @@
 namespace mcr::contact_reference_test {
 namespace helper=sofa::helper;
 inline thread_local bool consistentReference = false;
+inline thread_local bool captureContactGeometry = false;
 using NativeContact = sofa::component::constraintset::UnilateralInteractionConstraint<sofa::defaulttype::Vec3Types>;
 class ReferenceUnilateralContact final : public NativeContact {
 public:
@@ -104,6 +105,7 @@ public:
         const auto& Q=selected?reference->readX(getMState1())->getValue():getMState1()->read(sofa::core::ConstVecCoordId::freePosition())->getValue();
         const auto& P=selected?reference->readX(getMState2())->getValue():getMState2()->read(sofa::core::ConstVecCoordId::freePosition())->getValue();
         if(selected)evaluateSelected(v,Q,P);else NativeContact::getPositionViolation(v);
+        if (!captureContactGeometry) { lastGeometry="[]"; return; }
         std::ostringstream o;o<<std::setprecision(17)<<"[";bool first=true;
         for(const auto&c:contacts){if(!first)o<<",";first=false;
             o<<"{\"row\":"<<c.id<<",\"mu\":"<<c.mu<<",\"distance\":"<<c.contactDistance
