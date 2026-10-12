@@ -88,11 +88,20 @@ class StageController(Sofa.Core.Controller):
    e.stages.append(record)
    if record['activeCount']!=len(e.rows['freeViolations']):raise RuntimeError('CANDIDATE_ACTIVE_COUNT_MISMATCH')
    if n<int(s.requestedPasses.value):
-    rows=fast.build_rows_fast_local_fd(adapter=e._beam_adapter,q_prev=q,q_free=q,dense_points=pts,dense_clearance=cl,requested_margin_m=fast.MARGIN_M)
-    fast.write_rows(e._beam_constraint,rows)
-    r=e._beam_planner._record;r['row_count']=len(rows['free_violations']);r['rows_armed']=r['rows_required']=bool(r['row_count'])
-    e.linearization=q.copy();e.rows=read_rows(e._beam_constraint)
-    s.stageEventStatus.value=f'ROWS_REBUILT_FOR_STAGE_{n+1}'
+    try:
+     rows=fast.build_rows_fast_local_fd(adapter=e._beam_adapter,q_prev=q,q_free=q,dense_points=pts,dense_clearance=cl,requested_margin_m=fast.MARGIN_M)
+    except RuntimeError as exc:
+     if 'Invalid batched local FD SDF query' not in str(exc):raise
+     # Near the finite SDF grid edge, even FD perturbations may be invalid.
+     # Do not invent a Jacobian or repeat the native correction.
+     e.step_invalid_sdf=True
+     s.requestedPasses.value=n
+     s.stageEventStatus.value=f'CAPTURED_STAGE_{n}'
+    else:
+     fast.write_rows(e._beam_constraint,rows)
+     r=e._beam_planner._record;r['row_count']=len(rows['free_violations']);r['rows_armed']=r['rows_required']=bool(r['row_count'])
+     e.linearization=q.copy();e.rows=read_rows(e._beam_constraint)
+     s.stageEventStatus.value=f'ROWS_REBUILT_FOR_STAGE_{n+1}'
    else:s.stageEventStatus.value=f'CAPTURED_STAGE_{n}'
   except Exception as exc:
    e.native_error=traceback.format_exc();s.stageEventStatus.value='ERROR:'+str(exc)
@@ -144,12 +153,18 @@ class CandidateEnv(BeamSafetyMCREnv):
    # An out-of-grid free state cannot be linearized from the SDF.  Leave
    # native Contact active, disarm the Beam rows, and terminate this episode
    # after the original physics substep, rather than crashing all PPO workers.
-   if str(rec.get('planning_status'))=='FAIL' and str(rec.get('reason','')).startswith('DENSE_BEAM_MEASUREMENT_FAILED:'):
-    probe=self._beam_adapter.query(self._beam_adapter.sample(self.frame['q_free']))
-    if np.isfinite(probe).all():raise RuntimeError('UNEXPECTED_BEAM_PLANNER_FAILURE:'+str(rec.get('reason')))
+   reason=str(rec.get('reason',''))
+   free_outside=str(rec.get('planning_status'))=='FAIL' and reason.startswith('DENSE_BEAM_MEASUREMENT_FAILED:')
+   fd_outside=str(rec.get('planning_status'))=='FAIL' and (
+    reason.startswith('FAST_BEAM_UNILATERAL_ROW_BUILD_FAILED:') and
+    'Invalid batched local FD SDF query' in reason)
+   if free_outside or fd_outside:
+    if free_outside:
+     probe=self._beam_adapter.query(self._beam_adapter.sample(self.frame['q_free']))
+     if np.isfinite(probe).all():raise RuntimeError('UNEXPECTED_BEAM_PLANNER_FAILURE:'+reason)
     self.step_invalid_sdf=True
     self._beam_constraint.enabled.value=False
-    rec.update(planning_status='SAFE_FREE_NO_ROWS',reason='FREE_SDF_OUT_OF_GRID_EPISODE_TERMINAL',
+    rec.update(planning_status='SAFE_FREE_NO_ROWS',reason='SDF_GRID_UNAVAILABLE_EPISODE_TERMINAL',
      rows_required=False,rows_armed=False,row_count=0,q_free_clearance_m=float('nan'))
    value=float(rec['q_free_clearance_m'])
    self.frame['free']={'clearance_mm':value*1000 if np.isfinite(value) else None,
@@ -170,7 +185,7 @@ class CandidateEnv(BeamSafetyMCREnv):
   self.write_status('READY')
   print('CANDIDATE_WORKER_ENABLED',json.dumps({'pid':os.getpid(),'worker_dir':str(self.worker_dir),'solver':self.native.getClassName(),
    'world_rotation_J':True,'consistent_contact_reference':bool(self.native.consistentContactReference.value),
-   'penetration_policy':'count_only','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'passes':int(self.native.requestedPasses.value),'dt':float(self._sofa_root_node.dt.value),'independent_check':'near-wall and periodic audit; skipped frames unknown'}),flush=True)
+   'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'passes':int(self.native.requestedPasses.value),'dt':float(self._sofa_root_node.dt.value),'independent_check':'near-wall and periodic audit; skipped frames unknown'}),flush=True)
  def reset(self,*a,**kw):
   self.episode_index+=1;self.actions=[];self.frame=None;self.step_invalid_sdf=False;self.safety_failure_reason=None
   if kw.get('seed') is not None:self.seed_value=int(kw['seed'])
@@ -192,7 +207,7 @@ class CandidateEnv(BeamSafetyMCREnv):
   return obs,reward,terminated,truncated,info
  def _get_reward_features(self):
   features=super()._get_reward_features()
-  severe=self.step_min_clearance_mm < -PENETRATION_REPORT_THRESHOLD_MM
+  severe=getattr(self,'step_min_clearance_mm',float('inf')) < -PENETRATION_REPORT_THRESHOLD_MM
   invalid=bool(self.step_invalid_sdf)
   if severe or invalid:
    self.safety_failure_reason='SDF_OUT_OF_GRID' if invalid else 'BEAM_SURFACE_PENETRATION_GT_0P100MM'
@@ -232,7 +247,6 @@ class CandidateEnv(BeamSafetyMCREnv):
   self.last_independent=check
   if check['sdf_out_of_grid']:
    self.step_invalid_sdf=True
-   self.totals['invalid_sdf_substeps']+=1
    return float('nan')
   value=check['clearance_mm']
   self._beam_worst_audited_clearance_m=min(self._beam_worst_audited_clearance_m,value/1000)
@@ -307,13 +321,14 @@ class CandidateEnv(BeamSafetyMCREnv):
     if referr>1e-12:raise RuntimeError('CANDIDATE_CONTACT_REFERENCE_MISMATCH')
    checked=bool(self._beam_last_substep_audited);t=self.totals
    t['audited_substeps' if checked else 'skipped_substeps']+=1
+   if self.step_invalid_sdf:t['invalid_sdf_substeps']+=1
    t['single_solves' if calls==1 else 'double_solves']+=1
    cl=self.last_independent['clearance_mm'] if checked else None
    if checked and cl is not None:
     t['min_committed_mm']=cl if t['min_committed_mm'] is None else min(t['min_committed_mm'],cl)
    row={'context':self.context(),'free':self.frame['free'],'committed':self.last_independent,
     'contact_rows':[n*3 for n in contacts],'beam_rows':[len(s['rows']['freeViolations']) for s in self.stages],
-    'activeCounts':[s['activeCount'] for s in self.stages],'native_solve_calls':calls,'committed_audited':checked,'penetration_policy':'count_only','max_penetration_mm':max(0.0,-cl) if checked else None,'reference_consistency_error_m':referr,
+    'activeCounts':[s['activeCount'] for s in self.stages],'native_solve_calls':calls,'committed_audited':checked,'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','max_penetration_mm':max(0.0,-cl) if cl is not None else None,'reference_consistency_error_m':referr,
     'native_solve_ms':float(self.native.nativeSolveTotalWallMs.value),
     'native_map_ms':float(self.native.mappingTotalWallMs.value),
     'solver_errors':[s['solver_error'] for s in self.stages],'solver_iterations':[s['solver_iterations'] for s in self.stages]}
