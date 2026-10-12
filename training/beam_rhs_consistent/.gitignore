@@ -6,3 +6,5 @@ logs/
 results/
 models/
 *.zip
+
+_build*/
