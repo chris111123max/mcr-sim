@@ -12,7 +12,7 @@ test -f "$PLUGIN"
 test -f "$BEAM_PLUGIN"
 # The candidate changes native C++ contact instrumentation.  Refuse to
 # silently load a stale previously-built .so after git pull.
-for source in "$SCRIPT_DIR/native/ReferenceContact.h" "$SCRIPT_DIR/native/TestOnlyRelinearizingGenericConstraintSolver.cpp"; do
+for source in "$SCRIPT_DIR/native/ReferenceContact.h" "$SCRIPT_DIR/native/TestOnlyRelinearizingGenericConstraintSolver.cpp" "$SCRIPT_DIR/native/FastBeamSDF.cpp"; do
   if [[ "$PLUGIN" -ot "$source" ]]; then
     echo "Candidate native plugin is older than $source; rebuild with: bash $SCRIPT_DIR/build.sh" >&2
     exit 3
@@ -20,7 +20,7 @@ for source in "$SCRIPT_DIR/native/ReferenceContact.h" "$SCRIPT_DIR/native/TestOn
 done
 export MCR_RHS_PLUGIN="$PLUGIN"
 STAMP=$(date +%Y%m%d_%H%M%S)
-NAME=${EXP_NAME:-ppo_beam_rhs_consistent_coarse_v2}_${N_ENVS}env_${STAMP}
+NAME=${EXP_NAME:-ppo_beam_rhs_consistent_cpp_v3}_${N_ENVS}env_${STAMP}
 RUN=$ROOT/../training_runs/$NAME
 mkdir -p "$RUN/models" "$RUN/logs"
 export MCR_CANDIDATE_RUN_DIR="$RUN"
