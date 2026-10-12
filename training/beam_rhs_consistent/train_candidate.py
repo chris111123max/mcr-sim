@@ -63,7 +63,7 @@ def parse_args():
  'valid_min_train_success_rate']
  for key in preserve:
   if key in old and hasattr(args,key):setattr(args,key,old[key])
- args.beam_safety_validation='audit';args.variant='beam_unilateral_rhs_consistent_coarse_v2'
+ args.beam_safety_validation='audit';args.variant='beam_unilateral_rhs_consistent_cpp_v3'
  assert args.n_envs in (32,64) and args.physics_substeps==2 and args.time_step==0.005
  assert args.epochs==100 and args.episodes_per_epoch==100 and args.n_steps==256 and args.batch_size==1024 and args.n_epochs==5
  assert args.training_curriculum and args.device=='npu' and not args.reset_num_timesteps
@@ -71,7 +71,9 @@ def parse_args():
  'rotation_jacobian':'world','consistent_contact_reference':True,'native_solves_per_physics_substep':'adaptive 1 or 2',
  'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':0.100,'all_checked_negative_clearances_recorded':True,'candidate_target_margin_mm':0.100,'dense_independent_check_every_physics_substep':False,'second_solve_threshold_mm':0.150,
  'extra_physics_substeps':0,'production_modified':False,
- 'free_clearance_screen':'100um coarse conservative screening; 10um near wall',
+ 'free_clearance_screen':'native C++ 100um coarse Bezier + VTI trilinear screening; Python 10um near wall',
+ 'coarse_guard_backend':'native_cpp_v1',
+ 'coarse_guard_python_parity_checks_per_worker':3,
  'coarse_spacing_um':100.0,'coarse_switch_margin_mm':0.25,
  'coarse_sdf_slope_allowance':2.0,'coarse_extra_error_cushion_um':50.0})
  return args
