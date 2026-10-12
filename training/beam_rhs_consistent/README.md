@@ -108,6 +108,46 @@ N_ENVS=64 bash training/beam_rhs_consistent/launch.sh
 
 For a throughput comparison under the same code, launch a separate 32-env
 run using N_ENVS=32 and a distinct EXP_NAME. Old processes do not reload
-Python code after git pull. This patch needs no native-plugin rebuild because
-it edits only Python and README/launch files; the launcher still checks its
-previous native plugin binary for staleness.
+Python code after git pull. This V3 native C++ patch REQUIRES rebuilding the candidate plugin with
+`bash training/beam_rhs_consistent/build.sh`. The launcher checks that it is
+not older than FastBeamSDF.cpp as well as the existing native sources.
+
+## Native C++ coarse gate + streamlined callback (V3)
+
+The former Python 100 um Bezier sampling, coordinate inversion and vectorized
+VTI SDF interpolation now run together in one \`FastBeamSDF.cpp\` C++ call.
+The C++ kernel does not call or mutate SOFA objects: it reads live Rigid3 free
+positions, deployed WireBeamInterpolation nodes/lengths and the read-only VTI
+\`float32[z,y,x]\` grid via a narrow ctypes ABI.  The Python bridge directly
+extracts the required SOFA NumPy arrays rather than building dictionaries
+for each deployed element, and caches the immutable grid buffer across steps.
+
+* An early **unsafe** coarse SDF sample may stop coarse scanning; the
+  original full Python 10 um planner then handles every potentially near-wall
+  state.  Native \`safe=True\` means the full active Beam was scanned.
+* Native guard results are checked against the earlier Python implementation
+  for the first three real SOFA free states in every worker. Disagreement
+  causes a fail-fast exception, never a silent weakened safety decision.
+* When \`coarseSafe=True\` **and** the native constraint matrix has zero rows,
+  the solver acknowledges the stage in C++ without raising a Python event.
+  If any Contact rows exist, the original post-first-solve safety check stays
+  active and can trigger a second native solve.
+* Committed-state 10 um audits, negative-clearance counters, 0.100 mm
+  episode terminal rule and native RHS reference consistency are unchanged.
+
+Build and verify the standalone native interpolation kernel without SOFA:
+
+\`\`\`bash
+python training/beam_rhs_consistent/test_native_guard.py
+\`\`\`
+
+Build the full SOFA plugin (required) and launch a fresh test-only PPO run:
+
+\`\`\`bash
+bash training/beam_rhs_consistent/build.sh
+N_ENVS=64 bash training/beam_rhs_consistent/launch.sh
+\`\`\`
+
+This patch changes only the independent training candidate; the currently
+running workers continue their loaded V2 logic until stopped.  500 FPS is an
+unverified target and depends strongly on CPU quotas and native SOFA cost.
