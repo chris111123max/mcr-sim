@@ -151,3 +151,12 @@ N_ENVS=64 bash training/beam_rhs_consistent/launch.sh
 This patch changes only the independent training candidate; the currently
 running workers continue their loaded V2 logic until stopped.  500 FPS is an
 unverified target and depends strongly on CPU quotas and native SOFA cost.
+
+## Preserve currently running V2 processes
+
+V3 builds into `training/beam_rhs_consistent/native/_build_cpp_v3` by
+default, intentionally separate from the V2 `native/_build` plugin already
+mapped into existing SOFA workers.  Do not rebuild the old `_build` directory
+while those workers are running.  `build.sh` and `launch.sh` both recognize
+`MCR_RHS_BUILD_DIR` if an alternative native build path is needed.
+`MCR_RHS_PLUGIN` still overrides the launched plugin path.
