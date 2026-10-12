@@ -20,7 +20,7 @@ for source in "$SCRIPT_DIR/native/ReferenceContact.h" "$SCRIPT_DIR/native/TestOn
 done
 export MCR_RHS_PLUGIN="$PLUGIN"
 STAMP=$(date +%Y%m%d_%H%M%S)
-NAME=${EXP_NAME:-ppo_beam_rhs_consistent_adaptive}_${N_ENVS}env_${STAMP}
+NAME=${EXP_NAME:-ppo_beam_rhs_consistent_coarse_v2}_${N_ENVS}env_${STAMP}
 RUN=$ROOT/../training_runs/$NAME
 mkdir -p "$RUN/models" "$RUN/logs"
 export MCR_CANDIDATE_RUN_DIR="$RUN"
