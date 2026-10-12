@@ -10,6 +10,14 @@ PLUGIN=${MCR_RHS_PLUGIN:-$SCRIPT_DIR/native/_build/lib/libMCRContactReferenceCon
 BEAM_PLUGIN=$ROOT/mcr_sim/native/beam_unilateral/_build/lib/libMCRBeamLinearizedUnilateral.so
 test -f "$PLUGIN"
 test -f "$BEAM_PLUGIN"
+# The candidate changes native C++ contact instrumentation.  Refuse to
+# silently load a stale previously-built .so after git pull.
+for source in "$SCRIPT_DIR/native/ReferenceContact.h" "$SCRIPT_DIR/native/TestOnlyRelinearizingGenericConstraintSolver.cpp"; do
+  if [[ "$PLUGIN" -ot "$source" ]]; then
+    echo "Candidate native plugin is older than $source; rebuild with: bash $SCRIPT_DIR/build.sh" >&2
+    exit 3
+  fi
+done
 export MCR_RHS_PLUGIN="$PLUGIN"
 STAMP=$(date +%Y%m%d_%H%M%S)
 NAME=${EXP_NAME:-ppo_beam_rhs_consistent_adaptive}_${N_ENVS}env_${STAMP}
