@@ -69,7 +69,7 @@ def parse_args():
  assert args.training_curriculum and args.device=='npu' and not args.reset_num_timesteps
  save(EXP/'candidate_configuration.json',{'args':vars(args),'preserved_fields':preserve,
  'rotation_jacobian':'world','consistent_contact_reference':True,'native_solves_per_physics_substep':'adaptive 1 or 2',
- 'penetration_policy':'count_only','penetration_report_threshold_mm':0.100,'all_checked_negative_clearances_recorded':True,'candidate_target_margin_mm':0.100,'dense_independent_check_every_physics_substep':False,'second_solve_threshold_mm':0.150,
+ 'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':0.100,'all_checked_negative_clearances_recorded':True,'candidate_target_margin_mm':0.100,'dense_independent_check_every_physics_substep':False,'second_solve_threshold_mm':0.150,
  'extra_physics_substeps':0,'production_modified':False})
  return args
 
