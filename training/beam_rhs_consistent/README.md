@@ -36,3 +36,34 @@ checks stopped that experiment. Packaging does not repair that known failure.
 Outputs, failure snapshots, runtime journals and checkpoints are written under
 training_runs, never committed. Building creates native/_build, which is ignored.
 No production files or running processes are edited by source packaging.
+
+## Fast train-time safety policy (2026-10-12)
+
+The candidate only (not production) now uses distance-only dense SDF lookups
+for row planning and committed clearance: full-grid normals were previously
+computed but never used by either operation. Normals are only checked for
+actually penetrating samples in the independent audit. The deprecated
+`invalid_normal_count` field is null rather than misleadingly reported as 0.
+
+Per-step native JSON/Jacobian/contact-geometry auditing is disabled away from
+the 0.150 mm free-clearance risk band. It remains available for near-wall
+frames and failure snapshots. Ordinary full JSONL frame journaling is sampled
+every 16 physics substeps, plus risky/double-solve/penetrating events. Compact
+counters remain on every substep.
+
+The candidate terminates the **current episode**, not the PPO job, if any
+independently checked committed Beam surface clearance is below -0.100 mm.
+The original out-of-vessel penalty (-30 by default) applies once, and a
+simultaneous success reward is suppressed. Negative clearance between 0 and
+-0.100 mm is still counted but does not immediately terminate the episode.
+
+If any *free* SDF samples leave the finite grid, there is no legal local Beam
+SDF linearization: leave native collision Contact active, disable Beam SDF
+rows only for that substep, mark the SDF invalid, finish the scheduled physics
+step, and terminate that episode with the same penalty. If committed samples
+leave the grid, classify as `SDF_OUT_OF_GRID` rather than manufacturing a
+finite clearance. Unexpected failures continue to fail fast.
+
+This code has not been run in the SOFA 21.12 / Ascend server runtime following
+packaging. Rebuild the candidate native plugin before use, and verify one PPO
+update plus severe-penetration episode reset before a long training run.
