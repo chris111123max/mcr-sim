@@ -7,7 +7,7 @@ from mcr_sim.beam_safety_env import BeamSafetyMCREnv
 from mcr_sim import beam_sdf_unilateral_fast as fast
 from world_rows import convert_rows
 from dense_geometry import dense_check, query_clearance_only
-from fast_guard import coarse_beam_clearance_guard
+from fast_guard_native import NativeCoarseBeamGuard
 HERE=Path(__file__).resolve().parent
 EXP=Path(os.environ['MCR_CANDIDATE_RUN_DIR'])
 PENETRATION_REPORT_THRESHOLD_MM=0.100
@@ -135,6 +135,8 @@ class CandidateEnv(BeamSafetyMCREnv):
  def __init__(self,*a,**kw):
   global PLUGIN_HANDLE,INSTANCE
   if PLUGIN_HANDLE is None:PLUGIN_HANDLE=ctypes.CDLL(str(PLUGIN),mode=ctypes.RTLD_GLOBAL)
+  self._native_coarse_guard=NativeCoarseBeamGuard(
+   PLUGIN_HANDLE,spacing_m=COARSE_SPACING_M,switch_margin_m=COARSE_SWITCH_MARGIN_M)
   Sofa.Simulation.init=native_init;fast.build_rows_fast_local_fd=world_builder
   INSTANCE+=1;self.worker_dir=EXP/'beam_records'/f'worker_{os.getpid()}_{INSTANCE}';self.worker_dir.mkdir(parents=True)
   self.fd=create_memfd();self.frame=None;self.stages=[];self.rows=None;self.native_error=None
@@ -167,11 +169,10 @@ class CandidateEnv(BeamSafetyMCREnv):
    os.ftruncate(self.fd,0);self.stages=[];self.native_error=None
    self.frame={'q_prev':fast._as_array(self._beam_dofs.position),
     'q_free':fast._as_array(self._beam_dofs.free_position)}
-   probe=coarse_beam_clearance_guard(
-    self._beam_adapter,self.frame['q_free'],
-    spacing_m=COARSE_SPACING_M,switch_margin_m=COARSE_SWITCH_MARGIN_M)
+   probe=self._native_coarse_guard(self._beam_adapter,self.frame['q_free'])
    self.frame['coarse_safe']=bool(probe['safe'])
    self.frame['coarse']=probe
+   self.native.coarseSafe.value=bool(probe['safe'])
    if probe['safe']:
     self._beam_planner._last_key=key
     self._beam_constraint.enabled.value=False
@@ -196,8 +197,8 @@ class CandidateEnv(BeamSafetyMCREnv):
     'Invalid batched local FD SDF query' in reason)
    if free_outside or fd_outside:
     if free_outside:
-     probe=self._beam_adapter.query(self._beam_adapter.sample(self.frame['q_free']))
-     if np.isfinite(probe).all():raise RuntimeError('UNEXPECTED_BEAM_PLANNER_FAILURE:'+reason)
+     validation_samples=self._beam_adapter.query(self._beam_adapter.sample(self.frame['q_free']))
+     if np.isfinite(validation_samples).all():raise RuntimeError('UNEXPECTED_BEAM_PLANNER_FAILURE:'+reason)
     self.step_invalid_sdf=True
     self._beam_constraint.enabled.value=False
     rec.update(planning_status='SAFE_FREE_NO_ROWS',reason='SDF_GRID_UNAVAILABLE_EPISODE_TERMINAL',
@@ -221,7 +222,7 @@ class CandidateEnv(BeamSafetyMCREnv):
    if free is not None:
     t['free_negative']+=int(free<0)
     t['min_free_mm']=free if t['min_free_mm'] is None else min(t['min_free_mm'],free)
-   self.linearization=self.frame['q_free'].copy()
+   self.linearization=self.frame['q_free'] if probe['safe'] else self.frame['q_free'].copy()
    self.rows=read_rows(self._beam_constraint)
    if not probe['safe']:
     self.frame['initial_rows']={k:v.copy() for k,v in self.rows.items()}
@@ -229,7 +230,7 @@ class CandidateEnv(BeamSafetyMCREnv):
   self.write_status('READY')
   print('CANDIDATE_WORKER_ENABLED',json.dumps({'pid':os.getpid(),'worker_dir':str(self.worker_dir),'solver':self.native.getClassName(),
    'world_rotation_J':True,'consistent_contact_reference':bool(self.native.consistentContactReference.value),
-   'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'coarse_guard_um':COARSE_SPACING_M*1e6,
+   'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':PENETRATION_REPORT_THRESHOLD_MM,'compact_audit':True,'coarse_backend':'native_cpp_v1','coarse_guard_um':COARSE_SPACING_M*1e6,
    'coarse_switch_margin_mm':COARSE_SWITCH_MARGIN_M*1000,
    'passes':int(self.native.requestedPasses.value),'dt':float(self._sofa_root_node.dt.value),'independent_check':'near-wall and periodic audit; skipped frames unknown'}),flush=True)
  def reset(self,*a,**kw):
@@ -319,7 +320,8 @@ class CandidateEnv(BeamSafetyMCREnv):
   raw,records=self.native_records();(d/'native_frame.jsonl').write_text(raw)
   arrays={'q_committed':q,'raw_actions':np.asarray(self.actions,dtype=np.float32),'smoothed_action':np.asarray(getattr(self,'_last_smoothed_action',[]))}
   if self.frame is not None:
-   arrays.update(q_prev=self.frame['q_prev'],q_free=self.frame['q_free'],**self.frame['initial_rows'])
+   arrays.update(q_prev=self.frame['q_prev'],q_free=self.frame['q_free'],
+    **self.frame.get('initial_rows',{}))
   np.savez_compressed(d/'frame.npz',**arrays)
   for st in self.stages:
    np.savez_compressed(d/f'stage{st["stage"]}.npz',q_linearization=st['q_linearization'],q_committed=st['q_stage'],**st['rows'])
