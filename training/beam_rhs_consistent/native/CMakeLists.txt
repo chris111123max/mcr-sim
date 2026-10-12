@@ -30,7 +30,8 @@ file(GLOB _sofa_module_include_dirs LIST_DIRECTORIES true
 file(GLOB _sofa_generated_include_dirs LIST_DIRECTORIES true "${SOFA_PREFIX}/include/*")
 
 add_library(MCRContactReferenceConsistency SHARED
-    TestOnlyRelinearizingGenericConstraintSolver.cpp)
+    TestOnlyRelinearizingGenericConstraintSolver.cpp
+    FastBeamSDF.cpp)
 target_compile_features(MCRContactReferenceConsistency PRIVATE cxx_std_17)
 target_include_directories(MCRContactReferenceConsistency PRIVATE
     ${_sofa_module_include_dirs} ${_sofa_generated_include_dirs})
