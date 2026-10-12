@@ -67,3 +67,5 @@ finite clearance. Unexpected failures continue to fail fast.
 This code has not been run in the SOFA 21.12 / Ascend server runtime following
 packaging. Rebuild the candidate native plugin before use, and verify one PPO
 update plus severe-penetration episode reset before a long training run.
+
+Finite-grid limitation: a local-FD perturbation that exits the SDF grid is also treated as a per-episode invalid-SDF failure. Unexpected native errors still stop the experiment.
