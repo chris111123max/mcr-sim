@@ -32,6 +32,7 @@ public:
     TestOnlyRelinearizingGenericConstraintSolver()
         : d_consistent(initData(&d_consistent, false, "consistentContactReference", "Use native cParams reference coordinates in contact violation"))
         , d_auditDetail(initData(&d_auditDetail, true, "auditDetail", "Full diagnostic arrays; false retains built/solved RHS and reference audit"))
+        , d_coarseSafe(initData(&d_coarseSafe, false, "coarseSafe", "Candidate coarse gate passed for current physics substep"))
         , d_auditPath(initData(&d_auditPath, std::string(""), "auditPath", "Read-only native audit JSONL path"))
         , d_enabled(initData(&d_enabled, false, "relinearizationEnabled",
                              "Run native same-substep relinearization when enabled."))
@@ -96,9 +97,19 @@ public:
             d_eventStatus.setValue("WAITING");
             const std::string eventName =
                 "MCR_NONLINEAR_RELINEARIZATION_STAGE_" + std::to_string(stage);
-            sofa::core::objectmodel::ScriptEvent event(nullptr, eventName.c_str());
-            getContext()->propagateEvent(
-                sofa::core::execparams::defaultInstance(), &event);
+            // Skip Python only if there are no Beam or native Contact rows.
+            // With Contact rows, always permit the post-solve risk check.
+            const bool noConstraints = current_cp && current_cp->getDimension() == 0;
+            if (stage == 1 && d_coarseSafe.getValue() && noConstraints)
+            {
+                d_eventStatus.setValue("CAPTURED_STAGE_1");
+            }
+            else
+            {
+                sofa::core::objectmodel::ScriptEvent event(nullptr, eventName.c_str());
+                getContext()->propagateEvent(
+                    sofa::core::execparams::defaultInstance(), &event);
+            }
 
             passes = std::clamp(d_requestedPasses.getValue(), 1u, 2u);
             if (stage < passes)
@@ -243,6 +254,7 @@ public:
 private:
     sofa::core::objectmodel::Data<bool> d_consistent;
     sofa::core::objectmodel::Data<bool> d_auditDetail;
+    sofa::core::objectmodel::Data<bool> d_coarseSafe;
     sofa::core::objectmodel::Data<std::string> d_auditPath;
     sofa::core::objectmodel::Data<double> d_solveMs;
     sofa::core::objectmodel::Data<double> d_mapMs;
