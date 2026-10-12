@@ -48,7 +48,7 @@ class ProgressCallback(beam.BeamSafetyRolloutMetricsCallback):
    if self.n_calls==1:print('CANDIDATE_REAL_ROLLOUT_STARTED',int(self.model.num_timesteps),flush=True)
   return keep
  def _on_rollout_end(self):
-  for key in ['committed_negative','single_solves','double_solves','audited_substeps','skipped_substeps']:
+  for key in ['committed_negative','single_solves','double_solves','audited_substeps','skipped_substeps','coarse_safe_substeps','fine_fallback_substeps','coarse_invalid_substeps']:
    self.logger.record('beam_adaptive/'+key,sum(i.get(key,0) for i in getattr(self,'penetration_stats',[])))
   wall=time.monotonic()-self.rollout_start
   save(EXP/'rollout_summary.json',{'wall_seconds':wall,'env_steps':self.model.n_steps*self.model.n_envs,'fps':self.model.n_steps*self.model.n_envs/wall,'workers':self.penetration_stats})
@@ -63,14 +63,17 @@ def parse_args():
  'valid_min_train_success_rate']
  for key in preserve:
   if key in old and hasattr(args,key):setattr(args,key,old[key])
- args.beam_safety_validation='audit';args.variant='beam_unilateral_rhs_consistent_adaptive_v1'
+ args.beam_safety_validation='audit';args.variant='beam_unilateral_rhs_consistent_coarse_v2'
  assert args.n_envs in (32,64) and args.physics_substeps==2 and args.time_step==0.005
  assert args.epochs==100 and args.episodes_per_epoch==100 and args.n_steps==256 and args.batch_size==1024 and args.n_epochs==5
  assert args.training_curriculum and args.device=='npu' and not args.reset_num_timesteps
  save(EXP/'candidate_configuration.json',{'args':vars(args),'preserved_fields':preserve,
  'rotation_jacobian':'world','consistent_contact_reference':True,'native_solves_per_physics_substep':'adaptive 1 or 2',
  'penetration_policy':'episode_terminate_gt_0p100mm_or_invalid_sdf','penetration_report_threshold_mm':0.100,'all_checked_negative_clearances_recorded':True,'candidate_target_margin_mm':0.100,'dense_independent_check_every_physics_substep':False,'second_solve_threshold_mm':0.150,
- 'extra_physics_substeps':0,'production_modified':False})
+ 'extra_physics_substeps':0,'production_modified':False,
+ 'free_clearance_screen':'100um coarse conservative screening; 10um near wall',
+ 'coarse_spacing_um':100.0,'coarse_switch_margin_mm':0.25,
+ 'coarse_sdf_slope_allowance':2.0,'coarse_extra_error_cushion_um':50.0})
  return args
 
 def main():
