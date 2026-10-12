@@ -4,6 +4,20 @@ project(MCRContactReferenceConsistency LANGUAGES CXX)
 set(SOFA_PREFIX "$ENV{SOFA_ROOT}" CACHE PATH "SOFA 21.12 build/install prefix")
 set(SOFA_SOURCE_ROOT "$ENV{SOFA_SRC}" CACHE PATH "SOFA source tree")
 
+# The mCR SOFA 21.12 checkout uses SOFA_SRC=<...>/sofa/src with the
+# actual C++ sources in SOFA_SRC/sofa/.  Match the already-working
+# mcr_sim/native/beam_unilateral/CMakeLists.txt layout. Also accept callers
+# that directly provide the nested "sofa" directory.
+set(_mcr_source_candidate "${SOFA_SOURCE_ROOT}")
+if(NOT EXISTS "${_mcr_source_candidate}/SofaKernel/modules/SofaCore/src/sofa/core/ConstraintParams.h"
+   AND EXISTS "${_mcr_source_candidate}/sofa/SofaKernel/modules/SofaCore/src/sofa/core/ConstraintParams.h")
+    set(_mcr_source_candidate "${_mcr_source_candidate}/sofa")
+endif()
+# FORCE is deliberate: V3's first release cached the wrong SOFA_SRC root
+# during failed CMake configuration; a subsequent build must repair it.
+set(SOFA_SOURCE_ROOT "${_mcr_source_candidate}" CACHE PATH "Resolved SOFA source tree" FORCE)
+message(STATUS "Resolved SOFA source root: ${SOFA_SOURCE_ROOT}")
+
 foreach(_required
     "${SOFA_PREFIX}/lib/libSofa.Core.so"
     "${SOFA_PREFIX}/lib/libSofa.SimulationCore.so"
