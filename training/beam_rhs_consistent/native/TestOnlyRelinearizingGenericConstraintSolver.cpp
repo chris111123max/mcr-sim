@@ -227,7 +227,9 @@ public:
     }
     bool buildSystem(const ConstraintParams*p,sofa::core::MultiVecId x,sofa::core::MultiVecId v) override {
         mcr::contact_reference_test::consistentReference=d_consistent.getValue();
+        mcr::contact_reference_test::captureContactGeometry=!d_auditPath.getValue().empty();
         bool r=GenericSolver::buildSystem(p,x,v);
+        mcr::contact_reference_test::captureContactGeometry=false;
         mcr::contact_reference_test::consistentReference=false;
         audit("built",p);return r;
     }
