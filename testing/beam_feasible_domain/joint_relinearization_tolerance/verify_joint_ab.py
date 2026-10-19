@@ -20,7 +20,7 @@ from scipy.spatial.transform import Rotation
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "three_factor_validation"))
-from validate_three_factors import load_snapshot, nonlinear_case  # noqa: E402
+from validate_three_factors import nonlinear_case  # noqa: E402
 
 ACTION_SHA = "6f534ad5155bfa635666f9d3237783681e65dc378a3d5608706db30bb00e181c"
 MARGIN_MM = 0.100
@@ -59,6 +59,64 @@ def resolve_snapshot(manifest: Path, item: dict) -> Path:
     path = (manifest.parent / item["npz"]).resolve()
     must(path.is_file(), "STAGE_NPZ_NOT_FOUND:" + str(path))
     return path
+
+def load_snapshot(path: Path) -> dict:
+    """Strict local canonical NPZ loader; avoid a shared tuple/array shape bug."""
+    path = Path(path).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(path)
+    with np.load(path, allow_pickle=False) as src:
+        data = {key: np.array(src[key]) for key in src.files}
+    required = (
+        "q_prev", "q_free", "q_committed", "row_offsets", "dof_indices",
+        "linear_jacobian", "angular_jacobian", "free_violations",
+        "selected_dense_indices", "q_free_dense_clearance",
+        "q_committed_dense_clearance",
+    )
+    missing = [key for key in required if key not in data]
+    must(not missing, "MISSING_CANONICAL_FIELDS:" + ",".join(missing))
+    for key, value in data.items():
+        must(np.issubdtype(value.dtype, np.number) and np.isfinite(value).all(),
+             "NONFINITE_OR_NONNUMERIC:" + key)
+    q_free = np.asarray(data["q_free"], dtype=np.float64)
+    q_committed = np.asarray(data["q_committed"], dtype=np.float64)
+    q_prev = np.asarray(data["q_prev"], dtype=np.float64)
+    must(q_free.ndim == 2 and q_free.shape[1] == 7 and
+         q_committed.shape == q_free.shape and q_prev.shape == q_free.shape,
+         "INVALID_RIGID3_BEAM_SHAPE")
+    offsets = np.asarray(data["row_offsets"], dtype=np.int64).reshape(-1)
+    ids = np.asarray(data["dof_indices"], dtype=np.int64).reshape(-1)
+    selected = np.asarray(data["selected_dense_indices"], dtype=np.int64).reshape(-1)
+    rows = np.asarray(data["free_violations"], dtype=np.float64).reshape(-1)
+    must(len(rows) > 0 and len(selected) == len(rows) and
+         len(offsets) == len(rows) + 1 and offsets[0] == 0 and
+         offsets[-1] == len(ids) and np.all(np.diff(offsets) > 0),
+         "INVALID_CSR_OR_ROW_SELECTION")
+    must(np.asarray(data["linear_jacobian"]).reshape(-1, 3).shape[0] == len(ids)
+         and np.asarray(data["angular_jacobian"]).reshape(-1, 3).shape[0] == len(ids),
+         "JACOBIAN_BLOCK_COUNT_MISMATCH")
+    free_profile = np.asarray(data["q_free_dense_clearance"], dtype=np.float64).reshape(-1)
+    committed_profile = np.asarray(data["q_committed_dense_clearance"], dtype=np.float64).reshape(-1)
+    must(free_profile.size == committed_profile.size and
+         np.all(selected >= 0) and np.all(selected < free_profile.size) and
+         np.all(ids >= 0) and np.all(ids < q_free.shape[0]),
+         "DENSE_PROFILE_OR_INDEX_MISMATCH")
+    data.update(
+        q_prev=q_prev, q_free=q_free, q_committed=q_committed,
+        row_offsets=offsets, dof_indices=ids, free_violations=rows,
+        selected_dense_indices=selected, q_free_dense_clearance=free_profile,
+        q_committed_dense_clearance=committed_profile,
+        path=str(path), metadata={},
+    )
+    sidecar = path.with_suffix(".json")
+    if sidecar.is_file():
+        try:
+            metadata = json.loads(sidecar.read_text(encoding="utf-8"))
+            if isinstance(metadata, dict):
+                data["metadata"] = metadata
+        except (OSError, ValueError):
+            pass
+    return data
 
 def check_flags(record: dict, scope: str):
     for key in ("direct_position_write", "projection_used", "rollback_used",
@@ -179,14 +237,24 @@ def analyze(manifest: Path, d: dict) -> dict:
                 "worst_point_selected":last_sdf["committed_worst_selected"],
                 "reported_linear_gap_mm":item.get("native_linear_row_gap_min_mm"),
                 "native_solver_wall_ms":item.get("native_solver_wall_ms"),
+                "row_build_wall_ms":item.get("row_build_wall_ms"),
+                "native_nonlinear_max_prediction_error_mm":item.get(
+                    "native_nonlinear_max_prediction_error_mm"),
             })
+            if item.get("row_build_wall_ms") is not None:
+                must(numeric(item["row_build_wall_ms"],"row_build_wall_ms") >= 0,
+                     "NEGATIVE_ROW_BUILD_TIME")
+            if item.get("native_nonlinear_max_prediction_error_mm") is not None:
+                numeric(item["native_nonlinear_max_prediction_error_mm"],
+                        "native_nonlinear_max_prediction_error_mm")
             if item.get("native_linear_row_gap_min_mm") is not None:
                 numeric(item["native_linear_row_gap_min_mm"],"native_linear_row_gap_min_mm")
             if item.get("native_solver_wall_ms") is not None:
                 must(numeric(item["native_solver_wall_ms"],"native_solver_wall_ms")>=0,
                      "NEGATIVE_NATIVE_SOLVE_TIME")
             prior=snap
-        result["arms"][arm]={"requested_tolerance":target_tol,"passes":stage_results}
+        result["arms"][arm]={"requested_tolerance":target_tol,"passes":stage_results,
+                             "native_replay_wall_ms":cfg.get("native_replay_wall_ms")}
         final=stage_results[-1]
         result["arms"][arm]["final_clearance_mm"]=final["committed_min_clearance_mm"]
         result["arms"][arm]["margin_met"]=(

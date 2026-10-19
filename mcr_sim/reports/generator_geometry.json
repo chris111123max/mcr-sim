@@ -1,0 +1,82 @@
+{
+  "status": "PASS",
+  "runtime": "existing stEVE_anatomical_vessels/.venv",
+  "mesh_generated": false,
+  "sofa_steps": 0,
+  "meshing_dependencies_import": "PASS",
+  "results": [
+    {
+      "seed": 101,
+      "reproducible": true,
+      "geometry_sha256": "74edc5f76f10a3d3c38aa9217c2e883f725e9a116ab86df12575a85900275cb3",
+      "sampled_scaling_xyzd": [
+        0.99,
+        0.99,
+        0.73,
+        0.85
+      ],
+      "branch_names": [
+        "aorta",
+        "bct",
+        "rcca",
+        "rsa",
+        "lcca",
+        "lsa"
+      ],
+      "branch_connection_gaps_mm": {
+        "bct": 0.0,
+        "lcca": 0.0,
+        "lsa": 0.0,
+        "rcca": 0.0,
+        "rsa": 0.0
+      },
+      "insertion_point_mm": [
+        -0.025560474023222923,
+        0.001851722365245223,
+        1.459863543510437
+      ],
+      "insertion_direction": [
+        0.0033508166670799255,
+        0.0037596868351101875,
+        0.9999872446060181
+      ]
+    },
+    {
+      "seed": 1101,
+      "reproducible": true,
+      "geometry_sha256": "a3b0a75a63d999bad5edd1e81c180253d5c723828a96d7c460edaff2832ef8ba",
+      "sampled_scaling_xyzd": [
+        0.9299999999999999,
+        0.9299999999999999,
+        0.83,
+        0.85
+      ],
+      "branch_names": [
+        "aorta",
+        "bct",
+        "rcca",
+        "rsa",
+        "lcca",
+        "lsa"
+      ],
+      "branch_connection_gaps_mm": {
+        "bct": 0.0,
+        "lcca": 0.0,
+        "lsa": 0.0,
+        "rcca": 0.0,
+        "rsa": 0.0
+      },
+      "insertion_point_mm": [
+        0.38789287209510803,
+        -0.0035032988525927067,
+        1.6234973669052124
+      ],
+      "insertion_direction": [
+        0.23295994102954865,
+        -0.006059424486011267,
+        0.9724674820899963
+      ]
+    }
+  ],
+  "full_mesh_centerline_enclosure": "NOT_RUN"
+}

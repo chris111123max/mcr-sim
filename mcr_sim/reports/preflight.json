@@ -1,0 +1,58 @@
+{
+  "sofa": {
+    "dt_s": 0.006,
+    "physics_substeps": 22,
+    "contact_distance_m": 0.0003,
+    "alarm_distance_m": 0.0005,
+    "angle_cone": 0.02,
+    "friction": 0.1,
+    "lcp_tolerance": 0.0001,
+    "lcp_max_iterations": 2000,
+    "lcp_build": false,
+    "physical_beams": 134,
+    "mechanical_dofs": 135,
+    "collision_edges": [
+      100,
+      68
+    ],
+    "visual_edges": 600,
+    "catheter_proximity_m": 0.000665,
+    "vessel_proximity_m": 0.0
+  },
+  "vessel_root": "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/vessel_cache/archvariety_type_I_d085",
+  "cache_status": "NOT_GENERATED",
+  "vessels": [],
+  "train_seeds": [
+    101,
+    202,
+    303,
+    404,
+    505,
+    606,
+    707,
+    808,
+    909,
+    1010
+  ],
+  "eval_seeds": [
+    1101,
+    1202
+  ],
+  "observation_dimension": 20,
+  "action_dimension": 3,
+  "magnet_overlap_nodes": [
+    131,
+    132,
+    133,
+    134
+  ],
+  "magnet_overlap_weights": [
+    0.2500000000000002,
+    0.2500000000000002,
+    0.2500000000000002,
+    0.2500000000000002
+  ],
+  "magnet_dipole_moment_a_m2": 0.0037312125,
+  "formal_training_started": false,
+  "physics_substeps_executed": 0
+}

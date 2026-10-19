@@ -19,13 +19,53 @@ import numpy as np
 THIS = Path(__file__).resolve()
 THREE_FACTOR_DIR = THIS.parent.parent / "three_factor_validation"
 sys.path.insert(0, str(THREE_FACTOR_DIR))
-from validate_three_factors import load_snapshot, linearized_g, nonlinear_case  # noqa: E402
+from validate_three_factors import linearized_g, nonlinear_case  # noqa: E402
 
 TARGET_MM = 0.100
 BASELINE_MM = 0.082681
 BASELINE_TOL_MM = 0.00001
 STATE_TOL_M = 1.0e-10
 QUAT_TOL = 1.0e-10
+
+
+def load_snapshot(path: Path):
+    """Strict local loader; avoid the shared helper's tuple/array shape typo."""
+    with np.load(path, allow_pickle=False) as z:
+        data = {k: np.array(z[k]) for k in z.files}
+    required = ("q_free", "q_committed", "row_offsets", "dof_indices",
+                "linear_jacobian", "angular_jacobian", "free_violations",
+                "selected_dense_indices", "q_free_dense_clearance",
+                "q_committed_dense_clearance")
+    missing = [k for k in required if k not in data]
+    if missing:
+        raise ValueError("MISSING_CANONICAL_FIELDS:" + repr(missing))
+    for k, a in data.items():
+        if not np.issubdtype(a.dtype, np.number) or not np.isfinite(a).all():
+            raise ValueError("NONFINITE_OR_NONNUMERIC:" + k)
+    qf, qc = data["q_free"], data["q_committed"]
+    if qf.ndim != 2 or qf.shape[1] != 7 or qc.shape != qf.shape:
+        raise ValueError("INVALID_RIGID3_BEAM_SHAPE")
+    if "q_prev" in data and data["q_prev"].shape != qf.shape:
+        raise ValueError("INVALID_Q_PREV_SHAPE")
+    off = np.asarray(data["row_offsets"], dtype=np.int64).reshape(-1)
+    ids = np.asarray(data["dof_indices"], dtype=np.int64).reshape(-1)
+    rows = len(data["free_violations"])
+    if len(off) != rows + 1 or off[0] != 0 or off[-1] != len(ids) or np.any(np.diff(off) <= 0):
+        raise ValueError("INVALID_CSR")
+    if len(data["linear_jacobian"]) != len(ids) or len(data["angular_jacobian"]) != len(ids):
+        raise ValueError("CSR_BLOCK_COUNT_MISMATCH")
+    if np.any(ids < 0) or np.any(ids >= len(qf)):
+        raise ValueError("INVALID_DOF_INDEX")
+    sel = np.asarray(data["selected_dense_indices"], dtype=np.int64).reshape(-1)
+    prof = data["q_free_dense_clearance"].reshape(-1)
+    comm = data["q_committed_dense_clearance"].reshape(-1)
+    if len(sel) != rows or len(prof) != len(comm) or np.any(sel < 0) or np.any(sel >= len(prof)):
+        raise ValueError("DENSE_PROFILE_OR_SELECTION_MISMATCH")
+    data.update(q_free=qf, q_committed=qc, row_offsets=off, dof_indices=ids,
+                selected_dense_indices=sel, q_free_dense_clearance=prof,
+                q_committed_dense_clearance=comm,
+                metadata={}, path=str(Path(path).resolve()))
+    return data
 
 
 def hash_file(path: Path) -> str:

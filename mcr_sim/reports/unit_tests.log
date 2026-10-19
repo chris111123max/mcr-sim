@@ -1,0 +1,29 @@
+test_content_hash_rejects_mixed_assets (test_assets.TestSavedAssetLoader) ... ok
+test_existing_cache_mm_to_m (test_assets.TestSavedAssetLoader) ... ok
+test_actual_builder_forwards_locked_parameters (test_unified.TestComponentWiring) ... ok
+test_bfs_not_euclidean (test_unified.TestNavigation) ... ok
+test_bfs_same_point (test_unified.TestNavigation) ... ok
+test_cache_scale_guard (test_unified.TestNavigation) ... ok
+test_error_stops_substeps (test_unified.TestNavigation) ... ok
+test_eval_uses_heldout_seed (test_unified.TestNavigation) ... ok
+test_nan_state_is_reported (test_unified.TestNavigation) ... ok
+test_reset_observation_and_substep_allocation (test_unified.TestNavigation) ... ok
+test_reward_units (test_unified.TestNavigation) ... ok
+test_simerror_not_success (test_unified.TestNavigation) ... ok
+test_target_on_legal_centerline (test_unified.TestNavigation) ... ok
+test_termination_and_time_limit (test_unified.TestNavigation) ... ok
+test_action_22_and_limits (test_unified.TestParameters) ... ok
+test_invalid_action (test_unified.TestParameters) ... ok
+test_legacy_environment_cannot_replace_lcp (test_unified.TestParameters) ... ok
+test_magnet_overlap (test_unified.TestParameters) ... ok
+test_nelson_moment_and_torque (test_unified.TestParameters) ... ok
+test_physical_and_rl_contract (test_unified.TestParameters) ... ok
+test_quantization (test_unified.TestParameters) ... ok
+test_episode_safe_multi_env_and_truncation_mask (test_unified.TestRecurrentSAC) ... ok
+test_forward_gradient_hidden_and_checkpoint (test_unified.TestRecurrentSAC) ... ok
+test_time_limit_bootstraps_but_success_does_not (test_unified.TestRecurrentSAC) ... ok
+
+----------------------------------------------------------------------
+Ran 24 tests in 6.250s
+
+OK

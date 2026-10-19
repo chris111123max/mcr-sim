@@ -1,27 +1,3 @@
-"""Project-side distributed training support for SB3 SAC and PPO."""
-
-from .context import DistributedContext, initialize_distributed
+"""Reusable device utilities; no legacy PPO, SAC, HER or distributed learner."""
 from .device import DeviceSelection, resolve_device
-from .npu_performance import (
-    configure_npu_execution,
-    convert_to_npu_fused_adam,
-    zero_optimizer_grad,
-)
-from .replay_buffer import AcceleratorReplayBuffer
-from .sac import DistributedSAC
-from .goal_sac import GoalConditionedSAC
-from .ppo import DistributedPPO
-
-__all__ = [
-    "DeviceSelection",
-    "DistributedContext",
-    "DistributedSAC",
-    "GoalConditionedSAC",
-    "DistributedPPO",
-    "AcceleratorReplayBuffer",
-    "configure_npu_execution",
-    "convert_to_npu_fused_adam",
-    "initialize_distributed",
-    "resolve_device",
-    "zero_optimizer_grad",
-]
+__all__ = ["DeviceSelection", "resolve_device"]

@@ -1,0 +1,552 @@
+{
+  "name": "CURRENT_CODE_AUDIT",
+  "backup": "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/source_backups/mcr_unify_20261019_160904.tar.gz",
+  "files": [
+    {
+      "path": "python/contrastive_recovery/__init__.py",
+      "sha256": "b7ddf467a3d9f46f19da0d1a630d691dbbe39f71b1cac12da7d8882d4f2bde55",
+      "bytes": 301,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/agent.py",
+      "sha256": "1e1373c688d50a96431983e435246d3fd4cde4411974c3a49885edeafde259dd",
+      "bytes": 21302,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/networks.py",
+      "sha256": "29ef7c305d3da1e1f4bb8711f6a4939dca8cfad27c8966da18442dccf37ab380",
+      "bytes": 5917,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/replay.py",
+      "sha256": "1829a2c7fbdf0e8d51f3f02e035f159716e19ce18df406600fd7f6aac3f81daa",
+      "bytes": 5071,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/run_train.sh",
+      "sha256": "2b36a989539e4d3413336608e85cb02a42a8eaf96c698f654d3687924ac1f6cc",
+      "bytes": 3185,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/smoke_test.py",
+      "sha256": "fa256d02a060a2c8fc5c87c8ea5830c7023e9269544c661a32283ea7f6546db6",
+      "bytes": 2871,
+      "operation": "delete"
+    },
+    {
+      "path": "python/contrastive_recovery/train.py",
+      "sha256": "0897b472a121cf9f5c618d4aa38854de3b247d799cb0ad44ee0533e0bba8fb58",
+      "bytes": 28017,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/__init__.py",
+      "sha256": "6a3cf5192354f71615ac51034b3e97c20eda99643fcaf5bbe6d41ad59bd12167",
+      "bytes": 3,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/beam_safety_env.py",
+      "sha256": "f4b5b05464da01383c153386ce569d8c8494ffc03988c03483b0e37fff3fb960",
+      "bytes": 15257,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/discrete_navigation.py",
+      "sha256": "3d1b852ba0527f3a3abf543acfc23a7a47b7d1e4cc31ea7447eedd222ad8b2d4",
+      "bytes": 3842,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/distributed/__init__.py",
+      "sha256": "2a02015fe22cd3a31c072b07ce3313e3b3ecb1184428d41b8979fdbf557fed28",
+      "bytes": 768,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/distributed/goal_sac.py",
+      "sha256": "e656fd71b8449889f5b6c873df6b7638906e436a8307e2b1f10b01ff632d94a5",
+      "bytes": 14356,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/distributed/ppo.py",
+      "sha256": "574232201ab98f2609cadd1c6f088bb6cb089ada19c79643708fd30d02b41d51",
+      "bytes": 8692,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/distributed/recurrent_ppo.py",
+      "sha256": "ffefa43f545d29796306facb6f8a1b4a140b1fbfe1f021c25adb87a67c6bcd39",
+      "bytes": 10803,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/distributed/replay_buffer.py",
+      "sha256": "74b38495c871d00d497be540636290e64ef0dbf213c03456450e39a42f5f3665",
+      "bytes": 7272,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/distributed/sac.py",
+      "sha256": "05e9b5ebbb2534c4a2f494b8b3698b8de224d114a55caf2f26b0ff26137d3c46",
+      "bytes": 9881,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/goal_conditioned_env.py",
+      "sha256": "34d418a148c99faaf8ec919734273c1267bee40e019f0449ce8e797b95b9fd54",
+      "bytes": 24510,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/goal_contract.py",
+      "sha256": "cd06d4c8cc422c1ae3d8a5e499065c976f0c85d98ae4ce979e3366385da56420",
+      "bytes": 3480,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/goal_sac_config.py",
+      "sha256": "6f44458fcf81105162711fc3ba9216060307c5688f9526df37b71b3a769cc39f",
+      "bytes": 2026,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/mcr_controller_sofa.py",
+      "sha256": "f5c8ce772ef103988c16f7ad2122f2bb35deeeccc83539310219502f1b99831f",
+      "bytes": 6541,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/mcr_environment.py",
+      "sha256": "26e0151b7e4d99800192f22c5910240f976ffdc02cb8ca4cb753dfd0e3182229",
+      "bytes": 7659,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/mcr_instrument.py",
+      "sha256": "78e8a9ad46d1cda84670fd9efb4b735472575eaf61989cbe29e037eedc9dfe1b",
+      "bytes": 13198,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/mcr_mag_controller.py",
+      "sha256": "090f050de9a5951a24ca815d53615c61871e214ed07fd4a5beeac8b14efdfb73",
+      "bytes": 4025,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/mcr_rl_env.py",
+      "sha256": "53500b90951f4b71fdf04e6b506cb79c1a373965d7449f0aadab0c3900cf720d",
+      "bytes": 161577,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/mcr_simulator.py",
+      "sha256": "a69dbaed746a499adad1e8d9907ab1f23af84ac9ef50e7ebaadecc49055534cd",
+      "bytes": 7734,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/mcr_simulator.py.bak",
+      "sha256": "396ad5f8021d898592b4136740ac09f7fbed395fab0e94fdfeb359f7430ae660",
+      "bytes": 4883,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/rl_core/base.py",
+      "sha256": "2a247514d2f8b57cd3d694d5cca5a486039fbe718069eb2c11ff29ba05ed076d",
+      "bytes": 33010,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/rl_core/evaluation.py",
+      "sha256": "05003e729644dccd6f4f1e52610a06cea090d151c49efe469a56e30bc7acbb9d",
+      "bytes": 31141,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/rl_core/experiment.py",
+      "sha256": "6097608af3dc94a057a9c390c693b3cb432ac7a1005e508c8dae76ae7529c1e2",
+      "bytes": 94829,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/route_tracking.py",
+      "sha256": "7079d2a35adea49d65c69d0c5115e06cc23f91a6ec9ccaada1a96b2d6ab5bcea",
+      "bytes": 6881,
+      "operation": "delete"
+    },
+    {
+      "path": "python/mcr_sim/sdf_hard_constraint.py",
+      "sha256": "8c1f184bb67864030a8e028cd8f9891d2dbefb1f212a1b011f25d9d7bb24153d",
+      "bytes": 16817,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/sdf_physics_wall.py",
+      "sha256": "f0097df8181423a1cfce2569389f8d8e03f109c813e47d1497310ddc3c493293",
+      "bytes": 11505,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/sdf_unilateral_constraint.py",
+      "sha256": "5c7b4f58b747f9d6524b73cfe1ce3f6316d8404a3102f10f003addab9b429203",
+      "bytes": 14602,
+      "operation": "modify"
+    },
+    {
+      "path": "python/mcr_sim/training_config.py",
+      "sha256": "103d2495aa07a5905551bee6770981cfb33c2d7abb1acdc3ef363481386c287f",
+      "bytes": 38476,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/__init__.py",
+      "sha256": "82fad7ebdda345f7ca2be834d55743b728219bce5abd29de1f73b383553e59c8",
+      "bytes": 58,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/agent.py",
+      "sha256": "67a00c2d1a46aa6ee3f8aa3eceec73a2209ffa83ab4e676a5ca0f5d4bd0442df",
+      "bytes": 12380,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/curriculum.py",
+      "sha256": "91df6ea1c075de0c3e4efcec37e8dadf090eaf352ef85e56e08bcd6b7844ad9c",
+      "bytes": 3322,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/evaluate.py",
+      "sha256": "c7993856a2e3559da69b7193d71dcfa2d599b6ac71bb9d3bd01755a2baa5a635",
+      "bytes": 4057,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/replay.py",
+      "sha256": "3df578bb75eb5bd34ca148e4b6bb3449f6006de40b99e81ea92256bcb9bd8edc",
+      "bytes": 6440,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/run_train.sh",
+      "sha256": "a4049af4ba5747d9b3dc624f65207f876901a478235c9e79c16035ecf683df61",
+      "bytes": 2930,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/smoke_test.py",
+      "sha256": "d38a5c9ba524f9dfb8194786860ef1154a72f0c088c83ea618aa5be01f8d839a",
+      "bytes": 3927,
+      "operation": "delete"
+    },
+    {
+      "path": "python/recurrent_goal_tqc/train.py",
+      "sha256": "65299ea5f8da1c666af00ce85127419b9c900925670a4f5525419feb52be504c",
+      "bytes": 23442,
+      "operation": "delete"
+    },
+    {
+      "path": "python/scene/example_aortic_arch.py",
+      "sha256": "8bfaba0d35c3760ad59e9e180dda4ea8b982d2909ef012a2da1cb9e379f087c7",
+      "bytes": 70089,
+      "operation": "modify"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/README.md",
+      "sha256": "dd97914425c2d913a7034c4886ce50b285a1d3bb823a18559681af68fe3195c3",
+      "bytes": 3814,
+      "operation": "modify"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/__init__.py",
+      "sha256": "119f0f2219b91c04529878cb54aa327143eba53952ee54d66002c8adbdbb94f3",
+      "bytes": 388,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/action_controller.py",
+      "sha256": "cef20cf5760c9a78da02622c7446005b7f427758ac7309830e27ddce2b1b36ca",
+      "bytes": 4877,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/centerline_adapter.py",
+      "sha256": "d2e535049ce010a84afba020c2761091a367b65b065c7ed95b6b794533b46222",
+      "bytes": 9892,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/config.py",
+      "sha256": "7b50103d2bc8c2b7b0fbe9009ce319b02d0242f3bedb5aeb36d636a43b68e8de",
+      "bytes": 5393,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/diagnostics.py",
+      "sha256": "bd84b189aafd3333e7dcd92953c6ad080d3c9039d4f6c84f4c0739431ac44f4c",
+      "bytes": 2455,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/environment.py",
+      "sha256": "c65b6a285e0cbb3030c8d1dbe2848879ad1e6684b33e7f9624bce80bb9abb4f1",
+      "bytes": 9119,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/evaluate.py",
+      "sha256": "82cf56162cb7cd07a0b7f3a187f96b4fc52796baed4f986cc95c7d860bb2a006",
+      "bytes": 2456,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/instrument.py",
+      "sha256": "66eafb2d8d33b5923f61697a560caa5e5e1b0edaf069d227c13c27cf569967a1",
+      "bytes": 3780,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/integration_smoke.py",
+      "sha256": "e393a210aa92050f70f6640b29e4770a378dedc171f8c882f47cef179bcda788",
+      "bytes": 1512,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/magnetics.py",
+      "sha256": "b66b301c52182f3eb88705d12a67b7a592569edde896387b3f69f97f9b8846cb",
+      "bytes": 2440,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/networks.py",
+      "sha256": "28b6bd5312cba093381694f30576cde058772255e7200dd6ff90172632b386b0",
+      "bytes": 2640,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/observation.py",
+      "sha256": "e4c6ec2e136a519cc09813eab30b3f8348d72294a14d4146f5c59862cea095f4",
+      "bytes": 5608,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/preflight.py",
+      "sha256": "aec8f3513c7aea0f4ea99b6dc2a5e5019fe5cce0a28a400d52c0b85cf946f314",
+      "bytes": 1471,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/reward.py",
+      "sha256": "209b352b4e3f6f97ac447d602a6fee8fe8d31b058d8caf85e7fdb8f144a59957",
+      "bytes": 1317,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/sac_training.py",
+      "sha256": "a65d3b86577aa71f83f84eebaa5f85fb34d339f1d9415cfd41fcb77aad6df887",
+      "bytes": 9928,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/sofa_scene.py",
+      "sha256": "6034937b7c131daae8ceedd7fdbdf3b1ec5f5efff0ef66bffdf3efa4b74be56d",
+      "bytes": 14236,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/task.py",
+      "sha256": "c93b9f5d027f113a439a17247261d5c942b8b1f708f9628269d0162715f4cf63",
+      "bytes": 1873,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/train_ppo.py",
+      "sha256": "a0f462ef03392d3b21fe71df4d32481b132888dafe8e83ca6d4dc7bb85c14f98",
+      "bytes": 478,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/train_sac.py",
+      "sha256": "6843079492cc25be4bf7e364a9e0884854bd3a93c9a45208704ce44719108533",
+      "bytes": 2317,
+      "operation": "delete"
+    },
+    {
+      "path": "python/stEVE_magnetic_rl/vessel_adapter.py",
+      "sha256": "5e11403129462d741ba82f400c92b86d961e8a3649a08c353dbabc6eecb5d43e",
+      "bytes": 7858,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/beam_rhs_consistent/candidate_env.py",
+      "sha256": "dfdca37aacf68245e53d3306c337e57f27ddb36f5b91728ff885eebcdd7247c6",
+      "bytes": 23260,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/beam_rhs_consistent/train_candidate.py",
+      "sha256": "c6602bff1507ce17b6da14791a7a25862a4f479b1eff4617562127a0860e1567",
+      "bytes": 5980,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/evaluate_train_policy.py",
+      "sha256": "5eb0a2ed8a4f3978d0eb5d55705e9f489d2de665fed88d380235ad81988e0042",
+      "bytes": 15398,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/train_goal_sac.py",
+      "sha256": "07a8f81b6abf1f8b662c41ca3536c7c259a9a9335cf9a011b4f3d7a40e348d51",
+      "bytes": 20657,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/train_lstm_ppo.py",
+      "sha256": "99a3dc71f1ac63be3fdefbc600d10ee0afd8d3bb85c5fd97d2371d8bb8adccff",
+      "bytes": 19112,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/train_ppo.py",
+      "sha256": "e08645c545a3ae5dbeaadbd2e1ea62ce9bd439a35898c58310f2d3dc1625c9f8",
+      "bytes": 23254,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/train_ppo_beam_unilateral.py",
+      "sha256": "30603abeb66f3e39aa88ff22d82543b54d3c696005cbf6bc04e236283a40c988",
+      "bytes": 9882,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/py/train_sac.py",
+      "sha256": "8797d7ac1a4d7cf7bf2ba1f9aee1dedc14e7b7c3548eba81262a15f6d6d51891",
+      "bytes": 76917,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/sh/run_train_goal_sac.sh",
+      "sha256": "f895d08c695a5d2b50430f024d142ba25ee5629ceafe3be8423f4ae34816a10c",
+      "bytes": 3373,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/sh/run_train_lstm_ppo.sh",
+      "sha256": "8b03a33d31cb07e29af084c629c14d7465558951f7c643d916e7ce3063e2ed74",
+      "bytes": 5456,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/sh/run_train_ppo.sh",
+      "sha256": "6f178aecb8b43a6e947ea6b11f78a28b427537339271827deae681d0013831ae",
+      "bytes": 5502,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/sh/run_train_sac.sh",
+      "sha256": "8c745dac7552dd55f82ca36ef572161edcf566aa7416849f79145b59a668b92d",
+      "bytes": 6186,
+      "operation": "delete"
+    },
+    {
+      "path": "python/training/beam_rhs_consistent/launch.sh",
+      "sha256": "8f06a79cb5cbdeef51faca7dd7456641a76180d9634101d7f0be8ddbefcd5ff6",
+      "bytes": 2149,
+      "operation": "delete",
+      "reason": "Calls deleted PPO train_candidate.py with old two-substep curriculum"
+    }
+  ],
+  "preserved": [
+    "Nelson BeamAdapter/component structure",
+    "SDF geometry and opt-in diagnostic controllers (not attached to baseline)",
+    "native plugins",
+    "mcr_sim_ros (external hardware/ROS subsystem)",
+    "all upstream snapshots and licenses",
+    "all vessel assets, checkpoints, logs and results"
+  ],
+  "migration": "stEVE task/config/action/recurrent SAC -> mcr_sim; one SOFA21 Nelson scene",
+  "notes": [
+    "Old branch-route rewards and curricula removed, not retained as a compatibility mode.",
+    "Only explicitly inventoried source files may be deleted.",
+    "Old ROS subsystem and independent physical experiment directories remain out of scope."
+  ],
+  "deleted_files": [
+    "python/contrastive_recovery/__init__.py",
+    "python/contrastive_recovery/agent.py",
+    "python/contrastive_recovery/networks.py",
+    "python/contrastive_recovery/replay.py",
+    "python/contrastive_recovery/run_train.sh",
+    "python/contrastive_recovery/smoke_test.py",
+    "python/contrastive_recovery/train.py",
+    "python/mcr_sim/beam_safety_env.py",
+    "python/mcr_sim/discrete_navigation.py",
+    "python/mcr_sim/distributed/goal_sac.py",
+    "python/mcr_sim/distributed/ppo.py",
+    "python/mcr_sim/distributed/recurrent_ppo.py",
+    "python/mcr_sim/distributed/replay_buffer.py",
+    "python/mcr_sim/distributed/sac.py",
+    "python/mcr_sim/goal_conditioned_env.py",
+    "python/mcr_sim/goal_contract.py",
+    "python/mcr_sim/goal_sac_config.py",
+    "python/mcr_sim/mcr_controller_sofa.py",
+    "python/mcr_sim/mcr_rl_env.py",
+    "python/mcr_sim/mcr_simulator.py.bak",
+    "python/mcr_sim/rl_core/base.py",
+    "python/mcr_sim/rl_core/evaluation.py",
+    "python/mcr_sim/rl_core/experiment.py",
+    "python/mcr_sim/route_tracking.py",
+    "python/mcr_sim/training_config.py",
+    "python/recurrent_goal_tqc/__init__.py",
+    "python/recurrent_goal_tqc/agent.py",
+    "python/recurrent_goal_tqc/curriculum.py",
+    "python/recurrent_goal_tqc/evaluate.py",
+    "python/recurrent_goal_tqc/replay.py",
+    "python/recurrent_goal_tqc/run_train.sh",
+    "python/recurrent_goal_tqc/smoke_test.py",
+    "python/recurrent_goal_tqc/train.py",
+    "python/stEVE_magnetic_rl/__init__.py",
+    "python/stEVE_magnetic_rl/action_controller.py",
+    "python/stEVE_magnetic_rl/centerline_adapter.py",
+    "python/stEVE_magnetic_rl/config.py",
+    "python/stEVE_magnetic_rl/diagnostics.py",
+    "python/stEVE_magnetic_rl/environment.py",
+    "python/stEVE_magnetic_rl/evaluate.py",
+    "python/stEVE_magnetic_rl/instrument.py",
+    "python/stEVE_magnetic_rl/integration_smoke.py",
+    "python/stEVE_magnetic_rl/magnetics.py",
+    "python/stEVE_magnetic_rl/networks.py",
+    "python/stEVE_magnetic_rl/observation.py",
+    "python/stEVE_magnetic_rl/preflight.py",
+    "python/stEVE_magnetic_rl/reward.py",
+    "python/stEVE_magnetic_rl/sac_training.py",
+    "python/stEVE_magnetic_rl/sofa_scene.py",
+    "python/stEVE_magnetic_rl/task.py",
+    "python/stEVE_magnetic_rl/train_ppo.py",
+    "python/stEVE_magnetic_rl/train_sac.py",
+    "python/stEVE_magnetic_rl/vessel_adapter.py",
+    "python/training/beam_rhs_consistent/candidate_env.py",
+    "python/training/beam_rhs_consistent/train_candidate.py",
+    "python/training/py/evaluate_train_policy.py",
+    "python/training/py/train_goal_sac.py",
+    "python/training/py/train_lstm_ppo.py",
+    "python/training/py/train_ppo.py",
+    "python/training/py/train_ppo_beam_unilateral.py",
+    "python/training/py/train_sac.py",
+    "python/training/sh/run_train_goal_sac.sh",
+    "python/training/sh/run_train_lstm_ppo.sh",
+    "python/training/sh/run_train_ppo.sh",
+    "python/training/sh/run_train_sac.sh",
+    "python/training/beam_rhs_consistent/launch.sh"
+  ],
+  "deleted_count": 66
+}

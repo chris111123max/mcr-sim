@@ -1,0 +1,173 @@
+---------------------------------------
+Checking SOFA_ROOT and SOFAPYTHON3_ROOT
+Using environment variable SOFA_ROOT: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins
+---------------------------------------
+[INFO]    [SofaPython3] Initializing with python version 3.8.20 | packaged by conda-forge | (default, Sep 30 2024, 17:47:05) 
+[GCC 13.3.0]
+[INFO]    [SofaPython3] Shared library name is 'libpython3.8m.so'
+[INFO]    [SofaPython3] Added '/data/home/3220251075/mcr_sim/mcr_env/sofa/src/SoftRobots/python' to sys.path
+[INFO]    [SofaPython3] Added '/data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/python3/beamadapter' to sys.path
+[INFO]    [SofaPython3] Added '/data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/python3/site-packages' to sys.path
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaPython3.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/external_directories/BeamAdapter/lib/libBeamAdapter.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaConstraint.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaGeneralAnimationLoop.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaMiscCollision.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaGeneralLoader.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaGeneralLinearSolver.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaImplicitOdeSolver.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaGeneralTopology.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaTopologyMapping.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaBoundaryCondition.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaRigid.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaSimpleFem.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaBaseCollision.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaMeshCollision.so
+[INFO]    [PluginManager] Loaded plugin: /data/home/3220251075/mcr_sim/mcr_env/sofa/build_plugins/lib/libSofaBaseTopology.so
+{
+  "scope": "minimal root pipeline init only; no catheter/vessel integration",
+  "physics_substeps_executed": 0,
+  "actual_sources": {
+    "plugins": {
+      "SofaPython3": true,
+      "BeamAdapter": true,
+      "SofaConstraint": true,
+      "SofaGeneralAnimationLoop": true,
+      "SofaMiscCollision": true,
+      "SofaGeneralLoader": true,
+      "SofaGeneralLinearSolver": true,
+      "SofaImplicitOdeSolver": true,
+      "SofaGeneralTopology": true,
+      "SofaTopologyMapping": true,
+      "SofaBoundaryCondition": true,
+      "SofaRigid": true,
+      "SofaSimpleFem": true,
+      "SofaBaseCollision": true,
+      "SofaMeshCollision": true,
+      "SofaBaseTopology": true
+    },
+    "components": {
+      "FreeMotionAnimationLoop": "Component 'FreeMotionAnimationLoop' \n  Description: \nThe animation loop to use with constraints.\nYou must add this loop at the beginning of the scene if you are using constraints.\"\n\n  Authors: \n  Aliases: FreeMotionMasterSolver\n  Templates: None\n  Targets: SofaConstraint\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaConstraint/src/SofaConstraint/FreeMotionAnimationLoop.h",
+      "CollisionPipeline": "Component 'DefaultPipeline' \n  Description: The default collision detection and modeling pipeline\n\n  Authors: \n  Aliases: CollisionPipeline\n  Templates: None\n  Targets: SofaBaseCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseCollision/src/SofaBaseCollision/DefaultPipeline.h",
+      "BruteForceBroadPhase": "Component 'BruteForceBroadPhase' \n  Description: Broad phase collision detection using extensive pair-wise tests\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaBaseCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseCollision/src/SofaBaseCollision/BruteForceBroadPhase.h",
+      "BVHNarrowPhase": "Component 'BVHNarrowPhase' \n  Description: Narrow phase collision detection based on boundary volume hierarchy\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaBaseCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseCollision/src/SofaBaseCollision/BVHNarrowPhase.h",
+      "LocalMinDistance": "Component 'LocalMinDistance' \n  Description: A set of methods to compute (for constraint methods) if two primitives are close enough to consider they collide\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaConstraint\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaConstraint/src/SofaConstraint/LocalMinDistance.h",
+      "CollisionResponse": "Component 'DefaultContactManager' \n  Description: Default class to create reactions to the collisions\n\n  Authors: \n  Aliases: CollisionResponse\n  Templates: None\n  Targets: SofaBaseCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseCollision/src/SofaBaseCollision/DefaultContactManager.h",
+      "DefaultCollisionGroupManager": "Component 'DefaultCollisionGroupManager' \n  Description: Responsible for gathering colliding objects in the same group, for consistent time integration\n\n  Authors: \n  Aliases: CollisionGroup, CollisionGroupManager, TreeCollisionGroupManager\n  Templates: None\n  Targets: SofaMiscCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaMiscCollision/src/SofaMiscCollision/DefaultCollisionGroupManager.h",
+      "LCPConstraintSolver": "Component 'LCPConstraintSolver' \n  Description: A Constraint Solver using the Linear Complementarity Problem formulation to solve BaseConstraint based components\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaConstraint\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaConstraint/src/SofaConstraint/LCPConstraintSolver.h",
+      "EulerImplicitSolver": "Component 'EulerImplicitSolver' \n  Description: Time integrator using implicit backward Euler scheme\n\n  Authors: \n  Aliases: EulerImplicit, ImplicitEuler, ImplicitEulerSolver\n  Templates: None\n  Targets: SofaImplicitOdeSolver\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaImplicitOdeSolver/src/SofaImplicitOdeSolver/EulerImplicitSolver.h",
+      "BTDLinearSolver": "Component 'BTDLinearSolver' \n  Description: Linear system solver using Thomas Algorithm for Block Tridiagonal matrices\n\n  Authors: \n  Aliases: None\n  Templates: 'BTDMatrix6d'\n  Targets: SofaGeneralLinearSolver\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaGeneralLinearSolver/src/SofaGeneralLinearSolver/BTDLinearSolver.h",
+      "LinearSolverConstraintCorrection": "Component 'LinearSolverConstraintCorrection' \n  Description: \n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d', 'Vec1d', 'Vec2d', 'Vec3d'\n  Targets: SofaConstraint\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaConstraint/src/SofaConstraint/LinearSolverConstraintCorrection.h",
+      "WireRestShape": "Component 'WireRestShape' \n  Description: \n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d'\n  Targets: BeamAdapter\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/src/BeamAdapter/component/engine/WireRestShape.h",
+      "WireBeamInterpolation": "Component 'WireBeamInterpolation' \n  Description: Adaptive Beam Interpolation on Wire rest Shape\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d'\n  Targets: BeamAdapter\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/src/BeamAdapter/component/WireBeamInterpolation.h",
+      "AdaptiveBeamForceFieldAndMass": "Component 'AdaptiveBeamForceFieldAndMass' \n  Description: Adaptive Beam finite elements\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d'\n  Targets: None\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/src/BeamAdapter/component/forcefield/AdaptiveBeamForceFieldAndMass.h",
+      "InterventionalRadiologyController": "Component 'InterventionalRadiologyController' \n  Description: Provides a Mouse & Keyboard user control on an EdgeSet Topology.\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d'\n  Targets: None\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/src/BeamAdapter/component/controller/InterventionalRadiologyController.h",
+      "MeshSTLLoader": "Component 'MeshSTLLoader' \n  Description: Loader for the STL file format. STL can be used to represent the surface of object using with a triangulation.\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: None\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaGeneralLoader/src/SofaGeneralLoader/MeshSTLLoader.h",
+      "Mesh": "Component 'MeshTopology' \n  Description: Generic mesh topology\n\n  Authors: \n  Aliases: Mesh\n  Templates: None\n  Targets: SofaBaseTopology\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseTopology/src/SofaBaseTopology/MeshTopology.h",
+      "RegularGrid": "Component 'RegularGridTopology' \n  Description: Regular grid in 3D\n\n  Authors: \n  Aliases: RegularGrid\n  Templates: None\n  Targets: SofaBaseTopology\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseTopology/src/SofaBaseTopology/RegularGridTopology.h",
+      "TriangleCollisionModel": "Component 'TriangleCollisionModel' \n  Description: collision model using a triangular mesh, as described in BaseMeshTopology\n\n  Authors: \n  Aliases: None\n  Templates: 'Vec3d'\n  Targets: SofaMeshCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaMeshCollision/src/SofaMeshCollision/TriangleModel.h",
+      "LineCollisionModel": "Component 'LineCollisionModel' \n  Description: collision model using a linear mesh, as described in MeshTopology\n\n  Authors: \n  Aliases: None\n  Templates: 'Vec3d'\n  Targets: SofaMeshCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaMeshCollision/src/SofaMeshCollision/LineModel.h",
+      "PointCollisionModel": "Component 'PointCollisionModel' \n  Description: Collision model which represents a set of points\n\n  Authors: \n  Aliases: None\n  Templates: 'Vec3d'\n  Targets: SofaMeshCollision\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaMeshCollision/src/SofaMeshCollision/PointModel.h",
+      "MultiAdaptiveBeamMapping": "Component 'MultiAdaptiveBeamMapping' \n  Description: Set the positions and velocities of points attached to a beam using linear interpolation between DOFs\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d,Vec3d'\n  Targets: BeamAdapter\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/BeamAdapter/src/BeamAdapter/component/mapping/MultiAdaptiveBeamMapping.h",
+      "ConstantForceField": "Component 'ConstantForceField' \n  Description: Constant forces applied to given degrees of freedom\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid2d', 'Rigid3d', 'Vec1d', 'Vec2d', 'Vec3d', 'Vec6d'\n  Targets: SofaBoundaryCondition\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaBoundaryCondition/src/SofaBoundaryCondition/ConstantForceField.h",
+      "FixedConstraint": "Component 'FixedConstraint' \n  Description: Attach given particles to their initial positions\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid2d', 'Rigid3d', 'Vec1d', 'Vec2d', 'Vec3d', 'Vec6d'\n  Targets: SofaBoundaryCondition\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/modules/SofaBoundaryCondition/src/SofaBoundaryCondition/FixedConstraint.h",
+      "RestShapeSpringsForceField": "Component 'RestShapeSpringsForceField' \n  Description: Elastic springs generating forces on degrees of freedom between their current and rest shape position\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid3d', 'Vec1d', 'Vec3d'\n  Targets: SofaDeformable\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaDeformable/src/SofaDeformable/RestShapeSpringsForceField.h",
+      "DefaultVisualManagerLoop": "Component 'DefaultVisualManagerLoop' \n  Description: The simplest Visual Loop Manager, created by default when user do not put on scene\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: Sofa.SimulationCore\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaSimulationCore/src/sofa/simulation/DefaultVisualManagerLoop.h",
+      "EdgeSetTopologyContainer": "Component 'EdgeSetTopologyContainer' \n  Description: Edge set topology container\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaBaseTopology\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseTopology/src/SofaBaseTopology/EdgeSetTopologyContainer.h",
+      "EdgeSetTopologyModifier": "Component 'EdgeSetTopologyModifier' \n  Description: Edge set topology modifier\n\n  Authors: \n  Aliases: None\n  Templates: None\n  Targets: SofaBaseTopology\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseTopology/src/SofaBaseTopology/EdgeSetTopologyModifier.h",
+      "EdgeSetGeometryAlgorithms": "Component 'EdgeSetGeometryAlgorithms' \n  Description: Edge set geometry algorithms\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid2d', 'Rigid3d', 'Vec1d', 'Vec2d', 'Vec3d' (default)\n  Targets: SofaBaseTopology\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseTopology/src/SofaBaseTopology/EdgeSetGeometryAlgorithms.h",
+      "MechanicalObject": "Component 'MechanicalObject' \n  Description: mechanical state vectors\n\n  Authors: \n  Aliases: None\n  Templates: 'Rigid2d', 'Rigid3d', 'Vec1d', 'Vec2d', 'Vec3d' (default), 'Vec6d'\n  Targets: SofaBaseMechanics\n  Locations: \n    /data/home/3220251075/mcr_sim/mcr_env/sofa/src/sofa/SofaKernel/modules/SofaBaseMechanics/src/SofaBaseMechanics/MechanicalObject.h"
+    }
+  },
+  "before_init": {
+    "dt_s": 0.006,
+    "lcp_class": "LCPConstraintSolver",
+    "mu": 0.1,
+    "tolerance": 0.0001,
+    "maxIt": 2000,
+    "build_lcp": 0
+  },
+  "after_init": {
+    "dt_s": 0.006,
+    "mu": 0.1,
+    "tolerance": 0.0001,
+    "maxIt": 2000,
+    "build_lcp": 0
+  },
+  "beam_component_data_before_full_init": {
+    "straightLength": 0.5,
+    "length": 0.534,
+    "densityOfBeams": [
+      100,
+      34
+    ],
+    "numEdgesCollis": [
+      100,
+      68
+    ],
+    "numEdges": 600,
+    "youngModulus": 100000000.0,
+    "youngModulusExtremity": 21000000.0,
+    "radius": 0.0006420791471049021,
+    "radiusExtremity": 0.0006420791471049021,
+    "mechanical_grid_resolution": [
+      135,
+      1,
+      1
+    ],
+    "magnetic_indices": [
+      131,
+      132,
+      133,
+      134
+    ],
+    "magnetic_forces": [
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ],
+    "indexFromEnd": 0,
+    "irc_listening": 1,
+    "irc_speed": 0.0,
+    "catheter_models": [
+      "LineCollisionModel",
+      "PointCollisionModel"
+    ],
+    "constraint_correction": "LinearSolverConstraintCorrection",
+    "rayleighStiffness": 0.2,
+    "rayleighMass": 0.1
+  },
+  "beam_full_init": "NOT_RUN",
+  "magnetic_torque_execution": "NOT_RUN",
+  "status": "PASS",
+  "messages": []
+}

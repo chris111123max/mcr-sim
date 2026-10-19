@@ -1,0 +1,94 @@
+test_content_hash_rejects_mixed_assets (test_assets.TestSavedAssetLoader) ... ok
+test_existing_cache_mm_to_m (test_assets.TestSavedAssetLoader) ... ok
+test_all_indices_and_true_geometry_radius (test_observation41.TestObservation41) ... ok
+test_environment_actual_motion_action_time_and_reward (test_observation41.TestObservation41) ... ok
+test_fixed_scales_clipping_and_no_nan (test_observation41.TestObservation41) ... /data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/observation.py:116: RuntimeWarning: invalid value encountered in matmul
+  tip_displacement_local=normed(frame.T @ np.asarray(tip_displacement_world_m, dtype=float).reshape(3), self.config.tip_displacement_scale_m),
+test_radius_comes_from_vessel_not_constant (test_observation41.TestObservation41) ... ok
+test_short_geometry_duplicate_points_and_endpoint_clamping (test_observation41.TestObservation41) ... ok
+test_translation_rotation_and_combined_invariance (test_observation41.TestObservation41) ... ok
+test_legacy_dimensions_and_nonfinite_are_rejected (test_observation41.TestReplay41) ... ok
+test_replay_lstm_input_and_online_memory (test_observation41.TestReplay41) ... ok
+test_actual_builder_forwards_locked_parameters (test_unified.TestComponentWiring) ... ok
+test_bfs_not_euclidean (test_unified.TestNavigation) ... ok
+test_bfs_same_point (test_unified.TestNavigation) ... ok
+test_cache_scale_guard (test_unified.TestNavigation) ... ok
+test_error_stops_substeps (test_unified.TestNavigation) ... ok
+test_eval_uses_heldout_seed (test_unified.TestNavigation) ... ok
+test_nan_state_is_reported (test_unified.TestNavigation) ... ok
+test_reset_observation_and_substep_allocation (test_unified.TestNavigation) ... ok
+test_reward_units (test_unified.TestNavigation) ... ok
+test_simerror_not_success (test_unified.TestNavigation) ... ok
+test_target_on_legal_centerline (test_unified.TestNavigation) ... ok
+test_termination_and_time_limit (test_unified.TestNavigation) ... ok
+test_action_22_and_limits (test_unified.TestParameters) ... ok
+test_invalid_action (test_unified.TestParameters) ... ok
+test_legacy_environment_cannot_replace_lcp (test_unified.TestParameters) ... ok
+test_magnet_overlap (test_unified.TestParameters) ... ok
+test_nelson_moment_and_torque (test_unified.TestParameters) ... ok
+test_physical_and_rl_contract (test_unified.TestParameters) ... ok
+test_quantization (test_unified.TestParameters) ... ok
+test_episode_safe_multi_env_and_truncation_mask (test_unified.TestRecurrentSAC) ... ok
+test_forward_gradient_hidden_and_checkpoint (test_unified.TestRecurrentSAC) ... ok
+test_time_limit_bootstraps_but_success_does_not (test_unified.TestRecurrentSAC) ... ok
+
+======================================================================
+ERROR: test_fixed_scales_clipping_and_no_nan (test_observation41.TestObservation41) (key='catheter_tracking_m', bad=nan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 99, in test_fixed_scales_clipping_and_no_nan
+    with self.subTest(key=key,bad=bad), self.assertRaises(ValueError): self.build(b,values)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 30, in build
+    path = graph.shortest_path_mm(values['catheter_tracking_m'][0] * 1000, values['target_m'] * 1000)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 159, in shortest_path_mm
+    length, nodes = self._dijkstra(adjacency, start_id, target_id)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 135, in _dijkstra
+    raise RuntimeError("No connected centerline path")
+RuntimeError: No connected centerline path
+
+======================================================================
+ERROR: test_fixed_scales_clipping_and_no_nan (test_observation41.TestObservation41) (key='catheter_tracking_m', bad=inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 99, in test_fixed_scales_clipping_and_no_nan
+    with self.subTest(key=key,bad=bad), self.assertRaises(ValueError): self.build(b,values)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 30, in build
+    path = graph.shortest_path_mm(values['catheter_tracking_m'][0] * 1000, values['target_m'] * 1000)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 159, in shortest_path_mm
+    length, nodes = self._dijkstra(adjacency, start_id, target_id)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 135, in _dijkstra
+    raise RuntimeError("No connected centerline path")
+RuntimeError: No connected centerline path
+
+======================================================================
+ERROR: test_fixed_scales_clipping_and_no_nan (test_observation41.TestObservation41) (key='target_m', bad=nan)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 99, in test_fixed_scales_clipping_and_no_nan
+    with self.subTest(key=key,bad=bad), self.assertRaises(ValueError): self.build(b,values)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 30, in build
+    path = graph.shortest_path_mm(values['catheter_tracking_m'][0] * 1000, values['target_m'] * 1000)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 159, in shortest_path_mm
+    length, nodes = self._dijkstra(adjacency, start_id, target_id)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 135, in _dijkstra
+    raise RuntimeError("No connected centerline path")
+RuntimeError: No connected centerline path
+
+======================================================================
+ERROR: test_fixed_scales_clipping_and_no_nan (test_observation41.TestObservation41) (key='target_m', bad=inf)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 99, in test_fixed_scales_clipping_and_no_nan
+    with self.subTest(key=key,bad=bad), self.assertRaises(ValueError): self.build(b,values)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/testing/mcr_sim/test_observation41.py", line 30, in build
+    path = graph.shortest_path_mm(values['catheter_tracking_m'][0] * 1000, values['target_m'] * 1000)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 159, in shortest_path_mm
+    length, nodes = self._dijkstra(adjacency, start_id, target_id)
+  File "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/python/mcr_sim/pathfinder.py", line 135, in _dijkstra
+    raise RuntimeError("No connected centerline path")
+RuntimeError: No connected centerline path
+
+----------------------------------------------------------------------
+Ran 32 tests in 21.003s
+
+FAILED (errors=4)

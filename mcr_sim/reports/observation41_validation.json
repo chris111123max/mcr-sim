@@ -1,0 +1,92 @@
+{
+  "observation_dimension": 41,
+  "previous_observed_dimension": 20,
+  "dtype": "float32",
+  "normalization": {
+    "lookahead_distances_m": [
+      0.0,
+      0.008,
+      0.02,
+      0.036,
+      0.056
+    ],
+    "shape_offsets_m": [
+      0.01,
+      0.03,
+      0.06
+    ],
+    "spatial_scale_m": 0.1,
+    "remaining_path_scale_m": 0.5,
+    "target_scale_m": 0.5,
+    "radius_scale_m": 0.02,
+    "tip_displacement_scale_m": 0.01
+  },
+  "protected_source_files_unchanged": {
+    "python/mcr_sim/mcr_instrument.py": true,
+    "python/mcr_sim/paths.py": true,
+    "python/mcr_sim/evaluate.py": true,
+    "python/mcr_sim/preflight.py": true,
+    "python/mcr_sim/integration_smoke.py": true,
+    "python/mcr_sim/pathfinder.py": true,
+    "python/mcr_sim/mcr_simulator.py": true,
+    "python/mcr_sim/metrics.py": true,
+    "python/mcr_sim/sofa_compat.py": true,
+    "python/mcr_sim/sofa_simulation.py": true,
+    "python/mcr_sim/sampling.py": true,
+    "python/mcr_sim/magnetic_controller.py": true,
+    "python/mcr_sim/task.py": true,
+    "python/mcr_sim/vessel_generator.py": true,
+    "python/mcr_sim/__init__.py": true,
+    "python/mcr_sim/mcr_environment.py": true,
+    "python/mcr_sim/mcr_mag_controller.py": true,
+    "python/mcr_sim/vessel_assets.py": true,
+    "python/mcr_sim/instrument_layout.py": true,
+    "python/mcr_sim/mcr_emns.py": true,
+    "python/mcr_sim/mcr_magnet.py": true,
+    "python/mcr_sim/mcr_centerline.py": true,
+    "python/mcr_sim/diagnostics.py": true,
+    "python/mcr_sim/magnetics.py": true,
+    "python/mcr_sim/reward.py": true,
+    "python/mcr_sim/vessel_bundle.py": true,
+    "python/mcr_sim/compatibility_check.py": true,
+    "python/mcr_sim/distributed/__init__.py": true,
+    "python/mcr_sim/distributed/device.py": true
+  },
+  "non_observation_configs_unchanged": true,
+  "sac_functions_unchanged": {
+    "update": true,
+    "action": true,
+    "action_with_state": true,
+    "restore": true,
+    "checkpoint": true,
+    "run_training": true,
+    "evaluate_policy": true
+  },
+  "environment_step_physics_control_reward_prefix_unchanged": true,
+  "ast_parse_files": 38,
+  "python_tests": 32,
+  "test_exit_code": 0,
+  "geometry_tests": [
+    "all 41 indices",
+    "tip-local positions/field/displacement",
+    "translation",
+    "rotation",
+    "combined rigid transform",
+    "real catheter arc samples",
+    "radius interpolation",
+    "endpoint clamping",
+    "finite-input rejection"
+  ],
+  "replay_shape": [
+    32,
+    8,
+    41
+  ],
+  "legacy_dimensions_rejected": [
+    20,
+    27
+  ],
+  "real_sofa_integration_steps": 0,
+  "formal_training_started": false,
+  "backup": "/data/home/3220251075/mcr_sim/mcr_project/mCR_simulator-master/source_backups/mcr_obs41_20261019_165150.tar.gz"
+}

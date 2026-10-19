@@ -29,10 +29,10 @@ class Environment(Sofa.Core.Controller):
         root_node,
         environment_stl,
         name='environment',
-        T_env_sim=[0., 0., 0., 1., 0., 0., 0.],
+        T_env_sim=[0., 0., 0., 0., 0., 0., 1.],
         flip_normals=False,
         color=[1., 0., 0., 0.3],
-        scale='0.0005',
+        scale='0.001',
         visual=True,
         visual_stl=None,
         collision_proximity=0.0,
@@ -40,7 +40,7 @@ class Environment(Sofa.Core.Controller):
         line_point_collision_proximity=None,
         use_line_point_collision=False,
         use_point_collision=False,
-        use_line_collision=False,
+        use_line_collision=True,
         collision_exclusion_group=None,
         verbose=True,
         *args, **kwargs):
@@ -120,8 +120,7 @@ class Environment(Sofa.Core.Controller):
         #self.CollisionModel.addObject("RequiredPlugin", name="Sofa.Component.StateContainer")
         self.MO = self.CollisionModel.addObject(
             'MechanicalObject',
-            position=[0, 0, 0],
-            scale=1,
+            src='@meshLoader',
             name='DOFs1')
         #self.CollisionModel.addObject("RequiredPlugin", name="Sofa.Component.Collision.Geometry")
         triangle_collision_kwargs = dict(

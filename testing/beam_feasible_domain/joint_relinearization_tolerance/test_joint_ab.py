@@ -76,7 +76,7 @@ def make_manifest(directory:Path, tight_final_mm=0.10005):
             "frame":{"vessel":"B02","target":"target_04","rl_step":2009,
                      "substep":1,
                      "action_prefix_sha256":
-                         "6f534ad515bfa635666f9d3237783681e65dc378a3d5608706db30bb00e181c"},
+                         "6f534ad5155bfa635666f9d3237783681e65dc378a3d5608706db30bb00e181c"},
             "physics_dt_s":0.005,"physics_substeps_per_action":2,
             "arms":arms}
 

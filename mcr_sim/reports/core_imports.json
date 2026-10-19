@@ -1,0 +1,33 @@
+{
+  "status": "PASS",
+  "modules": {
+    "config": "PASS",
+    "instrument_layout": "PASS",
+    "magnetics": "PASS",
+    "magnetic_controller": "PASS",
+    "vessel_bundle": "PASS",
+    "pathfinder": "PASS",
+    "observation": "PASS",
+    "reward": "PASS",
+    "task": "PASS",
+    "diagnostics": "PASS",
+    "metrics": "PASS",
+    "rl_env": "PASS",
+    "networks": "PASS",
+    "recurrent_sac": "PASS",
+    "sampling": "PASS",
+    "train": "PASS",
+    "evaluate": "PASS",
+    "sofa_simulation": "PASS",
+    "mcr_simulator": "PASS",
+    "mcr_instrument": "PASS",
+    "mcr_environment": "PASS",
+    "mcr_mag_controller": "PASS",
+    "sofa_compat": "PASS",
+    "preflight": "PASS",
+    "vessel_generator": "PASS"
+  },
+  "python": "3.8.20 | packaged by conda-forge | (default, Sep 30 2024, 17:47:05) \n[GCC 13.3.0]",
+  "physics_substeps_executed": 0,
+  "formal_training_started": false
+}

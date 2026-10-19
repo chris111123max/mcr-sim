@@ -1,207 +1,27 @@
-import Sofa
-import os
+"""Nelson SOFA21 root solver/collision pipeline; no RL or environment overrides.
 
-from .training_config import (
-    CONSTRAINT_MAX_ITERATIONS,
-    CONSTRAINT_TOLERANCE,
-    FRICTION_COEFFICIENT,
-    LMD_ALARM_DISTANCE_M,
-    LMD_ANGLE_CONE,
-    LMD_CONTACT_DISTANCE_M,
-    SOFA_TIME_STEP_S,
-)
+Uses the legacy component spellings of the original local Simulator.
+"""
+from .config import DEFAULT_CONFIG
 
 
-class Simulator(Sofa.Core.Controller):
-    """
-    A class used to define the physics and the solver of the SOFA simulation.
-
-    :param root_node: The sofa root node
-    :type root_node:
-    :param dt: The time step (s)
-    :type dt: float
-    :param gravity: The gravity verctor (m/s^2)
-    :type gravity: float
-    :param friction_coef: The coeficient of friction
-    :type friction_coef: float
-    """
-
-    def __init__(
-            self,
-            root_node,
-            dt=SOFA_TIME_STEP_S,
-            gravity=[0, 0, 0],
-            friction_coef=FRICTION_COEFFICIENT,
-            verbose=True,
-            intersection_method="local_min_distance",
-            *args, **kwargs):
-
-        # These are needed (and the normal way to override from a python class)
-        Sofa.Core.Controller.__init__(self, *args, **kwargs)
-
+class Simulator:
+    def __init__(self, root_node, config=DEFAULT_CONFIG, animation_loop=None):
         self.root_node = root_node
-        self.dt = dt
-        self.gravity = gravity
-        self.friction_coef = friction_coef
-        self.verbose = bool(verbose)
-        if intersection_method not in ("local_min_distance", "min_proximity"):
-            raise ValueError(f"Unsupported diagnostic intersection method: {intersection_method}")
-        self.intersection_method = intersection_method
-
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSoftRob',
-            pluginName='SoftRobots')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportBeamAdapt',
-            pluginName='BeamAdapter')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaPython3',
-            pluginName='SofaPython3')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaConstraint',
-            pluginName='SofaConstraint')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaMiscCollision',
-            pluginName='SofaMiscCollision')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaGeneralLoader',
-            pluginName='SofaGeneralLoader')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaOpenglVisual',
-            pluginName='SofaOpenglVisual')
-        self.root_node.addObject(
-            'RequiredPlugin',
-            name='ImportSofaGeneralLinearSolver',
-            pluginName='SofaGeneralLinearSolver')
-
-        self.root_node.dt = self.dt
-        self.root_node.animate = True
-        self.root_node.gravity = self.gravity
-
-        self.root_node.addObject(
-            'VisualStyle',
-            displayFlags='showVisualModels hideBehaviorModels \
-                hideCollisionModels hideMappings hideForceFields \
-                    hideInteractionForceFields')
-        self.root_node.addObject('FreeMotionAnimationLoop')
-
-        # Lightweight contact solving for RL training:
-        #   - use a relaxed tolerance for speed;
-        #   - keep enough iterations for stable triangle-vessel contact;
-        #   - stronger anti-shortcut behavior is handled by reward/out-of-vessel penalty
-        #     and by smaller SOFA substeps, not by heavy collision geometry.
-        constraint_solver_type = os.environ.get(
-            "MCR_CONSTRAINT_SOLVER", "lcp"
-        ).strip().lower()
-        constraint_tolerance = os.environ.get(
-            "MCR_CONSTRAINT_TOLERANCE", str(CONSTRAINT_TOLERANCE)
-        )
-        constraint_max_it = os.environ.get(
-            "MCR_CONSTRAINT_MAX_IT", str(CONSTRAINT_MAX_ITERATIONS)
-        )
-
-        if constraint_solver_type in ("generic", "genericconstraintsolver"):
-            self.lcp_solver = self.root_node.addObject(
-                'GenericConstraintSolver',
-                tolerance=constraint_tolerance,
-                maxIterations=constraint_max_it,
-                printLog='false')
-            if self.verbose:
-                print(
-                    "[CONSTRAINT_SOLVER]",
-                    "type=GenericConstraintSolver",
-                    "tolerance=", constraint_tolerance,
-                    "maxIterations=", constraint_max_it,
-                )
-        else:
-            self.lcp_solver = self.root_node.addObject(
-                'LCPConstraintSolver',
-                mu=str(friction_coef),
-                tolerance=constraint_tolerance,
-                maxIt=constraint_max_it,
-                build_lcp='false')
-            if self.verbose:
-                print(
-                    "[CONSTRAINT_SOLVER]",
-                    "type=LCPConstraintSolver",
-                    "mu=", friction_coef,
-                    "tolerance=", constraint_tolerance,
-                    "maxIt=", constraint_max_it,
-                )
-
-        self.root_node.addObject(
-            'CollisionPipeline',
-            draw='0',
-            depth='6',
-            verbose='0')
-
-        # NOTE: BruteForceDetection is deprecated in this pipeline.
-        # Keep sofa_env baseline broad/narrow phase setup.
-        self.root_node.addObject(
-            'BruteForceBroadPhase',
-            name='N2_1')
-        self.root_node.addObject(
-            'BVHNarrowPhase',
-            name='N2_2')
-
-        # Lightweight LocalMinDistance.  The static vessel is triangle-only;
-        # catheter Line/Point primitives carry the catheter-radius proximity.
-        # Vessel Line/Point models stay disabled because they multiply contacts
-        # and previously destabilized the LCP solve.
-        lmd_contact_distance = os.environ.get(
-            "MCR_LMD_CONTACT_DISTANCE", str(LMD_CONTACT_DISTANCE_M)
-        )
-        lmd_alarm_distance = os.environ.get(
-            "MCR_LMD_ALARM_DISTANCE", str(LMD_ALARM_DISTANCE_M)
-        )
-        lmd_angle_cone = os.environ.get(
-            "MCR_LMD_ANGLE_CONE", str(LMD_ANGLE_CONE)
-        )
-        if self.verbose:
-            print(
-                "[LOCAL_MIN_DISTANCE]",
-                "contactDistance=", lmd_contact_distance,
-                "alarmDistance=", lmd_alarm_distance,
-                "angleCone=", lmd_angle_cone,
-            )
-        if self.intersection_method == "min_proximity":
-            # Diagnostic replay only. Same distances; no LocalMinDistance filter.
-            # This SOFA version supports triangle-point but ignores triangle-line.
-            self.root_node.addObject(
-                'RequiredPlugin', name='ImportSofaGeneralMeshCollision',
-                pluginName='SofaGeneralMeshCollision')
-            self.root_node.addObject(
-                'MinProximityIntersection',
-                contactDistance=lmd_contact_distance,
-                alarmDistance=lmd_alarm_distance,
-                name='minproximityintersection')
-        else:
-            self.root_node.addObject(
-                'LocalMinDistance',
-                contactDistance=lmd_contact_distance,
-                alarmDistance=lmd_alarm_distance,
-                name='localmindistance',
-                angleCone=lmd_angle_cone)
-        if self.verbose:
-            print("[INTERSECTION_METHOD]", self.intersection_method)
-
-        self.root_node.addObject(
-            'CollisionResponse',
-            name='Response',
-            response='FrictionContactConstraint')
-        self.root_node.addObject(
-            'DefaultCollisionGroupManager',
-            name='Group')
-        self.root_node.addObject(
-            'DefaultVisualManagerLoop',
-            name='VisualLoop')
-
-        # set backbround color
-        self.root_node.addObject('BackgroundSetting', color='1 1 1')
+        self.config = config
+        s = config.sofa
+        root_node.dt = s.dt_s
+        root_node.gravity = list(s.gravity_m_s2)
+        self.animation_loop = animation_loop if animation_loop is not None else root_node.addObject("FreeMotionAnimationLoop")
+        self.lcp_solver = root_node.addObject(
+            "LCPConstraintSolver", name="LCP", mu=s.friction,
+            tolerance=s.lcp_tolerance, maxIt=s.lcp_max_iterations, build_lcp=s.lcp_build)
+        self.pipeline = root_node.addObject("CollisionPipeline", draw=False, depth=6, verbose=False)
+        self.broad_phase = root_node.addObject("BruteForceBroadPhase")
+        self.narrow_phase = root_node.addObject("BVHNarrowPhase")
+        self.intersection = root_node.addObject(
+            "LocalMinDistance", name="localmindistance", contactDistance=s.contact_distance_m,
+            alarmDistance=s.alarm_distance_m, angleCone=s.angle_cone)
+        self.response = root_node.addObject("CollisionResponse", response="FrictionContactConstraint")
+        self.group_manager = root_node.addObject("DefaultCollisionGroupManager")
+        self.visual_loop = root_node.addObject("DefaultVisualManagerLoop")

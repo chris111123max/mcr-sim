@@ -15,10 +15,11 @@ from pathlib import Path
 import shlex
 import subprocess
 import sys
+import time
 
 HERE=Path(__file__).resolve().parent
 TESTING=HERE.parents[1].resolve()
-EXPECTED_SHA="6f534ad515bfa635666f9d3237783681e65dc378a3d5608706db30bb00e181c"
+EXPECTED_SHA="6f534ad5155bfa635666f9d3237783681e65dc378a3d5608706db30bb00e181c"
 
 def main():
     ap=argparse.ArgumentParser(description=__doc__)
@@ -63,10 +64,12 @@ def main():
             ap.error("Training-oriented options are forbidden")
         command=[str(args.python),str(runner),*runner_args]
         log_path=arm_dir/"native_runner.log"
+        started = time.perf_counter()
         with log_path.open("w",encoding="utf-8") as log:
             completed=subprocess.run(command,stdout=log,stderr=subprocess.STDOUT,
                                      cwd=Path.cwd(),timeout=args.max_seconds_per_arm,
                                      check=False)
+        replay_wall_ms = (time.perf_counter() - started) * 1000.0
         if completed.returncode:
             print(f"INCONCLUSIVE: {arm} native runner exit {completed.returncode}; {log_path}",
                   file=sys.stderr)
@@ -83,6 +86,7 @@ def main():
         if arm_data.get("requested_tolerance")!=tol:
             print(f"INCONCLUSIVE: actual solver tolerance not attested: {arm}",file=sys.stderr)
             return 2
+        arm_data["native_replay_wall_ms"] = replay_wall_ms
         for st in arm_data["stages"]:
             if not isinstance(st,dict) or "npz" not in st:
                 print(f"INCONCLUSIVE: missing stage path {arm}",file=sys.stderr)
