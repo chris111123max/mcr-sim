@@ -196,10 +196,37 @@ class SofaBackend:
         positions = np.asarray(self._handles.dofs.position.value, dtype=float)
         if positions.ndim != 2 or positions.shape[1] < 7:
             raise RuntimeError(f"Unexpected SOFA Rigid3d positions: {positions.shape}")
-        tracking = positions[:, :3][::-1].copy()
-        tip_quaternion = positions[-1, 3:7]
-        tip_frame = quaternion_xyzw_to_matrix(tip_quaternion)
-        inserted = float(np.asarray(self._handles.ir_controller.xtip.value).reshape(-1)[0])
+        controller = self._handles.ir_controller
+        try:
+            inserted_values = np.asarray(controller.xtip.value, dtype=float).reshape(-1)
+            first_values = np.asarray(controller.indexFirstNode.value).reshape(-1)
+            curv_abs = np.asarray(controller.CurvAbs.value, dtype=float).reshape(-1)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise RuntimeError("Inserted catheter geometry NOT_OBSERVED: IRC xtip/indexFirstNode/CurvAbs unavailable") from exc
+        if len(inserted_values) != 1 or len(first_values) != 1 or not np.all(np.isfinite(first_values)):
+            raise RuntimeError("Inserted geometry requires the existing single-instrument IRC layout")
+        inserted = float(inserted_values[0])
+        first = int(first_values[0])
+        # SOFA21 BeamAdapter controller source: idP = numControlledNodes-nnode+p;
+        # fixFirstNodesWithUntil() exposes that base node as indexFirstNode.
+        # CurvAbs lists exactly those simulated DOFs, in entrance-to-tip order.
+        # This scene has one catheter and no dropped instruments. Never infer
+        # active nodes from a uniform rest grid or retain its parked prefix.
+        if (first != first_values[0] or first < 0 or len(curv_abs) == 0 or
+                first + len(curv_abs) != len(positions)):
+            raise RuntimeError("IRC active-node range does not match mechanical DOFs")
+        if (not np.isfinite(inserted) or not 0.0 <= inserted <= self.config.instrument.total_length_m or
+                not np.all(np.isfinite(curv_abs)) or np.any(np.diff(curv_abs) <= 0)):
+            raise RuntimeError("Invalid IRC insertion/curvilinear coordinates")
+        # Only a consistency check in SI metres; no controller/physics tuning.
+        if (not np.isclose(curv_abs[0], 0.0, atol=1e-8, rtol=0.0) or
+                not np.isclose(curv_abs[-1], inserted, atol=1e-8, rtol=1e-6)):
+            raise RuntimeError("IRC geometry does not cover entrance-to-xtip in metres; inserted shape NOT_OBSERVED")
+        active = positions[first:first + len(curv_abs)]
+        if not np.all(np.isfinite(active)):
+            raise RuntimeError("Inserted SOFA catheter geometry contains NaN or Inf")
+        tracking = active[::-1, :3].copy()
+        tip_frame = quaternion_xyzw_to_matrix(active[-1, 3:7])
         field = np.asarray(self._handles.torque_controller.field_world_t, dtype=float).copy()
         error = self._simulation_error or not np.all(np.isfinite(positions))
         return BackendState(
@@ -208,6 +235,9 @@ class SofaBackend:
             magnetic_field_world_t=field,
             inserted_length_m=inserted,
             simulation_error=bool(error),
+            extra={"geometry_source": "SOFA21 IRC indexFirstNode + CurvAbs",
+                   "inserted_dof_indices_tip_first": np.arange(first, first+len(curv_abs))[::-1].copy(),
+                   "inserted_curv_abs_m_tip_first": curv_abs[::-1].copy()},
         )
 
     def physics_substep(self, magnetic_field_world_t, insertion_delta_m) -> StepDiagnostics:

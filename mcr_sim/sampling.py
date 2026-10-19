@@ -34,6 +34,7 @@ def _worker(connection, config, mode):
 class ProcessEnvironment:
     def __init__(self, config, mode="train"):
         self.config = config
+        self._pending = None
         self.action_space = spaces.Box(-1, 1, shape=(3,), dtype=np.float32)
         context = mp.get_context("spawn")
         self.connection, child = context.Pipe()
@@ -51,12 +52,28 @@ class ProcessEnvironment:
         return result
 
     def reset(self, **kwargs):
+        if self._pending is not None:
+            raise RuntimeError("Collect the pending step before resetting this environment")
         self.connection.send(("reset", kwargs))
         return self._receive()
 
+    def step_async(self, action):
+        if self._pending is not None:
+            raise RuntimeError("This environment already has an outstanding step")
+        self.connection.send(("step", np.asarray(action).copy()))
+        self._pending = "step"
+
+    def step_wait(self):
+        if self._pending != "step":
+            raise RuntimeError("No outstanding step for this environment")
+        try:
+            return self._receive()
+        finally:
+            self._pending = None
+
     def step(self, action):
-        self.connection.send(("step", action))
-        return self._receive()
+        self.step_async(action)
+        return self.step_wait()
 
     def close(self):
         if self.process.is_alive():
@@ -69,3 +86,16 @@ class ProcessEnvironment:
                 self.process.terminate()
                 self.process.join(timeout=5)
         self.connection.close()
+
+
+def step_environments(environments, actions):
+    """Dispatch every worker first, then collect in stable environment order."""
+    if len(environments) != len(actions) or not environments:
+        raise ValueError("One action is required for each selected environment")
+    if len(environments) == 1 and not hasattr(environments[0], "step_async"):
+        return [environments[0].step(actions[0])]
+    if any(not hasattr(env, "step_async") or not hasattr(env, "step_wait") for env in environments):
+        raise TypeError("Multiple environments require asynchronous process collectors")
+    for env, action in zip(environments, actions):
+        env.step_async(action)
+    return [env.step_wait() for env in environments]

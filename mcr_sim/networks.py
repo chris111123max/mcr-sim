@@ -12,21 +12,42 @@ class RecurrentEncoder(nn.Module):
         super().__init__()
         self.lstm = nn.LSTM(observation_dim, hidden_size, layers, batch_first=True)
 
-    def forward(self, observation_sequence: torch.Tensor) -> torch.Tensor:
+    def forward(self, observation_sequence: torch.Tensor, lengths=None) -> torch.Tensor:
         if observation_sequence.ndim not in (2, 3) or observation_sequence.shape[-1] != self.lstm.input_size:
-            raise ValueError("LSTM expects (..., %d) observations" % self.lstm.input_size)
+            raise ValueError("LSTM observation dimension mismatch")
         if observation_sequence.ndim == 2:
             observation_sequence = observation_sequence.unsqueeze(1)
-        output, _ = self.lstm(observation_sequence)
-        return output[:, -1]
+        if lengths is None:
+            output, _ = self.lstm(observation_sequence)
+            return output[:, -1]
+        lengths = torch.as_tensor(lengths, dtype=torch.long, device=observation_sequence.device)
+        if lengths.shape != (observation_sequence.shape[0],) or torch.any(lengths < 1) or torch.any(lengths > observation_sequence.shape[1]):
+            raise ValueError("Invalid real sequence lengths")
+        # Right-padding is storage only. Run each length group on real frames;
+        # neither padding nor a repeated first frame enters the recurrent state.
+        encoded = observation_sequence.new_zeros((observation_sequence.shape[0], self.lstm.hidden_size))
+        for length in torch.unique(lengths).tolist():
+            rows = torch.nonzero(lengths == length, as_tuple=False).flatten()
+            sequence = observation_sequence.index_select(0, rows)[:, :length]
+            output, _ = self.lstm(sequence)  # zero initial h/c for every window
+            encoded = encoded.index_copy(0, rows, output[:, -1])
+        return encoded
 
-    def step(self, observation, hidden=None):
-        """Single online step; caller owns one hidden state per environment."""
+    def step(self, observation, history=None, window_size=8):
+        """Return latent and a bounded real-frame window, never persistent h/c."""
         if observation.ndim != 1 or observation.shape[0] != self.lstm.input_size:
-            raise ValueError("Online LSTM expects one %dD observation" % self.lstm.input_size)
-        observation = observation.reshape(1, 1, -1)
-        output, hidden = self.lstm(observation, hidden)
-        return output[:, -1], tuple(item.detach() for item in hidden)
+            raise ValueError("Online LSTM observation dimension mismatch")
+        if window_size < 1:
+            raise ValueError("History window must be positive")
+        if history is None:
+            window = observation.unsqueeze(0)
+        else:
+            if not isinstance(history, torch.Tensor) or history.ndim != 2 or history.shape[-1] != self.lstm.input_size:
+                raise ValueError("History must be a real-frame window, not legacy LSTM h/c")
+            window = torch.cat((history.to(observation), observation.unsqueeze(0)), dim=0)
+        window = window[-window_size:]
+        latent = self.forward(window.unsqueeze(0))
+        return latent, window.detach()
 
 
 def mlp(input_dim: int, hidden: Sequence[int], output_dim: int) -> nn.Sequential:
@@ -77,5 +98,5 @@ class SACNetworks(nn.Module):
         self.actor = GaussianActor(lstm_nodes, action_dim, hidden)
         self.critics = TwinCritic(lstm_nodes, action_dim, hidden)
 
-    def policy(self, observation_sequence):
-        return self.actor.sample(self.encoder(observation_sequence))
+    def policy(self, observation_sequence, lengths=None):
+        return self.actor.sample(self.encoder(observation_sequence, lengths))
