@@ -259,6 +259,8 @@ def main():
                     status=load(child/'report.json')
                     if status.get('status') in ('CAPTURED','CAPTURED_WITH_REPLAY_DISCREPANCY'):
                         rep['runtime_replays'][kind]=summarize_replay(child)
+                        if not rep['runtime_replays'][kind]['expected_models_present']:
+                            raise RuntimeError('Actual production SOFA models missing for '+kind)
                 if rep['processes']['runtime_'+kind]['exit_code']!=0:
                     raise RuntimeError('Actual SOFA replay '+kind+' failed or differed; no false acceptance')
             rep['status']='COMPLETED_WITH_COLLISION_EQUIVALENCE_NOT_VERIFIED'
