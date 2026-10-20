@@ -77,7 +77,8 @@ class Detector:
     def __init__(self,vessel):
         self.cal=calibration()
         if self.cal['status']!='PASS': raise ValueError('Analytic detector calibration failed')
-        asset,bundle,mesh_info=inspect_asset(vessel,101)
+        seed=int(json.loads((Path(vessel)/'metadata.json').read_text())['seed'])
+        asset,bundle,mesh_info=inspect_asset(vessel,seed)
         if asset['status']!='PASS' or bundle is None: raise ValueError('Existing Stage A did not PASS: '+str(asset.get('reason')))
         if not bundle.metadata['validation']['passed']: raise ValueError('Generator validation not PASS')
         mesh,mesh_report=mesh_info; data,reason=_vtk_geometry(mesh)
