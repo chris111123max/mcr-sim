@@ -39,3 +39,5 @@ Thumbs.db
 
 # Local C/C++ build artifacts
 cpp/SDFUnilateralConstraint/build/
+/stEVE_anatomical_vessels/
+/testing/

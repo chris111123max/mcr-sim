@@ -111,6 +111,8 @@ def create_sofa_scene(root, bundle: VesselBundle, config: ExperimentConfig = DEF
     compatibility = stage("A", lambda: load_plugins(root))
     # Simulator owns the animation loop and the whole contact pipeline. Keep B/C
     # independently reported in the backend's observed SOFA log checks.
+    from .native_threads import limit_sofa_scheduler
+    limit_sofa_scheduler()
     root.dt = config.sofa.dt_s
     root.gravity = list(config.sofa.gravity_m_s2)
     animation_loop = stage("B", lambda: root.addObject("FreeMotionAnimationLoop"))
@@ -147,6 +149,8 @@ class SofaBackend:
         self._messages = None
         self.last_exception = None
         self.last_messages = []
+        self._bundle_key = None
+        self.last_reset = {}
 
     @staticmethod
     def availability() -> Dict[str, object]:
@@ -161,7 +165,79 @@ class SofaBackend:
             return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
         return {"available": True, "reason": None}
 
+    def _asset_key(self, bundle):
+        # Stat identity catches replacement in place without hashing STL each episode.
+        st = bundle.collision_stl.stat()
+        return (str(bundle.collision_stl.resolve()), st.st_size, st.st_mtime_ns,
+                tuple(bundle.insertion_point_m), tuple(np.round(bundle.insertion_direction, 14)))
+
+    def _reuse_static_scene(self, bundle):
+        """Keep the immutable vessel, loader, topology and root/plugins.
+
+        SOFA21 IRC.init appends to a private instrument list; reinitializing the
+        same IRC is unsafe. LCP private warm-start caches have no complete public
+        reset API. Recreate dynamic instrument + solver/contact stack, rather
+        than pretending Simulation.reset alone clears those private caches.
+        Only new dynamic subtrees/objects are initialized, never the vessel/root.
+        """
+        from .mcr_simulator import Simulator
+        from .mcr_instrument import Instrument
+        from .mcr_mag_controller import MagController
+        from .native_threads import limit_sofa_scheduler
+        limit_sofa_scheduler()
+        old = self._handles
+        old.simulator.response.reset()  # removes live contact constraints first
+        old.simulator.lcp_solver.cleanup()
+        self._Sofa.Simulation.reset(self._root)
+        for child in list(self._root.children):
+            if child.getName() != old.vessel.CollisionModel.getName():
+                self._Sofa.Simulation.unload(child)
+                if child in list(self._root.children):
+                    self._root.removeChild(child)
+        for obj in list(self._root.objects):
+            if obj.getClassName() != "RequiredPlugin":
+                obj.cleanup()
+                self._root.removeObject(obj)
+        self._root.time.value = 0.0
+        simulator = Simulator(self._root, self.config)
+        instrument = Instrument(self._root,
+            insertion_pose(bundle.insertion_point_m, bundle.insertion_direction), self.config)
+        controller = MagController(instrument, self.config.instrument.initial_field_t)
+        instrument.InstrumentCombined.addObject(controller)
+        self._handles = SceneHandles(self._root, instrument.MO, instrument.IRC,
+            instrument.CFF, controller, instrument.layout, simulator, instrument,
+            old.vessel, self.stages, old.compatibility)
+        for obj in self._root.objects:
+            if obj.getClassName() != "RequiredPlugin":
+                obj.init()
+        for child in self._root.children:
+            if child.getName() != old.vessel.CollisionModel.getName():
+                self._Sofa.Simulation.init(child)
+        for obj in self._root.objects:
+            if obj.getClassName() != "RequiredPlugin":
+                obj.bwdInit()
+        self._messages.require_no_errors("reused static scene reset")
+        self.physics_substeps_executed = 0
+        self.stages["H"] = {"status": "NOT_RUN"}
+        self._simulation_error = False
+        self.last_exception = None
+        state = self.state()
+        state.validate()
+        self.last_reset = {"mode": "reuse_static_vessel_fresh_dynamics", "fallback": None}
+        return state
+
     def reset(self, bundle: VesselBundle) -> BackendState:
+        key = self._asset_key(bundle)
+        fallback = None
+        if (self._handles is not None and self._bundle_key == key
+                and not self._simulation_error):
+            try:
+                return self._reuse_static_scene(bundle)
+            except Exception:
+                import traceback
+                fallback = traceback.format_exc()
+                # A partial reset is never exposed: tear down and rebuild safely.
+        self.last_reset = {"mode": "full_rebuild", "fallback": fallback}
         status = self.availability()
         if not status["available"]:
             raise RuntimeError("SOFA Python runtime unavailable: " + str(status["reason"]))
@@ -188,6 +264,7 @@ class SofaBackend:
                 self.stages["H"] = {"status": "BLOCKED"}
             self.close()
             raise
+        self._bundle_key = key
         return self.state()
 
     def state(self) -> BackendState:

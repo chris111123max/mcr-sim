@@ -30,7 +30,7 @@ class BeamDiscretization:
 
 BEAM_PRESETS: Dict[str, BeamDiscretization] = {
     "nelson_reference": BeamDiscretization(30, 3, 30, 6, 600),
-    "default_100_34": BeamDiscretization(100, 34, 100, 68, 600),
+    "default_100_34": BeamDiscretization(100, 34, 50, 68, 600),
     "refined_150_51": BeamDiscretization(150, 51, 150, 102, 600),
 }
 
@@ -132,7 +132,7 @@ class TaskConfig:
 class SACConfig:
     gamma: float = 0.99
     reward_scaling: float = 1.0
-    batch_size: int = 32
+    batch_size: int = 64
     replay_buffer_size: int = 10_000
     heatup_steps: int = 500_000
     update_per_explore_step: float = 1.0 / 20.0

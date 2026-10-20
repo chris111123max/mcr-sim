@@ -20,18 +20,23 @@ class RecurrentEncoder(nn.Module):
         if lengths is None:
             output, _ = self.lstm(observation_sequence)
             return output[:, -1]
-        lengths = torch.as_tensor(lengths, dtype=torch.long, device=observation_sequence.device)
-        if lengths.shape != (observation_sequence.shape[0],) or torch.any(lengths < 1) or torch.any(lengths > observation_sequence.shape[1]):
+        # Lengths are host metadata. Never read accelerator tensors to branch.
+        if isinstance(lengths, torch.Tensor):
+            if lengths.device.type != "cpu":
+                raise ValueError("Pass real sequence lengths as CPU metadata")
+            values = lengths.numpy()
+        else:
+            import numpy as np
+            values = np.asarray(lengths)
+        if values.shape != (observation_sequence.shape[0],) or (values < 1).any() or (values > observation_sequence.shape[1]).any():
             raise ValueError("Invalid real sequence lengths")
-        # Right-padding is storage only. Run each length group on real frames;
-        # neither padding nor a repeated first frame enters the recurrent state.
-        encoded = observation_sequence.new_zeros((observation_sequence.shape[0], self.lstm.hidden_size))
-        for length in torch.unique(lengths).tolist():
-            rows = torch.nonzero(lengths == length, as_tuple=False).flatten()
-            sequence = observation_sequence.index_select(0, rows)[:, :length]
-            output, _ = self.lstm(sequence)  # zero initial h/c for every window
-            encoded = encoded.index_copy(0, rows, output[:, -1])
-        return encoded
+        if self.lstm.bidirectional:
+            raise ValueError("Causal padded batching requires a unidirectional LSTM")
+        # Later right-padding cannot affect an earlier causal output or its gradient.
+        # Only the output at the final real frame contributes to the losses.
+        output, _ = self.lstm(observation_sequence)
+        last = torch.as_tensor(values.copy(), dtype=torch.long, device=output.device) - 1
+        return output.gather(1, last[:, None, None].expand(-1, 1, output.shape[-1])).squeeze(1)
 
     def step(self, observation, history=None, window_size=8):
         """Return latent and a bounded real-frame window, never persistent h/c."""
@@ -73,7 +78,7 @@ class GaussianActor(nn.Module):
     def sample(self, latent):
         mean, log_std = self(latent)
         std = log_std.exp()
-        normal = torch.distributions.Normal(mean, std)
+        normal = torch.distributions.Normal(mean, std, validate_args=False)
         pre_tanh = normal.rsample()
         action = torch.tanh(pre_tanh)
         log_prob = normal.log_prob(pre_tanh) - torch.log(1.0 - action.pow(2) + 1e-6)

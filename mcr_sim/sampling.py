@@ -1,11 +1,14 @@
 """Optional process-isolated SOFA collectors. No distributed learner or DDP."""
 import multiprocessing as mp
 import traceback
+from multiprocessing.connection import wait
+from .native_threads import limit_worker_environment
 import numpy as np
 from gymnasium import spaces
 
 
 def _worker(connection, config, mode):
+    limit_worker_environment()
     env = None
     try:
         from .rl_env import MagneticNavigationEnv
@@ -33,6 +36,7 @@ def _worker(connection, config, mode):
 
 class ProcessEnvironment:
     def __init__(self, config, mode="train"):
+        limit_worker_environment()
         self.config = config
         self._pending = None
         self.action_space = spaces.Box(-1, 1, shape=(3,), dtype=np.float32)
@@ -41,7 +45,11 @@ class ProcessEnvironment:
         self.process = context.Process(target=_worker, args=(child, config, mode), daemon=True)
         self.process.start()
         child.close()
-        self._receive()
+        try:
+            self._receive()
+        except BaseException:
+            self.close()
+            raise
 
     def _receive(self):
         if not self.connection.poll(120):
@@ -51,11 +59,23 @@ class ProcessEnvironment:
             raise RuntimeError("SOFA collector failed:\n" + result)
         return result
 
-    def reset(self, **kwargs):
+    def reset_async(self, **kwargs):
         if self._pending is not None:
-            raise RuntimeError("Collect the pending step before resetting this environment")
+            raise RuntimeError("Collect the pending operation before resetting this environment")
         self.connection.send(("reset", kwargs))
-        return self._receive()
+        self._pending = "reset"
+
+    def reset_wait(self):
+        if self._pending != "reset":
+            raise RuntimeError("No outstanding reset for this environment")
+        try:
+            return self._receive()
+        finally:
+            self._pending = None
+
+    def reset(self, **kwargs):
+        self.reset_async(**kwargs)
+        return self.reset_wait()
 
     def step_async(self, action):
         if self._pending is not None:
@@ -98,4 +118,37 @@ def step_environments(environments, actions):
         raise TypeError("Multiple environments require asynchronous process collectors")
     for env, action in zip(environments, actions):
         env.step_async(action)
-    return [env.step_wait() for env in environments]
+    return _collect_ready(environments, "step_wait")
+
+
+def reset_environments(environments, reset_kwargs=None):
+    """Dispatch independent resets before waiting, preserving environment order."""
+    if reset_kwargs is None:
+        reset_kwargs = [{} for _ in environments]
+    if len(environments) != len(reset_kwargs):
+        raise ValueError("One reset argument dict is required per environment")
+    if not environments:
+        return []
+    if all(hasattr(env, "reset_async") and hasattr(env, "reset_wait") for env in environments):
+        for env, kwargs in zip(environments, reset_kwargs):
+            env.reset_async(**kwargs)
+        return _collect_ready(environments, "reset_wait")
+    if len(environments) != 1:
+        raise TypeError("Multiple environments require asynchronous resets")
+    return [environments[0].reset(**reset_kwargs[0])]
+
+
+def _collect_ready(environments, method):
+    """Drain ready pipes immediately; return stable environment-index order."""
+    if not all(hasattr(env, "connection") for env in environments):
+        return [getattr(env, method)() for env in environments]
+    pending = {env.connection: (i, env) for i, env in enumerate(environments)}
+    results = [None] * len(environments)
+    while pending:
+        ready = wait(list(pending), timeout=120)
+        if not ready:
+            raise TimeoutError("SOFA collectors did not respond within 120 seconds")
+        for connection in ready:
+            index, env = pending.pop(connection)
+            results[index] = getattr(env, method)()
+    return results
