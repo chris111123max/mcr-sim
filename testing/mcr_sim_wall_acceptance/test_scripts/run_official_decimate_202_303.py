@@ -245,16 +245,18 @@ def offline_phase(output: Path, status: dict):
             }
     else:
         status["offline_geometry"] = {"status": "FAIL", "error": "Report missing"}
-    status["offline_status"] = (
-        "COMPLETED" if result["exit_code"] == 0 and
-        status["offline_geometry"].get("status") in
-        ("COMPLETED_ENDPOINT_GEOMETRY_CHECK", "COMPLETED_WITH_PENETRATION")
-        else "FAIL"
-    )
+    offline_report_status = status["offline_geometry"].get("status")
+    if offline_report_status == "COMPLETED_WITH_PENETRATION":
+        # A positive sampled entity breach is not just an inconclusive comparison.
+        status["offline_status"] = "PENETRATION_DETECTED"
+    elif result["exit_code"] == 0 and offline_report_status == "COMPLETED_ENDPOINT_GEOMETRY_CHECK":
+        status["offline_status"] = "COMPLETED_ENDPOINT_ONLY"
+    else:
+        status["offline_status"] = "FAIL"
     # This run never upgrades finite-trajectory evidence to global equivalence.
     status["collision_equivalence"] = "NOT_VERIFIED"
     status["strict_anti_penetration"] = "NOT_VERIFIED"
-    return status["offline_status"] == "COMPLETED"
+    return status["offline_status"] == "COMPLETED_ENDPOINT_ONLY"
 
 
 def trajectory_comparison(output: Path, status: dict):
