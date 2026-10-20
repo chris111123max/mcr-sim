@@ -316,7 +316,8 @@ def main():
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     output = args.output.resolve()
-    if not output.is_relative_to(REPORTS.resolve()):
+    # Python 3.8 compatible: Path.is_relative_to was introduced in Python 3.9.
+    if os.path.commonpath((str(output), str(REPORTS.resolve()))) != str(REPORTS.resolve()):
         parser.error("Output must remain inside the dedicated test reports directory")
     output.mkdir(parents=True, exist_ok=True)
     summary_file = output / "CROSS_SEED_SUMMARY.json"
