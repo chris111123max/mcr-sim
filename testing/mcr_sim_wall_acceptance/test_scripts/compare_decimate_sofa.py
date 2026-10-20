@@ -19,15 +19,19 @@ class PhysicalStop(BaseException):pass
 def save(p,r):p.write_text(json.dumps(jsonable(r),indent=2,allow_nan=False)+'\n')
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def main(root,kind):
+    if kind not in ('fine','candidate'): raise ValueError('kind must be fine or candidate')
     root=Path(root).resolve();gate=json.loads((root/'wrapper_retry/geometry_report.json').read_text())
     assert gate['stage_a_status']=='PASS' and gate['formal_validation_passed']
     assert gate['preservation']['status']=='PASS'
-    plan=json.loads((root/'replay_plan.json').read_text());vessel=Path(gate['source_directory'] if kind=='fine' else gate['candidate_directory'])
+    plan=json.loads((root/'replay_plan.json').read_text());vessel=Path(gate['source_directory'] if kind=='fine' else gate['candidate_directory']);seed=int(gate.get('seed',101))
+    assert int(json.loads((vessel/'metadata.json').read_text())['seed'])==seed
+    assert len(plan['full_rl_actions'])==15 and all(len(item['action'])==3 for item in plan['full_rl_actions'])
     if kind=='fine':assert sha(vessel/'collision_inner.stl')==plan['source_stl_sha256']
+    else:assert sha(vessel/'collision_inner.stl')==gate['candidate_stl_sha256']
     out=root/('sofa_'+kind);out.mkdir(exist_ok=False);started=time.monotonic()
-    report={'status':'FAIL','kind':kind,'vessel':str(vessel),'stl_sha256':sha(vessel/'collision_inner.stl'),'timing':[],'contact_actions':[],'native_timer_records':[],'errors':[],'candidate_searches':0,'contact_status':'NOT_REACHED','limits':{'contact_full_RL_actions':15,'contact_physics_substeps':330,'wall_seconds':600,'tip_jump_stop_m':.005},'physics_parameters_changed':False}
+    report={'status':'FAIL','seed':seed,'kind':kind,'vessel':str(vessel),'stl_sha256':sha(vessel/'collision_inner.stl'),'timing':[],'contact_actions':[],'native_timer_records':[],'errors':[],'candidate_searches':0,'contact_status':'NOT_REACHED','limits':{'contact_full_RL_actions':15,'contact_physics_substeps':330,'wall_seconds':600,'tip_jump_stop_m':.005},'physics_parameters_changed':False}
     protected={str(p):sha(p) for p in (PYTHON/'mcr_sim').rglob('*.py')}
-    cfg=replace(DEFAULT_CONFIG,vessel_root=vessel.parent,vessel_seeds=(101,));backend=SofaBackend(cfg);env=MagneticNavigationEnv(backend,config=cfg,bundles=[load_vessel_bundle(vessel)])
+    cfg=replace(DEFAULT_CONFIG,vessel_root=vessel.parent,vessel_seeds=(seed,));backend=SofaBackend(cfg);env=MagneticNavigationEnv(backend,config=cfg,bundles=[load_vessel_bundle(vessel)])
     animate=Sofa.Simulation.animate;phase='timing';stream=None
     def timed_animate(*a,**kw):
         Timer.begin('MeshPerf');t=time.perf_counter()
@@ -37,7 +41,7 @@ def main(root,kind):
             try:report['native_timer_records'].append({'animate_seconds':duration,'records':Timer.getRecords('MeshPerf')})
             finally:Timer.end('MeshPerf')
     try:
-        o,info=env.reset(seed=101,options={'vessel_seed':101,'target_branch':'lcca'})
+        o,info=env.reset(seed=seed,options={'vessel_seed':seed,'target_branch':'lcca'})
         Timer.setEnabled('MeshPerf',True);Timer.setInterval('MeshPerf',1000000);Timer.setOutputType('MeshPerf','stdout');Sofa.Simulation.animate=timed_animate
         for j in range(2):
             t=time.monotonic();before=backend.physics_substeps_executed
@@ -46,7 +50,7 @@ def main(root,kind):
             report['timing'].append({'action':a.tolist(),'seconds':time.monotonic()-t,'actual_substeps':22});save(out/'report.json',report);print('TIMING',kind,j,report['timing'][-1]['seconds'],flush=True)
         report['timing_physics_substeps']=backend.physics_substeps_executed;Sofa.Simulation.animate=animate
         # Reset production scene, not positions. Replay starts with original seed/target.
-        o,info=env.reset(seed=101,options={'vessel_seed':101,'target_branch':'lcca'});phase='contact'
+        o,info=env.reset(seed=seed,options={'vessel_seed':seed,'target_branch':'lcca'});phase='contact'
         report['reset_observation']=o.tolist();report['reset_info']=info
         original=backend.physics_substep;context={};stream=(out/'physical_substeps.jsonl').open('w')
         def observed(field,delta):
