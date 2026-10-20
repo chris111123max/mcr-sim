@@ -37,7 +37,11 @@ class Instrument:
         self.RG = device.addObject(
             "RegularGrid", name="meshLinesCombined", nx=d.mechanical_dofs, ny=1, nz=1,
             xmin=0.0, xmax=cfg.total_length_m, ymin=0.0, ymax=0.0, zmin=0.0, zmax=0.0)
-        self.MO = device.addObject("MechanicalObject", name="DOFs", template="Rigid3d")
+        # IRC parks nodes at the insertion pose in bwdInit. Its moving entrance
+        # spring must use that same reference pose, not RegularGrid world-X positions.
+        self.MO = device.addObject(
+            "MechanicalObject", name="DOFs", template="Rigid3d",
+            rest_position=[list(T_start_sim) for _ in range(d.mechanical_dofs)])
         self.IC = device.addObject(
             "WireBeamInterpolation", name="InterpolGuide", WireRestShape="@../" + name + "_topo_lines/InstrRestShape",
             radius=self.equivalent_radius_m, printLog=False)
@@ -49,6 +53,8 @@ class Instrument:
         self.IRC = device.addObject(
             "InterventionalRadiologyController", name="m_ircontroller", template="Rigid3d",
             instruments="InterpolGuide", startingPos=list(T_start_sim), xtip=[0.001],
+            # BeamAdapter length precision: 0.01 mm expressed in this SI-metre scene.
+            threshold=1e-5,
             rotationInstrument=[0.0], speed=0.0, listening=True, controlledInstrument=0, printLog=False)
         self.correction = device.addObject("LinearSolverConstraintCorrection", wire_optimization=True, printLog=False)
         device.addObject("FixedConstraint", indices=0, name="FixedConstraint")
