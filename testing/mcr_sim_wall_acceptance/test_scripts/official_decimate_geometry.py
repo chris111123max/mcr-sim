@@ -15,17 +15,19 @@ from mcr_sim.vessel_bundle import load_vessel_bundle
 
 def sha(p):return hashlib.sha256(Path(p).read_bytes()).hexdigest()
 def save(p,value):p.write_text(json.dumps(jsonable(value),indent=2,allow_nan=False)+'\n')
-def main(out):
+def main(out, seed=101):
+    seed=int(seed)
+    if seed not in (101,202,303): raise ValueError('Only previously approved cohort seeds 101, 202, 303 are supported')
     out=Path(out).resolve();started=time.monotonic()
     manifest=json.loads((TEST/'reports/pretrain_final_20261020/ten_cohort_generation.json').read_text())
-    source=Path(manifest['assets']['101']['directory']);meta=json.loads((source/'metadata.json').read_text());params=json.loads((source/'parameters.json').read_text())
+    source=Path(manifest['assets'][str(seed)]['directory']);meta=json.loads((source/'metadata.json').read_text());params=json.loads((source/'parameters.json').read_text())
     protected={str(p):sha(p) for p in (PYTHON/'mcr_sim').rglob('*.py')}
     protected.update({str(p):sha(p) for p in source.rglob('*') if p.is_file()})
     save(out/'protected_sha256.json',protected)
-    result={'status':'FAIL','source_directory':str(source),'source_stl_sha256':sha(source/'collision_inner.stl'),'method':'pv.read(fine_stl).decimate(0.99), no extra kwargs; empty-metadata output compatibility bridge; VTK STL serialization only','physics_substeps':0,'production_published':False,'errors':[],'stages':{'geometry':'NOT_RUN','performance':'NOT_RUN','contact_replay':'NOT_RUN'}}
-    candidate_dir=out/'candidate/arch_type_I_seed_101';candidate_dir.mkdir(parents=True,exist_ok=False)
+    result={'status':'FAIL','seed':seed,'source_directory':str(source),'source_stl_sha256':sha(source/'collision_inner.stl'),'method':'pv.read(fine_stl).decimate(0.99), no extra kwargs; empty-metadata output compatibility bridge; VTK STL serialization only','physics_substeps':0,'production_published':False,'errors':[],'stages':{'geometry':'NOT_RUN','performance':'NOT_RUN','contact_replay':'NOT_RUN'}}
+    candidate_dir=out/'candidate'/('arch_type_I_seed_%d'%seed);candidate_dir.mkdir(parents=True,exist_ok=False)
     try:
-        assert manifest['status']=='ALL_TEN_STAGE_A_PASS' and meta['validation']['passed']
+        assert manifest['status']=='ALL_TEN_STAGE_A_PASS' and meta['validation']['passed'] and int(meta['seed'])==seed
         assert meta['meshing']['voxel_spacing_mm']==[.3]*3 and meta['scale_diameter_array']==[.85]
         for q in source.iterdir():
             if q.is_file() and q.name not in ['collision_inner.stl','metadata.json']:shutil.copy2(q,candidate_dir/q.name)
@@ -58,7 +60,7 @@ def main(out):
         meta['validation']=formal;meta['asset_sha256']['collision_inner.stl']=result['candidate_stl_sha256']
         meta['candidate_experiment']={'source':str(source),'source_stl_sha256':result['source_stl_sha256'],'method':result['method'],'not_production':True,'unchanged_centerlines':True}
         save(candidate_dir/'metadata.json',meta)
-        independent,_,_=inspect_asset(candidate_dir,101);save(out/'independent_stage_a.json',independent)
+        independent,_,_=inspect_asset(candidate_dir,seed);save(out/'independent_stage_a.json',independent)
         result['formal_validation_passed']=formal['passed'];result['formal_failure_reasons']=formal['failure_reasons'];result['independent_stage_a_status']=independent['status'];result['mesh_quality']=formal['mesh_quality']
         sections=[]
         for key,items in formal['multi_section_diameters'].items():
@@ -93,4 +95,4 @@ def main(out):
         result['seconds']=time.monotonic()-started;save(out/'geometry_report.json',result)
         print('GEOMETRY_FINAL',result['status'],'REASONS',result.get('formal_failure_reasons'),'REPORT',out/'geometry_report.json',flush=True)
     return 0 if result['status']=='PASS' else 2
-if __name__=='__main__':raise SystemExit(main(sys.argv[1]))
+if __name__=='__main__':raise SystemExit(main(sys.argv[1],int(sys.argv[2]) if len(sys.argv)>2 else 101))
