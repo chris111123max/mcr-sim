@@ -174,8 +174,12 @@ def main():
     vessel=Path(gate['source_directory'] if args.kind=='fine' else gate['candidate_directory']).resolve()
     known=gate['source_stl_sha256'] if args.kind=='fine' else gate['candidate_stl_sha256']
     if sha(vessel/'collision_inner.stl')!=known:raise ValueError('Input vessel STL was changed')
-    if not args.output.resolve().parent.is_relative_to(TEST/'reports') if False else False:
-        raise AssertionError('unreachable')
+    # Keep new diagnostic files inside testing reports (Python 3.8 compatible).
+    import os
+    expected_root=(TEST/'reports').resolve()
+    result_path=args.output.resolve()
+    if os.path.commonpath([str(result_path),str(expected_root)]) != str(expected_root):
+        raise ValueError('Diagnostic output must remain in testing reports')
     plan=json.loads((comparison/'replay_plan.json').read_text())
     actions=plan['full_rl_actions']
     if len(actions)!=15:raise ValueError('Expected previous 15 action replay')
