@@ -1,5 +1,7 @@
 """Optional process-isolated SOFA collectors. No distributed learner or DDP."""
 import multiprocessing as mp
+import os
+from pathlib import Path
 import traceback
 from multiprocessing.connection import wait
 from .native_threads import limit_worker_environment
@@ -7,8 +9,12 @@ import numpy as np
 from gymnasium import spaces
 
 
-def _worker(connection, config, mode):
+def _worker(connection, config, mode, log_dir=None):
     limit_worker_environment()
+    if log_dir is not None:
+        folder=Path(log_dir);folder.mkdir(parents=True,exist_ok=True)
+        stream=(folder / ("worker_%d.log"%os.getpid())).open("a",buffering=1)
+        os.dup2(stream.fileno(),1);os.dup2(stream.fileno(),2)
     env = None
     try:
         from .rl_env import MagneticNavigationEnv
@@ -21,6 +27,11 @@ def _worker(connection, config, mode):
                 break
             if command == "reset":
                 result = env.reset(**payload)
+                from .runtime_audit import audit
+                result[1]["physics_runtime_audit"] = audit(env.backend, initial=True)
+            elif command == "runtime_audit":
+                from .runtime_audit import audit
+                result = audit(env.backend, initial=True)
             elif command == "step":
                 result = env.step(payload)
             else:
@@ -35,14 +46,15 @@ def _worker(connection, config, mode):
 
 
 class ProcessEnvironment:
-    def __init__(self, config, mode="train"):
+    def __init__(self, config, mode="train", log_dir=None):
         limit_worker_environment()
         self.config = config
         self._pending = None
         self.action_space = spaces.Box(-1, 1, shape=(3,), dtype=np.float32)
         context = mp.get_context("spawn")
         self.connection, child = context.Pipe()
-        self.process = context.Process(target=_worker, args=(child, config, mode), daemon=True)
+        args=(child,config,mode) if log_dir is None else (child,config,mode,str(log_dir))
+        self.process = context.Process(target=_worker, args=args, daemon=True)
         self.process.start()
         child.close()
         try:
@@ -94,6 +106,12 @@ class ProcessEnvironment:
     def step(self, action):
         self.step_async(action)
         return self.step_wait()
+
+    def runtime_audit(self):
+        if self._pending is not None:
+            raise RuntimeError("Collect pending operation before audit")
+        self.connection.send(("runtime_audit", None))
+        return self._receive()
 
     def close(self):
         if self.process.is_alive():

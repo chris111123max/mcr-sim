@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import random
+import time
 from contextlib import nullcontext
 import numpy as np
 import torch
@@ -15,6 +16,7 @@ from torch import nn
 
 from .networks import SACNetworks
 from .config import ObservationConfig
+from .serialization import json_default,write_json
 
 
 @dataclass
@@ -167,6 +169,12 @@ class EpisodeSequenceReplay:
                 "action": values[:, :3], "reward": values[:, 3:4], "done": values[:, 4:5]}
 
 
+def _require_finite(tensors,label):
+    values=[torch.isfinite(value.detach()).all() for value in tensors]
+    if not values or not bool(torch.stack(values).all().cpu()):
+        raise FloatingPointError("Nonfinite SAC "+label)
+
+
 class RecurrentSAC:
     def __init__(self, config, device="cpu", tau=0.005, sequence_length=8):
         self.config = config
@@ -298,6 +306,7 @@ class RecurrentSAC:
             critic_loss = nn.functional.mse_loss(q1, expected) + nn.functional.mse_loss(q2, expected)
             self.critic_optimizer.zero_grad(set_to_none=True)
             critic_loss.backward()
+            _require_finite([critic_loss]+[p.grad for g in self.critic_optimizer.param_groups for p in g["params"] if p.grad is not None],"critic loss/gradient")
             self.critic_optimizer.step()
 
         with region("actor"):
@@ -310,6 +319,7 @@ class RecurrentSAC:
             actor_loss = (self.alpha.detach() * log_probability - torch.minimum(policy_q1, policy_q2)).mean()
             self.actor_optimizer.zero_grad(set_to_none=True)
             actor_loss.backward()
+            _require_finite([actor_loss]+[p.grad for g in self.actor_optimizer.param_groups for p in g["params"] if p.grad is not None],"actor loss/gradient")
             self.actor_optimizer.step()
             for parameter in self.networks.critics.parameters():
                 parameter.requires_grad_(True)
@@ -318,8 +328,10 @@ class RecurrentSAC:
             alpha_loss = -(self.log_alpha * (log_probability.detach() + self.target_entropy)).mean()
             self.alpha_optimizer.zero_grad(set_to_none=True)
             alpha_loss.backward()
+            _require_finite([alpha_loss]+[p.grad for g in self.alpha_optimizer.param_groups for p in g["params"] if p.grad is not None],"alpha loss/gradient")
             self.alpha_optimizer.step()
 
+        _require_finite(list(self.networks.parameters())+[self.log_alpha],"updated parameters")
         with region("target"):
             with torch.no_grad():
                 for target_parameter, parameter in zip(self.target.parameters(), self.networks.parameters()):
@@ -332,9 +344,15 @@ class RecurrentSAC:
         return dict(zip(metrics, packed))
 
 
-def evaluate_policy(agent, env, vessel_seeds=None, sequence_length=8):
+def evaluate_policy(agent, env, vessel_seeds=None, sequence_length=8, training_step=0):
     if sequence_length != agent.sequence_length:
         raise ValueError("Evaluation and training history windows must agree")
+    if hasattr(env,"evaluate"):
+        rng=(random.getstate(),np.random.get_state(),torch.get_rng_state(),torch.npu.get_rng_state(agent.device) if agent.device.type=="npu" else None)
+        try:return env.evaluate(agent,training_step,sequence_length)
+        finally:
+            random.setstate(rng[0]);np.random.set_state(rng[1]);torch.set_rng_state(rng[2])
+            if rng[3] is not None:torch.npu.set_rng_state(rng[3],agent.device)
     results = []
     seeds = vessel_seeds if vessel_seeds is not None else env.config.eval_vessel_seeds
     for seed in seeds:
@@ -386,7 +404,18 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
         env.action_space.seed(seed+i)
     with region("initial_resets"):
         initial = reset_environments(envs, [{"seed": seed+i+start} for i in range(len(envs))])
+    if any(np.asarray(x[0]).shape!=(41,) or not np.all(np.isfinite(x[0])) for x in initial):raise ValueError("Invalid reset observation")
+    # Persist actual worker scene observations, not merely configuration intent.
+    if strict_failures:
+        from .serialization import write_json
+        audits = [result[1].get("physics_runtime_audit") for result in initial]
+        if any(not a or a.get("status") != "PASS" for a in audits):
+            raise RuntimeError("Missing/failed production runtime physics audit")
+        write_json(output / "runtime_physics.json", {"workers": audits, "count": len(audits)})
     observations = [result[0] for result in initial]
+    episode_returns=np.zeros(len(envs));episode_steps=np.zeros(len(envs),dtype=int)
+    recent=deque(maxlen=1000);started=time.monotonic();last_progress=started;last_progress_step=start
+    evaluation_seconds=0.;last_losses={}
     histories = [None] * len(envs)
     if profile is not None:
         profile.training_start()
@@ -394,7 +423,7 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
     log_path = output / "metrics.jsonl"
     def log(record):
         with log_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record,default=asdict)+"\n")
+            stream.write(json.dumps(record,default=json_default,allow_nan=False)+"\n")
     pending_metrics = []
     def flush_metrics():
         if not pending_metrics:
@@ -404,6 +433,7 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
             raise FloatingPointError("Nonfinite SAC metric")
         for (record_step,metric),row in zip(pending_metrics,values):
             log({"step":record_step,"update":dict(zip(metric,map(float,row)))})
+            last_losses.update(dict(zip(metric,map(float,row))))
         pending_metrics.clear()
     def save(step):
         checkpoint = {**agent.checkpoint(), "replay_format_version": EpisodeSequenceReplay.FORMAT_VERSION,
@@ -411,8 +441,9 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
                       "python_rng":random.getstate(),"numpy_rng":np.random.get_state(),"torch_rng":torch.get_rng_state()}
         if agent.device.type == "npu":
             checkpoint["npu_rng"] = torch.npu.get_rng_state(agent.device)
-        temporary = output / "checkpoint_pending.pt"
-        torch.save(checkpoint,temporary);temporary.replace(output/("lstm_sac_%d_steps.pt"%step))
+        checkpoint_dir=output / "checkpoints";checkpoint_dir.mkdir(exist_ok=True)
+        temporary = checkpoint_dir / "checkpoint_pending.pt"
+        torch.save(checkpoint,temporary);temporary.replace(checkpoint_dir/("lstm_sac_%d_steps.pt"%step))
     step = start; updates = 0
     while step < total_steps:
         indices = [(step+offset)%len(envs) for offset in range(min(len(envs),total_steps-step))]
@@ -438,6 +469,8 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
                          not info.get("simulation_error",False) and info.get("state_error") is None and
                          info.get("termination_reason")!="simulation_error" and candidate.shape==observations[index].shape and
                          np.all(np.isfinite(candidate)) and np.isfinite(reward))
+                valid=bool(valid)
+                if strict_failures and info.get("physics_substeps_attempted",22)!=22:valid=False
                 if strict_failures and not valid:
                     raise RuntimeError("Invalid SOFA transition: "+repr(info))
                 records.append(((observations[index],actions[offset],reward,following,terminated,truncated,index),{"valid":valid}))
@@ -446,12 +479,17 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
                 replay.add_batch(records)
             for index,(following,reward,terminated,truncated,info),valid in prepared:
                 step += 1
+                episode_returns[index]+=reward;episode_steps[index]+=1
                 if valid:
                     observations[index] = following
                 if terminated or truncated or not valid:
                     log({"step":step,"env_id":index,"episode":info.get("episode_metrics"),
                          "termination_reason":info.get("termination_reason") if valid else "simulation_error",
-                         "transition_stored":valid,"state_error":info.get("state_error")})
+                         "transition_stored":valid,"state_error":info.get("state_error"),
+                         "reward":float(episode_returns[index]),"steps":int(episode_steps[index]),
+                         "success":bool(info.get("success",False)),"vessel_seed":info.get("vessel_seed"),"target_branch":info.get("target_branch")})
+                    recent.append((bool(info.get("success",False)),float(episode_returns[index]),int(episode_steps[index])))
+                    episode_returns[index]=0.;episode_steps[index]=0
                     histories[index] = None; reset_indices.append(index)
             cursor += count
             if step>config.heatup_steps and step%update_interval==0 and len(replay)>=config.batch_size:
@@ -462,12 +500,24 @@ def run_training(train_env, eval_env, config, output_dir, total_steps=None, devi
                 if len(pending_metrics)>=log_interval_updates:
                     flush_metrics()
             if step%int(config.explore_steps_between_eval)==0:
-                flush_metrics();log({"step":step,"evaluation":evaluate_policy(agent,eval_env,sequence_length=sequence_length)});save(step)
+                flush_metrics();save(step)
+                eval_start=time.monotonic()
+                log({"step":step,"event":"evaluation_start","episodes":32})
+                summary=evaluate_policy(agent,eval_env,sequence_length=sequence_length,training_step=step)
+                evaluation_seconds+=time.monotonic()-eval_start
+                log({"step":step,"evaluation":summary})
         if reset_indices:
             with region("episode_resets"):
                 reset_results = reset_environments([envs[i] for i in reset_indices])
             for index,result in zip(reset_indices,reset_results):
+                if np.asarray(result[0]).shape!=(41,) or not np.all(np.isfinite(result[0])):raise ValueError("Invalid episode reset observation")
                 observations[index] = result[0]
+        now=time.monotonic()
+        if step-last_progress_step>=1024 or step==total_steps:
+            progress={"event":"progress","step":step,"updates":updates,"heatup":step<=config.heatup_steps,"num_envs":len(envs),"elapsed_s":now-started,"overall_fps":(step-start)/max(now-started,1e-9),"training_fps_excluding_evaluation":(step-start)/max(now-started-evaluation_seconds,1e-9),"recent_completed_episodes":len(recent),"success_rate":float(np.mean([x[0] for x in recent])) if recent else None,"mean_episode_reward":float(np.mean([x[1] for x in recent])) if recent else None,"mean_episode_steps":float(np.mean([x[2] for x in recent])) if recent else None,"losses":last_losses}
+            log(progress);write_json(output/"status.json",progress)
+            print("TRAIN_PROGRESS",json.dumps(progress,default=json_default,allow_nan=False),flush=True)
+            last_progress=now;last_progress_step=step
         if profile is not None:
             profile.round_finished(step,updates,agent,replay)
     flush_metrics();save(total_steps)

@@ -1,0 +1,16 @@
+--- original/IRC.inl
++++ test/IRC.inl
+@@ -819,6 +819,13 @@
+     for (unsigned int p=0; p<nbeam+1; p++)
+     {
+         int idP = m_numControlledNodes-nnode + p;
++        // Test-only bootstrap: a single old node contains no interpolatable beam.
++        // Preserve its pose for every new node; do not index past that sole node.
++        if (nnode_old == 1)
++        {
++            x[idP] = xbuf[previousNumControlledNodes + seg_remove - 1];
++            continue;
++        }
+         Real xabs = modifiedCurvAbs[p];
+ 
+         // 2 cases:  TODO : remove first case

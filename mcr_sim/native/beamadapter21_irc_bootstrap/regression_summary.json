@@ -1,0 +1,11 @@
+{
+  "status": "PASS",
+  "physics_substeps": 22,
+  "max_dof_difference": 0.0,
+  "max_observation_difference": 0.0,
+  "patched298": "PASS",
+  "patched298_nodal_adapter_audited": "PASS:22 real substeps with actual nodal-force equality, finite values, correct indices and total torque",
+  "magnetic_law_changed": false,
+  "force_component_representation_changed": true,
+  "comparison_caveat": "Old134-beam run used SOFA21 multi-index ConstantForceField which averaged nodal torques; this run corrects that implementation behavior. Not a density-only causal comparison."
+}

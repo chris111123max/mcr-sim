@@ -30,6 +30,22 @@ COMPONENTS = (
 def load_plugins(root=None):
     runtime = importlib.import_module("SofaRuntime")
     sofa = importlib.import_module("Sofa")
+    # Fail closed: only the audited SOFA21 IRC bootstrap library is permitted.
+    from pathlib import Path
+    import hashlib, json
+    native = Path(__file__).resolve().parent / "native/beamadapter21_irc_bootstrap"
+    library = native / "libBeamAdapter.so.21.12"
+    expected = json.loads((native / "manifest.json").read_text())["library_sha256"]
+    if hashlib.sha256(library.read_bytes()).hexdigest() != expected:
+        raise RuntimeError("Production BeamAdapter library hash mismatch")
+    runtime.PluginRepository.addFirstPath(str(native))
+    if runtime.importPlugin(str(library)) is not True:
+        raise RuntimeError("Patched production BeamAdapter failed to load")
+    mapped = {str(Path(line.split()[-1]).resolve())
+              for line in Path("/proc/self/maps").read_text().splitlines()
+              if "libBeamAdapter.so" in line}
+    if mapped != {str(library.resolve())}:
+        raise RuntimeError("Unexpected BeamAdapter mapping: " + repr(mapped))
     loaded = {}
     for name in REQUIRED_PLUGINS:
         result = runtime.importPlugin(name)
@@ -44,7 +60,7 @@ def load_plugins(root=None):
         if entry is None:
             raise RuntimeError("Required SOFA21 component unavailable: " + name)
         sources[name] = str(entry)
-    return {"plugins": loaded, "components": sources}
+    return {"plugins": loaded, "components": sources, "beamadapter_library": str(library), "beamadapter_sha256": expected}
 
 
 def message_collector():
@@ -61,7 +77,7 @@ def message_collector():
 
         @property
         def errors(self):
-            return [m for m in self.messages if m["type"] in ("Error", "Fatal")]
+            return [m for m in self.messages if m["type"] in ("Error", "Fatal") or "No convergence" in m["message"]]
 
         def require_no_errors(self, stage):
             if self.errors:

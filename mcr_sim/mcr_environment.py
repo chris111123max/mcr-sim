@@ -54,9 +54,8 @@ class Environment(Sofa.Core.Controller):
         self.name_env = name
         self.color = color
 
-        # Training uses the static triangle wall only.  Optional vessel
-        # Line/Point models remain available for diagnostics, but are disabled
-        # by default because they multiply contact pairs on dense meshes.
+        # Production uses static Triangle + double-sided Line vessel collision.
+        # Point collision remains independently optional.
         self.collision_proximity = float(collision_proximity)
         self.triangle_collision_proximity = (
             self.collision_proximity
@@ -141,6 +140,7 @@ class Environment(Sofa.Core.Controller):
         if self.use_line_collision:
             self.CollisionModel.addObject(
                 'LineCollisionModel',
+                bothSide=True,
                 moving=False,
                 simulated=False,
                 proximity=self.line_point_collision_proximity)

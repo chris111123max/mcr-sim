@@ -1,0 +1,5 @@
+{
+  "library_sha256": "246e8557cb9018044097685b9742c13f806ab070fd86a68480bada8c1d437973",
+  "source": "Previously validated IRC bootstrap-only rebuild; original global SOFA installation unchanged.",
+  "scope": "Only nnode_old == 1 initialization; no solver or collision changes."
+}

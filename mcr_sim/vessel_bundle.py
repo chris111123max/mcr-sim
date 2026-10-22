@@ -107,8 +107,8 @@ def load_vessel_bundle(directory: Path) -> VesselBundle:
     metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
     if metadata.get("arch_type") != "I" or metadata.get("length_unit") != "mm":
         raise ValueError("Only generated Type-I assets with millimetre units are supported")
-    if not metadata.get("validation", {}).get("passed", False):
-        raise ValueError(f"Vessel metadata is not validated: {directory}")
+    from .dataset_policy import verify_dataset_asset
+    verify_dataset_asset(directory, metadata)
     for filename, expected in metadata.get("asset_sha256", {}).items():
         path = directory / filename
         if path.parent.resolve() != directory or not path.is_file():
@@ -123,7 +123,7 @@ def load_vessel_bundle(directory: Path) -> VesselBundle:
     for name, ids in zip(names, vtk.lines):
         coordinates_mm = np.asarray(vtk.points[ids], dtype=np.float64)
         radii_mm = np.asarray(vtk.point_data["radius_mm"][ids], dtype=np.float64)
-        if len(coordinates_mm) < 2 or np.any(radii_mm <= 0.0):
+        if len(coordinates_mm) < 2 or not np.all(np.isfinite(coordinates_mm)) or not np.all(np.isfinite(radii_mm)) or np.any(radii_mm <= 0.0):
             raise ValueError(f"Invalid branch geometry: {name}")
         branches[name] = BranchData(
             name, coordinates_mm, radii_mm,
@@ -154,11 +154,16 @@ def load_vessel_bundle(directory: Path) -> VesselBundle:
     )
 
 
-def discover_vessel_bundles(root: Path = DEFAULT_VESSEL_ROOT) -> Tuple[VesselBundle, ...]:
+def discover_vessel_bundles(root: Path = DEFAULT_VESSEL_ROOT, split=None) -> Tuple[VesselBundle, ...]:
     root = Path(root).expanduser().resolve()
+    if (root / "train").is_dir() and (root / "test").is_dir():
+        names = ("train", "test") if split is None else (("test" if split == "eval" else split),)
+        if any(name not in ("train", "test") for name in names):raise ValueError("Invalid dataset split")
+        return tuple(bundle for name in names for bundle in discover_vessel_bundles(root / name))
+    paths = list(root.glob("arch_type_I_seed_*")) + list(root.glob("seed_*"))
     bundles = tuple(
         load_vessel_bundle(path)
-        for path in sorted(root.glob("arch_type_I_seed_*")) if path.is_dir()
+        for path in sorted(set(paths)) if path.is_dir()
     )
     if not bundles:
         raise FileNotFoundError(f"No generated Type-I vessels under {root}")

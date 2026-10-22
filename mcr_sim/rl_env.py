@@ -66,7 +66,7 @@ class MagneticNavigationEnv(gym.Env):
             raise ValueError("A concrete magnetic physics backend is required")
         config.validate()
         self.backend, self.config, self.mode = backend, config, mode
-        all_bundles = tuple(bundles or discover_vessel_bundles(config.vessel_root))
+        all_bundles = tuple(bundles or discover_vessel_bundles(config.vessel_root, split=mode))
         allowed_seeds = set(config.vessel_seeds if mode == "train" else config.eval_vessel_seeds)
         self.bundles: Tuple[VesselBundle, ...] = tuple(b for b in all_bundles if b.seed in allowed_seeds)
         if not self.bundles:

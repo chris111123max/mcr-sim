@@ -1,7 +1,7 @@
 """Nelson uniform-field cross-product torque applied through ConstantForceField.
 
-A single 4 mm magnet is integrated over four terminal 1 mm elements. The sum
-of overlap weights is one; the full magnet moment is never applied four times.
+A single 4 mm magnet is integrated over its terminal beam overlaps. The sum
+of overlap weights is one; the full magnet moment is never duplicated.
 """
 import Sofa
 import numpy as np

@@ -47,9 +47,13 @@ class Instrument:
             radius=self.equivalent_radius_m, printLog=False)
         self.force_field = device.addObject("AdaptiveBeamForceFieldAndMass", massDensity=cfg.mass_density_kg_m3,
                                             name="GuideForceField", interpolation="@InterpolGuide")
-        self.CFF = device.addObject(
-            "ConstantForceField", name="DistributedMagneticTorque", indices=list(self.layout.magnetic_node_indices),
-            forces=[[0.0] * 6 for _ in self.layout.magnet_overlaps], indexFromEnd=False)
+        # SOFA21 averages unequal forces inside a multi-index ConstantForceField.
+        # Singleton fields preserve each overlap-weighted m x B torque exactly.
+        from .nodal_magnetic_force import NodalForceProxy
+        self.CFF = NodalForceProxy([
+            device.addObject("ConstantForceField", name="MagneticTorqueNode" + str(node),
+                             indices=[node], forces=[[0.0] * 6], indexFromEnd=False)
+            for node in self.layout.magnetic_node_indices])
         self.IRC = device.addObject(
             "InterventionalRadiologyController", name="m_ircontroller", template="Rigid3d",
             instruments="InterpolGuide", startingPos=list(T_start_sim), xtip=[0.001],

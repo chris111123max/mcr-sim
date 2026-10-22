@@ -7,8 +7,8 @@ import math
 MM_TO_M = 0.001
 PACKAGE_DIR = Path(__file__).resolve().parent
 PYTHON_DIR = PACKAGE_DIR.parent
-DEFAULT_VESSEL_ROOT = PYTHON_DIR / "vessel_cache" / "archvariety_type_I_d085"
-DEFAULT_OUTPUT_ROOT = PYTHON_DIR.parent / "training_runs" / "mcr_sim"
+DEFAULT_VESSEL_ROOT = PYTHON_DIR / "stEVE_anatomical_vessels" / "datasets" / "arch_type_I"
+DEFAULT_OUTPUT_ROOT = PYTHON_DIR.parent.parent / "training_runs" / "mcr_sim"
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,7 @@ class BeamDiscretization:
 
 BEAM_PRESETS: Dict[str, BeamDiscretization] = {
     "nelson_reference": BeamDiscretization(30, 3, 30, 6, 600),
+    "production_250_48": BeamDiscretization(250, 48, 50, 68, 600),
     "default_100_34": BeamDiscretization(100, 34, 50, 68, 600),
     "refined_150_51": BeamDiscretization(150, 51, 150, 102, 600),
 }
@@ -50,7 +51,7 @@ class InstrumentConfig:
     magnet_remanence_t: float = 1.45
     initial_field_t: Tuple[float, float, float] = (0.01, 0.01, 0.0)
     discretization: BeamDiscretization = field(
-        default_factory=lambda: BEAM_PRESETS["default_100_34"]
+        default_factory=lambda: BEAM_PRESETS["production_250_48"]
     )
 
     @property
@@ -75,7 +76,7 @@ class SofaConfig:
     alarm_distance_m: float = 0.0005
     angle_cone: float = 0.02
     friction: float = 0.1
-    lcp_tolerance: float = 1e-4
+    lcp_tolerance: float = 1e-5
     lcp_max_iterations: int = 2000
     lcp_build: bool = False
     rayleigh_stiffness: float = 0.2
@@ -150,7 +151,7 @@ class ExperimentConfig:
     vessel_root: Path = DEFAULT_VESSEL_ROOT
     output_root: Path = DEFAULT_OUTPUT_ROOT
     vessel_seeds: Tuple[int, ...] = (101, 202, 303, 404, 505, 606, 707, 808, 909, 1010)
-    eval_vessel_seeds: Tuple[int, ...] = (1101, 1202)
+    eval_vessel_seeds: Tuple[int, ...] = (1111, 1212)
     instrument: InstrumentConfig = field(default_factory=InstrumentConfig)
     sofa: SofaConfig = field(default_factory=SofaConfig)
     action: ActionConfig = field(default_factory=ActionConfig)
@@ -161,8 +162,8 @@ class ExperimentConfig:
 
     def validate(self) -> None:
         assert self.instrument.total_length_m == 0.534
-        assert self.instrument.discretization.total_beams == 134
-        assert self.instrument.discretization.mechanical_dofs == 135
+        assert self.instrument.discretization.total_beams == 298
+        assert self.instrument.discretization.mechanical_dofs == 299
         assert math.isclose(self.sofa.rl_dt_s, 0.132, abs_tol=1e-12)
         assert self.observation.dimension == 41
         assert self.task.target_threshold_m == 0.003
