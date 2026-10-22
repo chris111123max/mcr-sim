@@ -126,7 +126,7 @@ class TaskConfig:
     )
     target_threshold_m: float = 0.003
     max_episode_steps_train: int = 150
-    max_episode_steps_eval: int = 450
+    max_episode_steps_eval: int = 150
 
 
 @dataclass(frozen=True)
@@ -134,7 +134,7 @@ class SACConfig:
     gamma: float = 0.99
     reward_scaling: float = 1.0
     batch_size: int = 64
-    replay_buffer_size: int = 10_000
+    replay_buffer_size: int = 200_000
     heatup_steps: int = 500_000
     update_per_explore_step: float = 1.0 / 20.0
     explore_steps_between_eval: int = 250_000

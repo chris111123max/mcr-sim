@@ -69,18 +69,39 @@ def message_collector():
     class Collector(sofa.Helper.MessageHandler):
         def __init__(self):
             super().__init__()
-            self.messages = []
+            from collections import deque,Counter
+            self.messages=deque(maxlen=256)
+            self._errors=deque(maxlen=32)
+            self.counts=Counter();self._lcp_error=False;self._other_error=False
 
-        def process(self, message):
-            if str(message["type"]) in ("Warning", "Error", "Fatal", "Deprecated"):
-                self.messages.append({key: str(message[key]) for key in ("type", "sender", "message")})
+        def process(self,message):
+            import json,sys
+            row={key:str(message[key]) for key in ('type','sender','message')}
+            if row['type'] not in ('Warning','Error','Fatal','Deprecated'):return
+            key=(row['type'],row['sender'])
+            if key not in self.counts and len(self.counts)>=64:key=('other','other')
+            self.counts[key]+=1
+            numerical=(row['sender']=='LCPConstraintSolver' and
+                       'No convergence' in row['message'])
+            fatal=row['type'] in ('Error','Fatal') or 'No convergence' in row['message']
+            if numerical:self._lcp_error=True
+            if fatal and not numerical:self._other_error=True
+            if fatal:
+                self._errors.append(row)
+                # Detailed errors survive bounded in-memory diagnostics.
+                print('SOFA_ERROR '+json.dumps(row),file=sys.stderr,flush=True)
+            if fatal or self.counts[key]<=3:self.messages.append(row)
 
         @property
-        def errors(self):
-            return [m for m in self.messages if m["type"] in ("Error", "Fatal") or "No convergence" in m["message"]]
+        def failure_kind(self):
+            return 'lcp_nonconvergence' if self._lcp_error and not self._other_error else None
 
-        def require_no_errors(self, stage):
-            if self.errors:
-                raise RuntimeError("SOFA errors at " + stage + ": " + repr(self.errors))
+        @property
+        def errors(self):return list(self._errors)
+
+        def require_no_errors(self,stage):
+            # Errors remain latched until this scene/handler is discarded.
+            if self._errors:
+                raise RuntimeError('SOFA errors at '+stage+': '+repr(list(self._errors)))
 
     return Collector()

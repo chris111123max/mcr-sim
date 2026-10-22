@@ -13,6 +13,7 @@ class StepDiagnostics:
     max_penetration_m: Optional[float] = None
     lcp_iterations: Optional[int] = None
     minimum_clearance_m: Optional[float] = None
+    failure_kind: Optional[str] = None
     simulation_error: bool = False
     unavailable_reasons: Dict[str, str] = field(default_factory=dict)
 
@@ -23,6 +24,7 @@ class StepDiagnostics:
             "lcp_iterations": self.lcp_iterations,
             "minimum_clearance_m": self.minimum_clearance_m,
             "simulation_error": self.simulation_error,
+            "failure_kind": self.failure_kind,
             "diagnostic_unavailable_reasons": dict(self.unavailable_reasons),
         }
 
@@ -61,6 +63,7 @@ class DiagnosticAccumulator:
             minimum_clearance_m=self._minimum(
                 s.minimum_clearance_m for s in self._samples
             ),
+            failure_kind=next((s.failure_kind for s in reversed(self._samples) if s.failure_kind),None),
             simulation_error=any(s.simulation_error for s in self._samples),
             unavailable_reasons=reasons,
         )

@@ -189,6 +189,7 @@ class RecurrentSAC:
             lstm_nodes=config.lstm_nodes,
             lstm_layers=config.lstm_layers,
             hidden=config.actor_hidden,
+            critic_hidden=config.critic_hidden,
         ).to(self.device)
         self.target = deepcopy(self.networks).to(self.device).eval()
         for parameter in self.target.parameters():
@@ -285,8 +286,8 @@ class RecurrentSAC:
         with torch.no_grad():
             self.log_alpha.copy_(checkpoint["log_alpha"].to(self.device))
         for name in ("critic_optimizer", "actor_optimizer", "alpha_optimizer"):
-            if name in checkpoint:
-                getattr(self, name).load_state_dict(checkpoint[name])
+            if name not in checkpoint:raise ValueError("Full restore requires "+name)
+            getattr(self, name).load_state_dict(checkpoint[name])
 
     def update(self, batch, return_tensors=False):
         profiler = getattr(self, "profile", None)
@@ -371,156 +372,6 @@ def evaluate_policy(agent, env, vessel_seeds=None, sequence_length=8, training_s
 
 def run_training(train_env, eval_env, config, output_dir, total_steps=None, device="cpu", sequence_length=8,
                  seed=0, resume=None, profile=None, log_interval_updates=20, strict_failures=False):
-    """Batched causal inference and replay, preserving each transition update boundary."""
-    from dataclasses import asdict
-    from .sampling import step_environments, reset_environments
-    total_steps = int(total_steps or config.training_steps_script_default)
-    if total_steps < 1 or log_interval_updates < 1:
-        raise ValueError("Positive transition budget and logging interval required")
-    random.seed(seed); np.random.seed(seed); torch.manual_seed(seed)
-    envs = list(train_env) if isinstance(train_env, (tuple, list)) else [train_env]
-    output = Path(output_dir); output.mkdir(parents=True, exist_ok=True)
-    (output / "config.json").write_text(json.dumps({"sac": asdict(config), "seed": seed, "num_envs": len(envs), "sequence_length": sequence_length}, indent=2))
-    replay = EpisodeSequenceReplay(config.replay_buffer_size, config.batch_size, sequence_length)
-    agent = RecurrentSAC(config, device=device, sequence_length=sequence_length)
-    agent.profile = replay.profile = profile
-    def region(name):
-        return profile.region(name) if profile is not None else nullcontext()
-    if agent.device.type == "npu":
-        torch.npu.manual_seed(seed)
-    start = 0
-    if resume:
-        checkpoint = torch.load(resume, map_location=agent.device)
-        if checkpoint.get("replay_format_version") != EpisodeSequenceReplay.FORMAT_VERSION:
-            raise ValueError("Legacy replay cannot restore real-frame histories")
-        agent.restore(checkpoint); start = int(checkpoint["step"])
-        replay.data.extend(checkpoint.get("replay", []))
-        replay.episodes = {int(k): int(v)+1 for k,v in checkpoint.get("replay_episodes",{}).items()}
-        random.setstate(checkpoint["python_rng"]); np.random.set_state(checkpoint["numpy_rng"])
-        torch.set_rng_state(checkpoint["torch_rng"].cpu())
-        if agent.device.type == "npu" and "npu_rng" in checkpoint:
-            torch.npu.set_rng_state(checkpoint["npu_rng"].cpu(), agent.device)
-    for i,env in enumerate(envs):
-        env.action_space.seed(seed+i)
-    with region("initial_resets"):
-        initial = reset_environments(envs, [{"seed": seed+i+start} for i in range(len(envs))])
-    if any(np.asarray(x[0]).shape!=(41,) or not np.all(np.isfinite(x[0])) for x in initial):raise ValueError("Invalid reset observation")
-    # Persist actual worker scene observations, not merely configuration intent.
-    if strict_failures:
-        from .serialization import write_json
-        audits = [result[1].get("physics_runtime_audit") for result in initial]
-        if any(not a or a.get("status") != "PASS" for a in audits):
-            raise RuntimeError("Missing/failed production runtime physics audit")
-        write_json(output / "runtime_physics.json", {"workers": audits, "count": len(audits)})
-    observations = [result[0] for result in initial]
-    episode_returns=np.zeros(len(envs));episode_steps=np.zeros(len(envs),dtype=int)
-    recent=deque(maxlen=1000);started=time.monotonic();last_progress=started;last_progress_step=start
-    evaluation_seconds=0.;last_losses={}
-    histories = [None] * len(envs)
-    if profile is not None:
-        profile.training_start()
-    update_interval = int(round(1.0 / config.update_per_explore_step))
-    log_path = output / "metrics.jsonl"
-    def log(record):
-        with log_path.open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(record,default=json_default,allow_nan=False)+"\n")
-    pending_metrics = []
-    def flush_metrics():
-        if not pending_metrics:
-            return
-        values = torch.stack([torch.stack(tuple(metric.values())) for _,metric in pending_metrics]).cpu().numpy()
-        if not np.all(np.isfinite(values)):
-            raise FloatingPointError("Nonfinite SAC metric")
-        for (record_step,metric),row in zip(pending_metrics,values):
-            log({"step":record_step,"update":dict(zip(metric,map(float,row)))})
-            last_losses.update(dict(zip(metric,map(float,row))))
-        pending_metrics.clear()
-    def save(step):
-        checkpoint = {**agent.checkpoint(), "replay_format_version": EpisodeSequenceReplay.FORMAT_VERSION,
-                      "step":step,"replay":list(replay.data),"replay_episodes":replay.episodes,
-                      "python_rng":random.getstate(),"numpy_rng":np.random.get_state(),"torch_rng":torch.get_rng_state()}
-        if agent.device.type == "npu":
-            checkpoint["npu_rng"] = torch.npu.get_rng_state(agent.device)
-        checkpoint_dir=output / "checkpoints";checkpoint_dir.mkdir(exist_ok=True)
-        temporary = checkpoint_dir / "checkpoint_pending.pt"
-        torch.save(checkpoint,temporary);temporary.replace(checkpoint_dir/("lstm_sac_%d_steps.pt"%step))
-    step = start; updates = 0
-    while step < total_steps:
-        indices = [(step+offset)%len(envs) for offset in range(min(len(envs),total_steps-step))]
-        with region("actor_batch"):
-            policy_actions,new_histories = agent.act_batch(np.stack([observations[i] for i in indices]), [histories[i] for i in indices])
-        actions = []
-        for offset,index in enumerate(indices):
-            histories[index] = new_histories[offset]
-            actions.append(envs[index].action_space.sample() if step+offset+1<=config.heatup_steps else policy_actions[offset])
-        with region("sampling"):
-            results = step_environments([envs[i] for i in indices],actions)
-        reset_indices = []; cursor = 0
-        while cursor < len(indices):
-            # Do not publish future transitions before a scheduled update/evaluation.
-            count = min(len(indices)-cursor,update_interval-step%update_interval,
-                        int(config.explore_steps_between_eval)-step%int(config.explore_steps_between_eval))
-            records = []; prepared = []
-            for offset in range(cursor,cursor+count):
-                index = indices[offset]; result = results[offset]
-                following,reward,terminated,truncated,info = result
-                candidate = np.asarray(following)
-                valid = (bool(info.get("transition_valid",True)) and bool(info.get("observation_valid",True)) and
-                         not info.get("simulation_error",False) and info.get("state_error") is None and
-                         info.get("termination_reason")!="simulation_error" and candidate.shape==observations[index].shape and
-                         np.all(np.isfinite(candidate)) and np.isfinite(reward))
-                valid=bool(valid)
-                if strict_failures and info.get("physics_substeps_attempted",22)!=22:valid=False
-                if strict_failures and not valid:
-                    raise RuntimeError("Invalid SOFA transition: "+repr(info))
-                records.append(((observations[index],actions[offset],reward,following,terminated,truncated,index),{"valid":valid}))
-                prepared.append((index,result,valid))
-            with region("replay_add"):
-                replay.add_batch(records)
-            for index,(following,reward,terminated,truncated,info),valid in prepared:
-                step += 1
-                episode_returns[index]+=reward;episode_steps[index]+=1
-                if valid:
-                    observations[index] = following
-                if terminated or truncated or not valid:
-                    log({"step":step,"env_id":index,"episode":info.get("episode_metrics"),
-                         "termination_reason":info.get("termination_reason") if valid else "simulation_error",
-                         "transition_stored":valid,"state_error":info.get("state_error"),
-                         "reward":float(episode_returns[index]),"steps":int(episode_steps[index]),
-                         "success":bool(info.get("success",False)),"vessel_seed":info.get("vessel_seed"),"target_branch":info.get("target_branch")})
-                    recent.append((bool(info.get("success",False)),float(episode_returns[index]),int(episode_steps[index])))
-                    episode_returns[index]=0.;episode_steps[index]=0
-                    histories[index] = None; reset_indices.append(index)
-            cursor += count
-            if step>config.heatup_steps and step%update_interval==0 and len(replay)>=config.batch_size:
-                batch = replay.sample(agent.device)
-                with region("update_total"):
-                    metrics = agent.update(batch,return_tensors=True)
-                updates += 1;pending_metrics.append((step,metrics))
-                if len(pending_metrics)>=log_interval_updates:
-                    flush_metrics()
-            if step%int(config.explore_steps_between_eval)==0:
-                flush_metrics();save(step)
-                eval_start=time.monotonic()
-                log({"step":step,"event":"evaluation_start","episodes":32})
-                summary=evaluate_policy(agent,eval_env,sequence_length=sequence_length,training_step=step)
-                evaluation_seconds+=time.monotonic()-eval_start
-                log({"step":step,"evaluation":summary})
-        if reset_indices:
-            with region("episode_resets"):
-                reset_results = reset_environments([envs[i] for i in reset_indices])
-            for index,result in zip(reset_indices,reset_results):
-                if np.asarray(result[0]).shape!=(41,) or not np.all(np.isfinite(result[0])):raise ValueError("Invalid episode reset observation")
-                observations[index] = result[0]
-        now=time.monotonic()
-        if step-last_progress_step>=1024 or step==total_steps:
-            progress={"event":"progress","step":step,"updates":updates,"heatup":step<=config.heatup_steps,"num_envs":len(envs),"elapsed_s":now-started,"overall_fps":(step-start)/max(now-started,1e-9),"training_fps_excluding_evaluation":(step-start)/max(now-started-evaluation_seconds,1e-9),"recent_completed_episodes":len(recent),"success_rate":float(np.mean([x[0] for x in recent])) if recent else None,"mean_episode_reward":float(np.mean([x[1] for x in recent])) if recent else None,"mean_episode_steps":float(np.mean([x[2] for x in recent])) if recent else None,"losses":last_losses}
-            log(progress);write_json(output/"status.json",progress)
-            print("TRAIN_PROGRESS",json.dumps(progress,default=json_default,allow_nan=False),flush=True)
-            last_progress=now;last_progress_step=step
-        if profile is not None:
-            profile.round_finished(step,updates,agent,replay)
-    flush_metrics();save(total_steps)
-    if profile is not None:
-        profile.training_end(step,updates,agent,replay)
-    return agent
+    from .training_runner import train
+    return train(train_env,eval_env,config,output_dir,total_steps,device,
+                 sequence_length,seed,resume,profile,log_interval_updates,strict_failures)

@@ -97,11 +97,11 @@ class TwinCritic(nn.Module):
 
 
 class SACNetworks(nn.Module):
-    def __init__(self, observation_dim=ObservationConfig().dimension, action_dim=3, lstm_nodes=900, lstm_layers=1, hidden=(400, 400, 400)):
+    def __init__(self, observation_dim=ObservationConfig().dimension, action_dim=3, lstm_nodes=900, lstm_layers=1, hidden=(400, 400, 400), critic_hidden=None):
         super().__init__()
         self.encoder = RecurrentEncoder(observation_dim, lstm_nodes, lstm_layers)
         self.actor = GaussianActor(lstm_nodes, action_dim, hidden)
-        self.critics = TwinCritic(lstm_nodes, action_dim, hidden)
+        self.critics = TwinCritic(lstm_nodes, action_dim, hidden if critic_hidden is None else critic_hidden)
 
     def policy(self, observation_sequence, lengths=None):
         return self.actor.sample(self.encoder(observation_sequence, lengths))

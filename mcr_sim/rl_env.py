@@ -130,6 +130,7 @@ class MagneticNavigationEnv(gym.Env):
             "target_branch": self.target.branch,
             "target_m": self.target.coordinates_m.copy(),
             "path_length_mm": path_mm,
+            "distance_to_target_m": float(np.linalg.norm(state.tip_m-self.target.coordinates_m)),
             "available_target_branches": requested,
             "rl_dt_s": self.config.sofa.rl_dt_s,
             "insertion_point_m": self.bundle.insertion_point_m.copy(),
@@ -148,19 +149,21 @@ class MagneticNavigationEnv(gym.Env):
         plan = self.action_controller.plan(action, before.magnetic_field_world_t, before.tip_frame_world)
         diagnostics = DiagnosticAccumulator()
         substeps = 0
+        validated_substeps = 0
         for field_t, insertion_m in zip(plan.field_substeps_world_t, plan.insertion_substeps_m):
             substeps += 1
             try:
                 sample = self.backend.physics_substep(field_t, insertion_m)
             except (ValueError, RuntimeError, FloatingPointError) as exc:
                 diag = diagnostics.finish()
-                return self._failed_transition(repr(exc), substeps, diag)
+                return self._failed_transition(repr(exc), substeps, diag, validated_substeps, substeps)
             diagnostics.add(sample)
             if sample.simulation_error:
                 break
+            validated_substeps += 1
         diag = diagnostics.finish()
         if diag.simulation_error:
-            return self._failed_transition("SOFA substep reported numerical failure", substeps, diag)
+            return self._failed_transition("SOFA substep reported numerical failure", substeps, diag, validated_substeps, substeps)
         try:
             state = self.backend.state()
             state.validate()
@@ -176,7 +179,7 @@ class MagneticNavigationEnv(gym.Env):
                 last_insertion_m=executed_insertion, completed_steps=self.task.steps + 1,
             )
         except (ValueError, RuntimeError, FloatingPointError) as exc:
-            return self._failed_transition(repr(exc), substeps, diag)
+            return self._failed_transition(repr(exc), substeps, diag, validated_substeps, None)
         path_mm = self.graph.path_length_mm(state.tip_m * 1000.0, self.target.coordinates_mm)
         outcome = self.task.step(
             state.tip_m, self.target.coordinates_m,
@@ -198,17 +201,22 @@ class MagneticNavigationEnv(gym.Env):
             "success": outcome.success,
             "reward_terms": {"target": reward.target, "path_delta": reward.path_delta, "step": reward.step},
             "physics_substeps_attempted": substeps,
+            "physics_substeps_validated": validated_substeps,
+            "failed_physics_substep": None,
             "state_error": None,
             "observation_valid": True,
             "transition_valid": True,
             "bootstrap_allowed": not outcome.terminated,
             "raw_action": plan.raw_action.copy(),
             "quantized_action": plan.quantized_action.copy(),
-            "executed_action": plan.executed_action.copy(),
+            "executed_action": plan.executed_action.copy(),  # legacy command alias
+            "controller_command_action": plan.executed_action.copy(),
+            "action_log_semantics": "executed_action is command; executed_insertion_m is measured axial delta",
             "requested_insertion_m": plan.requested_insertion_m,
             "executed_insertion_m": executed_insertion,
             "field_rotation_command_deg": plan.magnetic_rotation_command_deg,
-            "field_rotation_executed_deg": plan.magnetic_rotation_executed_deg,
+            "field_rotation_executed_deg": plan.magnetic_rotation_executed_deg,  # legacy controller-command alias
+            "field_rotation_controller_deg": plan.magnetic_rotation_executed_deg,
             **diag.as_info(),
         }
         if self._episode_done:
@@ -216,27 +224,27 @@ class MagneticNavigationEnv(gym.Env):
                 success=outcome.success, final_path_length_mm=path_mm, reason=outcome.reason)
         return observation, reward.total, outcome.terminated, outcome.truncated, info
 
-    def _failed_transition(self, error, substeps, diagnostics):
+    def _failed_transition(self, error, substeps, diagnostics, validated_substeps=0, failed_substep=None):
         # Gym still needs a finite return value. This is explicitly a stale
         # placeholder, never a trustworthy next state or a replay transition.
         state = self._last_valid_state
         path_mm = self.graph.path_length_mm(state.tip_m * 1000.0, self.target.coordinates_mm)
-        outcome = self.task.step(state.tip_m, self.target.coordinates_m, simulation_error=True)
-        reward = self.reward_model.step(path_mm, False)
         diagnostics.simulation_error = True
         self._episode_done = True
         info = {
             "vessel_seed": self.bundle.seed, "target_branch": self.target.branch,
-            "path_length_mm": path_mm, "distance_to_target_m": outcome.distance_to_target_m,
-            "termination_reason": outcome.reason, "success": False,
-            "reward_terms": {"target": reward.target, "path_delta": reward.path_delta, "step": reward.step},
+            "path_length_mm": path_mm, "distance_to_target_m": float(np.linalg.norm(state.tip_m-self.target.coordinates_m)),
+            "termination_reason": "simulation_error", "success": False,
+            "reward_terms": None,
             "physics_substeps_attempted": substeps, "state_error": error,
+            "physics_substeps_validated": validated_substeps,
+            "failed_physics_substep": failed_substep,
             "observation_valid": False, "transition_valid": False, "bootstrap_allowed": False,
             "executed_insertion_m": None,
-            "episode_metrics": self.metric_tracker.finish(success=False, final_path_length_mm=path_mm, reason=outcome.reason),
+            "episode_metrics": self.metric_tracker.finish(success=False, final_path_length_mm=path_mm, reason="simulation_error"),
             **diagnostics.as_info(),
         }
-        return self._last_observation.copy(), reward.total, outcome.terminated, outcome.truncated, info
+        return self._last_observation.copy(), 0.0, False, True, info
 
     def _observation(self, state, *, tip_displacement_world_m=None, last_insertion_m=0.0, completed_steps=None):
         # Read the same BFS path without changing its progress/reward semantics.

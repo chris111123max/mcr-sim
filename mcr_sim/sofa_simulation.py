@@ -145,7 +145,8 @@ class SofaBackend:
         self._handles: Optional[SceneHandles] = None
         self._simulation_error = False
         self.stages = {key: {"status": "NOT_RUN"} for key in "ABCDEFGH"}
-        self.physics_substeps_executed = 0
+        self.physics_substeps_executed = 0  # legacy animate-return count
+        self.physics_substeps_validated = 0
         self._messages = None
         self.last_exception = None
         self.last_messages = []
@@ -217,7 +218,8 @@ class SofaBackend:
             if obj.getClassName() != "RequiredPlugin":
                 obj.bwdInit()
         self._messages.require_no_errors("reused static scene reset")
-        self.physics_substeps_executed = 0
+        self.physics_substeps_executed = 0  # legacy animate-return count
+        self.physics_substeps_validated = 0
         self.stages["H"] = {"status": "NOT_RUN"}
         self._simulation_error = False
         self.last_exception = None
@@ -248,7 +250,8 @@ class SofaBackend:
         self._messages = message_collector()
         self._messages.__enter__()
         self.stages = {key: {"status": "NOT_RUN"} for key in "ABCDEFGH"}
-        self.physics_substeps_executed = 0
+        self.physics_substeps_executed = 0  # legacy animate-return count
+        self.physics_substeps_validated = 0
         try:
             self._handles = create_sofa_scene(self._root, bundle, self.config, self.stages, self._messages)
             self._messages.require_no_errors("A-F component construction")
@@ -342,20 +345,26 @@ class SofaBackend:
             self.stages["H"] = {"status": "FAIL", "traceback": self.last_exception}
             self._simulation_error = True
             reasons["simulation_error"] = self.last_exception
-            return StepDiagnostics(simulation_error=True, unavailable_reasons=reasons)
+            return StepDiagnostics(simulation_error=True, failure_kind=self._messages.failure_kind, unavailable_reasons=reasons)
         if not np.all(np.isfinite(np.asarray(self._handles.dofs.position.value, dtype=float))):
             self._simulation_error = True
+        if not self._simulation_error:self.physics_substeps_validated += 1
         return StepDiagnostics(simulation_error=self._simulation_error, unavailable_reasons=reasons)
 
     def close(self) -> None:
-        if self._root is not None and self._Sofa is not None:
-            try:
+        import traceback,logging
+        error=None
+        try:
+            if self._root is not None and self._Sofa is not None:
                 self._Sofa.Simulation.unload(self._root)
-            except Exception:
-                pass
-        self._root = None
-        self._handles = None
-        if self._messages is not None:
-            self.last_messages = list(self._messages.messages)
-            self._messages.__exit__(None, None, None)
-            self._messages = None
+        except Exception:
+            error=traceback.format_exc()
+            logging.getLogger(__name__).error('SOFA unload failed asset=%r: %s',self._bundle_key,error)
+        finally:
+            self._root=None;self._handles=None
+            if self._messages is not None:
+                self.last_messages=list(self._messages.messages)
+                self._messages.__exit__(None,None,None)
+                self._messages=None
+            self.last_cleanup={'unloaded':error is None,'error':error}
+        if error is not None:raise RuntimeError('SOFA unload failed: '+error)
